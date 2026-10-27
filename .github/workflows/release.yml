@@ -1,0 +1,212 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: [Build]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GIT_CONFIG_COUNT: 1
+  GIT_CONFIG_KEY_0: init.defaultBranch
+  GIT_CONFIG_VALUE_0: main
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    if: >-
+      github.event_name == 'workflow_dispatch' || (
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      !contains(github.event.workflow_run.head_commit.message, '[skip ci]') &&
+      !startsWith(github.event.workflow_run.head_commit.message, 'chore:') &&
+      !startsWith(github.event.workflow_run.head_commit.message, 'chore(') &&
+      !startsWith(github.event.workflow_run.head_commit.message, 'docs:') &&
+      !startsWith(github.event.workflow_run.head_commit.message, 'docs(') &&
+      !startsWith(github.event.workflow_run.head_commit.message, 'style:') &&
+      !startsWith(github.event.workflow_run.head_commit.message, 'style(') &&
+      !startsWith(github.event.workflow_run.head_commit.message, 'test:') &&
+      !startsWith(github.event.workflow_run.head_commit.message, 'test(') &&
+      !startsWith(github.event.workflow_run.head_commit.message, 'ci:') &&
+      !startsWith(github.event.workflow_run.head_commit.message, 'ci(') )
+
+    outputs:
+      released_version: ${{ steps.semantic_release.outputs.released_version }}
+      has_mac: ${{ steps.semantic_release.outputs.has_mac }}
+
+    steps:
+      - name: Checkout foo_js_panel
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+          path: foo_js_panel
+
+      - name: Download the Build run's artifacts
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -uo pipefail
+          P="$GITHUB_WORKSPACE/prebuilt"
+          for pair in release-stamp:stamp foo_js_panel-dll:x64 foo_js_panel-dll-arm64ec:arm64ec \
+                      foo_js_panel-dll-x86:x86 foo_js_panel-mac:mac; do
+            gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" -n "${pair%%:*}" -D "$P/${pair#*:}" \
+              || echo "no ${pair%%:*} artifact in run $RUN_ID"
+          done
+          echo "PREBUILT_DIR=$P" >> "$GITHUB_ENV"
+          find "$P" -type f
+
+      - name: Set up cross-build
+        uses: ./foo_js_panel/.github/actions/setup-build
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Install semantic-release + plugins
+        working-directory: foo_js_panel
+        run: |
+          npm install --no-save --no-package-lock \
+            semantic-release@25 \
+            conventional-changelog-conventionalcommits@9 \
+            @semantic-release/exec@7 \
+            @semantic-release/github@12
+
+      - name: Run semantic-release
+        id: semantic_release
+        working-directory: foo_js_panel
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release
+
+  release-mac:
+    needs: release
+    if: needs.release.outputs.released_version != '' && needs.release.outputs.has_mac != 'true'
+    runs-on: macos-latest
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@v7
+        with:
+          ref: v${{ needs.release.outputs.released_version }}
+          path: foo_js_panel
+
+      - name: Fetch foobar2000 SDK
+        uses: ./foo_js_panel/.github/actions/fetch-sdk
+
+      - name: Install ninja
+        run: command -v ninja >/dev/null || brew install ninja
+
+      - name: Build (universal)
+        working-directory: foo_js_panel
+        env:
+          JSP_VERSION: ${{ needs.release.outputs.released_version }}
+        run: ./scripts/mac-build.sh
+
+      - name: Zip bundle
+        working-directory: foo_js_panel/build-mac
+        run: ditto -c -k --keepParent foo_js_panel.component foo_js_panel-mac.zip
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: foo_js_panel-mac
+          path: foo_js_panel/build-mac/foo_js_panel-mac.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  release-package:
+    needs: [release, release-mac]
+    if: needs.release.outputs.released_version != '' && needs.release.outputs.has_mac != 'true'
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.release.outputs.released_version }}
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@v7
+        with:
+          ref: v${{ needs.release.outputs.released_version }}
+
+      - name: Download the macOS bundle
+        run: gh run download "${{ github.run_id }}" -R "${{ github.repository }}" -n foo_js_panel-mac
+
+      - name: Merge the macOS bundle into the release asset
+        run: |
+          set -euo pipefail
+          ASSET="foo_js_panel_${VERSION}.fb2k-component"
+          gh release download "v${VERSION}" --pattern "$ASSET" --dir win
+          unzip -q "win/$ASSET" -d win/x
+          unzip -q foo_js_panel-mac.zip -d mac
+          python3 scripts/package.py "$ASSET" --dll win/x/x64/foo_js_panel.dll \
+            --arm64ec win/x/arm64ec/foo_js_panel.dll --x86 win/x/foo_js_panel.dll \
+            --mac mac/foo_js_panel.component
+          gh release upload "v${VERSION}" \
+            "$ASSET#foo_js_panel ${VERSION} (macOS + Windows x86/x64/ARM64)" \
+            --clobber
+
+  notify-n8n:
+    needs: [release, release-package]
+    if: >-
+      !cancelled() && needs.release.result == 'success' &&
+      needs.release.outputs.released_version != '' && vars.FOOBAR_ORG_PUBLISH == 'true' &&
+      (needs.release-package.result == 'success' ||
+       (needs.release-package.result == 'skipped' && needs.release.outputs.has_mac == 'true'))
+    runs-on: [self-hosted, homelab]
+    steps:
+      - name: Notify n8n for foobar2000.org publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.release.outputs.released_version }}
+          N8N_WEBHOOK_URL: ${{ secrets.N8N_FOOBAR_RELEASE_WEBHOOK_URL }}
+          N8N_WEBHOOK_SECRET: ${{ secrets.N8N_FOOBAR_RELEASE_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          ASSET="foo_js_panel_${VERSION}.fb2k-component"
+
+          RELEASE_JSON=$(curl -sf \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/v${VERSION}")
+          ASSET_URL=$(printf '%s' "$RELEASE_JSON" | jq -r --arg name "$ASSET" \
+            '.assets[] | select(.name == $name) | .url')
+          CHANGELOG=$(printf '%s' "$RELEASE_JSON" | jq -r .body)
+
+          CHANGELOG_CLEAN=$(printf '%s' "$CHANGELOG" | perl -0pe '
+            s/^## \[.*?\].*\n//m;
+            s/^### /\n/mg;
+            s/\s*\(\[[0-9a-f]{7,40}\]\([^\)]+\)\)//g;
+            s/\n{3,}/\n\n/g;
+            s/^\n+//;
+            s/\n+$/\n/;
+          ')
+
+          if [ -z "$ASSET_URL" ]; then
+            echo "ERROR: could not resolve download url for $ASSET" >&2
+            exit 1
+          fi
+
+          curl -sf -X POST "$N8N_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -H "X-Webhook-Secret: ${N8N_WEBHOOK_SECRET}" \
+            -d "$(jq -n \
+                  --arg version "$VERSION" \
+                  --arg changelog "$CHANGELOG_CLEAN" \
+                  --arg asset_url "$ASSET_URL" \
+                  --arg asset_name "$ASSET" \
+                  '{version:$version, changelog:$changelog, asset_url:$asset_url, asset_name:$asset_name}')"
+          echo "notified n8n to publish $ASSET (v${VERSION}) to foobar2000.org component 359"

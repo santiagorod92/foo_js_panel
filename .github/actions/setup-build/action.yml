@@ -1,0 +1,93 @@
+name: Set up cross-build
+description: >-
+  Lays out the foobar2000 SDK + foo_ui_panels as siblings of the repo checkout (the layout
+  build.sh / CMakeLists.txt expect, same as foo_ui_panels and foo_navidrome) and installs the Linux -> Windows x64 +
+  ARM64EC + x86 cross toolchain: clang-cl, lld-link, llvm-rc/mt, cmake, ninja, ccache, plus the
+  xwin-splatted Windows SDK/CRT for every arch (cached). Exports LLVM_VERSION, so later
+  steps can name the matching host compiler (clang++-$LLVM_VERSION).
+  Expects the repo to be checked out at $GITHUB_WORKSPACE/foo_js_panel.
+
+inputs:
+  xwin:
+    description: "Restore (or splat) the xwin Windows SDK/CRT; 'false' for host-only jobs (tests)"
+    required: false
+    default: "true"
+  ccache-key:
+    description: "Enable ccache for CMake builds with a cache persisted under this key (e.g. the arch); empty = no ccache"
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch foobar2000 SDK
+      uses: ./foo_js_panel/.github/actions/fetch-sdk
+
+    - name: Check the Windows import libs are there
+      shell: bash
+      run: test -f foobar2000/shared/shared-x64.lib && test -f foobar2000/shared/shared-ARM64EC.lib && test -f foobar2000/shared/shared-Win32.lib
+
+    - name: Install clang-cl / lld-link / cmake / ninja / ccache (LLVM 22)
+      shell: bash
+      run: |
+        set -euo pipefail
+        LLVM=22
+        echo "LLVM_VERSION=$LLVM" >> "$GITHUB_ENV"
+        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+        echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-$LLVM main" | sudo tee /etc/apt/sources.list.d/llvm.list
+        sudo apt-get update
+        sudo apt-get install -y "clang-$LLVM" "lld-$LLVM" "llvm-$LLVM" "libclang-rt-$LLVM-dev" cmake ninja-build ccache
+        BIN="/usr/lib/llvm-$LLVM/bin"
+        declare -A base=( [clang-cl]=clang [lld-link]=lld [llvm-lib]=llvm-ar
+                          [llvm-rc]=llvm-rc [llvm-mt]=llvm-mt [llvm-ar]=llvm-ar
+                          [llvm-readobj]=llvm-readobj )
+        for t in "${!base[@]}"; do
+          src=""
+          for c in "$BIN/$t" "/usr/bin/$t-$LLVM" "$BIN/${base[$t]}"; do
+            [ -x "$c" ] && { src="$c"; break; }
+          done
+          [ -n "$src" ] || { echo "missing $t (looked in $BIN)"; ls "$BIN"; exit 1; }
+          sudo ln -sf "$src" "/usr/local/bin/$t"
+          echo "$t -> $src"
+        done
+        hash -r
+        clang-cl --version | head -1
+
+    - name: Cache xwin Windows SDK/CRT splat
+      if: inputs.xwin == 'true'
+      id: xwin-cache
+      uses: actions/cache@v6
+      with:
+        path: ~/.xwin
+        key: xwin-${{ runner.os }}-x86-x86_64-aarch64-v3
+
+    - name: Splat Windows SDK/CRT with xwin
+      if: inputs.xwin == 'true' && steps.xwin-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        XWIN_VER=0.6.5
+        mkdir -p "$RUNNER_TEMP/xwin"
+        curl -fsSL "https://github.com/Jake-Shadle/xwin/releases/download/$XWIN_VER/xwin-$XWIN_VER-x86_64-unknown-linux-musl.tar.gz" \
+          | tar -xz -C "$RUNNER_TEMP/xwin" --strip-components=1
+        "$RUNNER_TEMP/xwin/xwin" --accept-license --arch x86,x86_64,aarch64 splat --output ~/.xwin
+
+    - name: Enable ccache
+      if: inputs.ccache-key != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        {
+          echo "CCACHE_DIR=$RUNNER_TEMP/ccache"
+          echo "CCACHE_MAXSIZE=500M"
+          echo "CMAKE_C_COMPILER_LAUNCHER=ccache"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache"
+        } >> "$GITHUB_ENV"
+
+    - name: Cache ccache
+      if: inputs.ccache-key != ''
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/ccache
+        key: ccache-${{ runner.os }}-llvm22-${{ inputs.ccache-key }}-${{ github.sha }}
+        restore-keys: ccache-${{ runner.os }}-llvm22-${{ inputs.ccache-key }}-

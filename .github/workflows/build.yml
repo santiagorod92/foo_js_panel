@@ -1,0 +1,214 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - 'scripts/deploy.sh'
+      - 'scripts/mac-local.sh'
+      - 'scripts/ui-test.sh'
+      - 'scripts/extract-macos-sdk.py'
+      - 'tools/render_script.mm'
+      - 'tests/skins/**'
+      - 'tests/scripts/**'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - 'scripts/deploy.sh'
+      - 'scripts/mac-local.sh'
+      - 'scripts/ui-test.sh'
+      - 'scripts/extract-macos-sdk.py'
+      - 'tools/render_script.mm'
+      - 'tests/skins/**'
+      - 'tests/scripts/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GIT_CONFIG_COUNT: 1
+  GIT_CONFIG_KEY_0: init.defaultBranch
+  GIT_CONFIG_VALUE_0: main
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    if: >-
+      github.event_name == 'push' &&
+      !contains(github.event.head_commit.message, '[skip ci]') &&
+      !startsWith(github.event.head_commit.message, 'chore:') &&
+      !startsWith(github.event.head_commit.message, 'chore(') &&
+      !startsWith(github.event.head_commit.message, 'docs:') &&
+      !startsWith(github.event.head_commit.message, 'docs(') &&
+      !startsWith(github.event.head_commit.message, 'style:') &&
+      !startsWith(github.event.head_commit.message, 'style(') &&
+      !startsWith(github.event.head_commit.message, 'test:') &&
+      !startsWith(github.event.head_commit.message, 'test(') &&
+      !startsWith(github.event.head_commit.message, 'ci:') &&
+      !startsWith(github.event.head_commit.message, 'ci(')
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      next_version: ${{ steps.dry_run.outputs.next_version }}
+    steps:
+      - name: Checkout foo_js_panel
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Install semantic-release + plugins
+        run: |
+          npm install --no-save --no-package-lock \
+            semantic-release@25 \
+            conventional-changelog-conventionalcommits@9 \
+            @semantic-release/exec@7 \
+            @semantic-release/github@12
+
+      - name: Next version (dry run)
+        id: dry_run
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release --dry-run
+
+      - name: Record the stamped version
+        if: steps.dry_run.outputs.next_version != ''
+        run: |
+          mkdir -p release-stamp
+          printf '%s\n' "${{ steps.dry_run.outputs.next_version }}" > release-stamp/version
+
+      - name: Upload release stamp
+        if: steps.dry_run.outputs.next_version != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-stamp
+          path: release-stamp/version
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    needs: version
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            dir: build
+            artifact: foo_js_panel-dll
+          - arch: arm64ec
+            dir: build-arm64ec
+            artifact: foo_js_panel-dll-arm64ec
+          - arch: x86
+            dir: build-x86
+            artifact: foo_js_panel-dll-x86
+    name: build (${{ matrix.arch }})
+    env:
+      JSP_VERSION: ${{ needs.version.outputs.next_version }}
+    steps:
+      - name: Checkout foo_js_panel
+        uses: actions/checkout@v7
+        with:
+          path: foo_js_panel
+          fetch-depth: 0
+
+      - name: Set up cross-build
+        uses: ./foo_js_panel/.github/actions/setup-build
+        with:
+          ccache-key: ${{ matrix.arch }}
+
+      - name: Build (${{ matrix.arch }})
+        working-directory: foo_js_panel
+        run: |
+          WIN_ARCH=${{ matrix.arch }} ./build.sh
+          ccache --show-stats
+
+      - name: Upload foo_js_panel.dll (${{ matrix.arch }})
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: foo_js_panel/${{ matrix.dir }}/foo_js_panel.dll
+          if-no-files-found: error
+          retention-days: 7
+
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout foo_js_panel
+        uses: actions/checkout@v7
+        with:
+          path: foo_js_panel
+          fetch-depth: 0
+
+      - name: Set up host toolchain
+        uses: ./foo_js_panel/.github/actions/setup-build
+        with:
+          xwin: 'false'
+
+      - name: Platform-free code builds without Windows headers
+        working-directory: foo_js_panel
+        run: make check-portable CXX_HOST=clang++-$LLVM_VERSION
+
+      - name: Unit tests
+        working-directory: foo_js_panel
+        run: make test CXX_HOST=clang++-$LLVM_VERSION CC_HOST=clang-$LLVM_VERSION
+
+  build-mac:
+    needs: version
+    if: ${{ !cancelled() }}
+    runs-on: macos-latest
+    env:
+      JSP_VERSION: ${{ needs.version.outputs.next_version }}
+    steps:
+      - name: Checkout foo_js_panel
+        uses: actions/checkout@v7
+        with:
+          path: foo_js_panel
+          fetch-depth: 0
+
+      - name: Fetch foobar2000 SDK
+        uses: ./foo_js_panel/.github/actions/fetch-sdk
+
+      - name: Install ninja
+        run: command -v ninja >/dev/null || brew install ninja
+
+      - name: Unit tests (macOS)
+        working-directory: foo_js_panel
+        run: make test
+
+      - name: Build (universal)
+        working-directory: foo_js_panel
+        run: ./scripts/mac-build.sh
+
+      - name: Zip bundle
+        working-directory: foo_js_panel/build-mac
+        run: ditto -c -k --keepParent foo_js_panel.component foo_js_panel-mac.zip
+
+      - name: Upload foo_js_panel.component
+        uses: actions/upload-artifact@v7
+        with:
+          name: foo_js_panel-mac
+          path: foo_js_panel/build-mac/foo_js_panel-mac.zip
+          if-no-files-found: error
+          retention-days: 7

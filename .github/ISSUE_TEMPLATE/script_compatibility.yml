@@ -1,0 +1,32 @@
+name: Script compatibility
+description: A Spider Monkey Panel / JScript Panel script or theme doesn't load or draw like it does on Windows.
+labels: ["compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        JS Panel implements the Spider Monkey Panel API a piece at a time. When a script calls
+        something that isn't there yet, the panel shows the error (e.g. `utils.Glob is not a
+        function`). *View › JS Panel › Copy diagnostics* lists every panel's script and its
+        error; paste it below.
+  - type: input
+    id: script
+    attributes:
+      label: Script or theme
+      description: Name, version and where to get it (a link). Please don't attach themes whose license forbids redistribution.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What's wrong?
+      description: What the script should look like (a screenshot from Spider Monkey Panel on Windows helps) and what it looks like now.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Paste the output of **Copy diagnostics** here.
+    validations:
+      required: true
