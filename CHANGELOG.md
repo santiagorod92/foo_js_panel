@@ -3,6 +3,34 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.2.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.1.0...v1.2.0) (2026-10-31)
+
+### Highlights
+- **Eole's layout options work**: the skin `tools/eole_skin.py` builds now follows Eole's own
+  Columns UI layout, so ☰ › *Skin settings › Panel layout* (right playlist, left menu, playlist
+  panel and lyrics widths, filters, bottom playlist, track info) changes the window as in Eole.
+  The Playlists view gains Eole's three filters and playlist header, the control bar its small
+  cover, and the mini player shows the now-playing playlist. Run step 3 of *Running the Eole
+  theme* again to get it, then toggle ☰ › *Dark theme* off and on in each view.
+
+### Added
+- **`window.Name`**: the name given to `DefinePanel` (Eole tells its panels apart by it).
+- **Shutdown on macOS**: `WScript.Shell.Run('shutdown.exe /s')`, `/r` and `/h` shut down, restart
+  and sleep the Mac (Eole's scheduler: *Shutdown / Hibernate after current or playlist*).
+- **Eole skin**: the Now playing view's lyrics are Panels UI's *Lyric Show* and the Visualization
+  view is Panels UI's *Spectrum* (Eole's ESLyric and Shpeck don't exist on macOS).
+
+### Fixed
+- **Mini player button on macOS**: it switched to the mini layout and straight back. A window
+  shrunk to its maximum size counted as maximized; now only a window that fills the screen does.
+- **`window.IsVisible`** was always true; it now follows the host, which hides panels outside the
+  current view. Eole's hidden playlist answered for the visible one and saved the full layout's
+  height as the mini player's, so the mini player opened as tall as the screen.
+- **Mini player size on Windows**: `UIHacks` size limits counted the window frame and the menu
+  bar, so the mini player lost their height on every switch until it was one row tall. Limits
+  now apply to the content area on both platforms.
+- **Menus on macOS** show a Windows `&&` as `&` and drop `&` accelerators.
+
 ## [1.1.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.0.0...v1.1.0) (2026-10-31)
 
 ### Highlights

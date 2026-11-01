@@ -12,11 +12,15 @@ ROLES = [
     ('Filter', 'WSHfilter.js', 0),
     ('LibraryTree', 'WSHlibrary_tree.js', 0),
     ('Browser', 'WSHgraphicbrowser_trackinfos.js', 0),
-    ('Tracks', 'WSHsmoothplaylist_trackinfos.js', 0),
-    ('Playlist', 'WSHsmoothplaylist_trackinfos.js', 1),
     ('Playlists', 'WSHsmoothplaylistmanager.js', 0),
+    ('PlaylistFilter1', 'WSHfilter.js', 1),
+    ('PlaylistFilter2', 'WSHfilter.js', 2),
+    ('PlaylistFilter3', 'WSHfilter.js', 3),
+    ('PlaylistHeader', 'WSHplaylistheader.js', 0),
+    ('BottomPlaylist', 'WSHsmoothplaylist_trackinfos.js', 0),
     ('Biography', 'SMPbiography.js', 0),
-    ('NowPlaying', 'WSHnowplaying.js', 0),
+    ('TrackInfos', 'WSHnowplaying.js', 0),
+    ('NowPlayingPlaylist', 'WSHsmoothplaylist_trackinfos.js', 1),
 ]
 
 ADAPTER = r'''
@@ -88,44 +92,117 @@ ARTIST_IMAGES = r'''
 
 FULL, MINI = 0, 1
 LIBRARY, PLAYLISTS, NOW_PLAYING, VISUALIZATION = 0, 1, 2, 3
-
-TOP, BOTTOM, SIDE, RIGHT = 70, 70, 210, 320
-
-
-def when(layout, view, panel):
-    inner = panel if view is None else '$ifequal($add(0,$getpvar(eole.mainpanel)),%d,%s,)' % (view, panel)
-    return '$ifequal($add(0,$getpvar(eole.layout)),%d,%s,)' % (layout, inner)
+HEADER = 40
 
 
-def tree(on, panel):
-    return '$ifequal($add(0,$getpvar(eole.librarytree)),1,%s,%s)' % ((panel, '') if on else ('', panel))
+def var(name):
+    return '$add(0,$getpvar(eole.%s))' % name
 
 
-def place(name, x, y, w, h):
-    return '$panel(%s,JS Panel,%s,%s,%s,%s)' % (name, x, y, w, h)
+def add(a, b):
+    return '$add(%s,%s)' % (a, b)
+
+
+def sub(a, b):
+    return '$sub(%s,%s)' % (a, b)
+
+
+def per_view(prefix):
+    return '$select($add(%s,1),%s)' % (var('mainpanel'), ','.join(var(prefix + v) for v in ('lib', 'playlist', 'bio', 'visu')))
+
+
+def when(cond, value, text):
+    return '$ifequal(%s,%s,%s,)' % (cond, value, text)
+
+
+def unless(cond, value, text):
+    return '$ifequal(%s,%s,,%s)' % (cond, value, text)
+
+
+def view(layout, v, text):
+    inner = text if v is None else when(var('mainpanel'), v, text)
+    return when(var('layout'), layout, inner)
+
+
+def place(name, x, y, w, h, kind='JS Panel'):
+    return '$panel(%s,%s,%s,%s,%s,%s)' % (name, kind, x, y, w, h)
+
+
+def get(name):
+    return '$get(%s)' % name
 
 
 def layout_lines():
-    mid_h = '$eval(%%_height%% - %d)' % (TOP + BOTTOM)
-    lines = [
-        '$ifequal($add(0,$getpvar(hidetitlebar)),1,$windowstyle(hidetitlebar),$windowstyle(showtitlebar))',
-        '$drawrect(0,0,%_width%,%_height%,brushcolor-24-25-30 pencolor-null)',
-        place('TitleBar', 0, 0, '%_width%', TOP),
-        place('Controls', 0, '$eval(%%_height%% - %d)' % BOTTOM, '%_width%', BOTTOM),
-        when(MINI, None, place('Cover', 0, TOP, '%_width%', mid_h)),
-        when(FULL, LIBRARY, tree(False, place('Filter', 0, TOP, SIDE, mid_h))),
-        when(FULL, LIBRARY, tree(True, place('LibraryTree', 0, TOP, SIDE, mid_h))),
-        when(FULL, LIBRARY, place('Browser', SIDE, TOP, '$eval(%%_width%% - %d)' % (SIDE + RIGHT), mid_h)),
-        when(FULL, LIBRARY, place('Cover', '$eval(%%_width%% - %d)' % RIGHT, TOP, RIGHT, 330)),
-        when(FULL, LIBRARY, place('Tracks', '$eval(%%_width%% - %d)' % RIGHT, TOP + 330, RIGHT,
-                                  '$eval(%%_height%% - %d)' % (TOP + BOTTOM + 330))),
-        when(FULL, PLAYLISTS, place('Playlists', 0, TOP, SIDE, mid_h)),
-        when(FULL, PLAYLISTS, place('Playlist', SIDE, TOP, '$eval(%%_width%% - %d)' % (SIDE + RIGHT), mid_h)),
-        when(FULL, PLAYLISTS, place('Cover', '$eval(%%_width%% - %d)' % RIGHT, TOP, RIGHT, mid_h)),
-        when(FULL, NOW_PLAYING, place('Cover', 0, TOP, '$eval(%_width% / 2)', mid_h)),
-        when(FULL, NOW_PLAYING, place('Biography', '$eval(%_width% / 2)', TOP, '$eval(%_width% - %_width% / 2)', mid_h)),
-        when(FULL, VISUALIZATION, place('NowPlaying', 0, TOP, '%_width%', mid_h)),
+    W, H = '%_width%', '%_height%'
+    defs = [
+        ('top', '$ifequal(%s,1,64,$select(%s,64,36,50))' % (var('layout'), add(var('compacttitlebar'), 1))),
+        ('ctl', '$ifequal(%s,1,$ifequal(%s,0,43,51),$ifequal(%s,0,72,$ifequal(%s,0,47,54)))' % (
+            var('layout'), var('showtrackinfosmall'), var('minicontrolbar'), var('showtrackinfobig'))),
+        ('mid', sub(sub(H, get('top')), get('ctl'))),
+        ('bar_y', sub(H, get('ctl'))),
+        ('rpw', var('rightplaylistwidth')),
+        ('np', per_view('nowplaying')),
+        ('ti', per_view('trackinfos')),
+        ('main_w', '$ifequal(%s,0,%s,%s)' % (get('np'), W, sub(W, get('rpw')))),
+        ('right_x', sub(W, get('rpw'))),
+        ('ti_h', '$min(%s,$min($div(%s,2),$ifequal(%s,0,%s,%s)))' % (get('mid'), H, var('trackinfostext'), get('rpw'), add(get('rpw'), 41))),
+        ('small_cover', '$ifequal(%s,0,%s,%s)' % (var('layout'), var('coverpanelbig'), var('coverpanelmini'))),
+        ('dark', '$ifequal(%s,1,%s,$select($add(%s,1),%s,%s,$ifequal(%s,1,1,%s),%s))' % (
+            var('layout'), var('darkmini'), var('mainpanel'), var('darklib'), var('darkplaylist'),
+            var('darkbiostick'), var('darkbio'), var('darkvisu'))),
+        ('lfw', var('libraryfilterwidth')),
+        ('ppw', var('playlistpanelwidth')),
+        ('pl_w', sub(get('main_w'), get('ppw'))),
+        ('fp', var('filterspanel')),
+        ('f_h', '$select(%s,0,$mul($div(%s,10),2),$mul($div(%s,10),3),$mul($div(%s,5),2),$mul($div(%s,5),3),%s)' % (
+            add(get('fp'), 1), get('mid'), get('mid'), get('mid'), get('mid'), get('mid'))),
+        ('filters', add(add('$mul(%s,4)' % var('filter1'), '$mul(%s,2)' % var('filter2')), var('filter3'))),
+        ('half', '$div(%s,2)' % get('pl_w')),
+        ('third', '$div(%s,3)' % get('pl_w')),
+        ('ly', var('lyrics')),
+        ('ly_w', '$muldiv(%s,$ifequal(%s,10,1,$mul(%s,10)),100)' % (get('main_w'), get('ly'), get('ly'))),
     ]
+    top, ctl, mid, bar_y, rpw = get('top'), get('ctl'), get('mid'), get('bar_y'), get('rpw')
+    main_w, right_x, ti_h, ti = get('main_w'), get('right_x'), get('ti_h'), get('ti')
+    lines = ['$puts(%s,%s)' % d for d in defs] + [
+        '$ifequal($add(0,$getpvar(hidetitlebar)),1,$windowstyle(hidetitlebar),$windowstyle(showtitlebar))',
+        '$ifequal(%s,1,$drawrect(0,0,%s,%s,brushcolor-30-30-30 pencolor-null),$drawrect(0,0,%s,%s,brushcolor-255-255-255 pencolor-null))' % (
+            get('dark'), W, H, W, H),
+        place('TitleBar', 0, 0, W, top),
+        when(get('small_cover'), 1, place('Cover', 0, bar_y, ctl, ctl)),
+        '$ifequal(%s,1,%s,%s)' % (get('small_cover'), place('Controls', ctl, bar_y, sub(W, ctl), ctl), place('Controls', 0, bar_y, W, ctl)),
+        view(MINI, None, place('NowPlayingPlaylist', 0, top, W, sub(mid, 1))),
+    ]
+    right = [
+        when(ti, 0, place('NowPlayingPlaylist', right_x, top, rpw, mid)),
+        when(ti, 1, place('TrackInfos', right_x, top, rpw, ti_h) + place('NowPlayingPlaylist', right_x, add(top, ti_h), rpw, sub(mid, ti_h))),
+        when(ti, 2, place('NowPlayingPlaylist', right_x, top, rpw, sub(mid, ti_h)) + place('TrackInfos', right_x, sub(bar_y, ti_h), rpw, ti_h)),
+    ]
+    lines += [view(FULL, None, unless(get('np'), 0, r)) for r in right]
+    lfw = get('lfw')
+    side = '$ifequal(%s,1,%s,%s)' % (var('librarytree'), place('LibraryTree', 0, top, lfw, mid), place('Filter', 0, top, lfw, mid))
+    lines.append(view(FULL, LIBRARY, '$ifequal(%s,0,%s,%s)' % (
+        var('libraryfilter'), place('Browser', 0, top, main_w, mid), side + place('Browser', lfw, top, sub(main_w, lfw), mid))))
+    ppw, pl_w, f_h, half, third = get('ppw'), get('pl_w'), get('f_h'), get('half'), get('third')
+    lines.append(view(FULL, PLAYLISTS, place('Playlists', 0, top, ppw, mid)))
+    splits = {
+        0: [(3, '0', pl_w)], 1: [(3, '0', pl_w)], 2: [(2, '0', pl_w)],
+        3: [(2, '0', half), (3, half, sub(pl_w, half))],
+        4: [(1, '0', pl_w)],
+        5: [(1, '0', half), (3, half, sub(pl_w, half))],
+        6: [(1, '0', half), (2, half, sub(pl_w, half))],
+        7: [(1, '0', third), (2, third, third), (3, '$mul(%s,2)' % third, sub(pl_w, '$mul(%s,2)' % third))],
+    }
+    for k, parts in splits.items():
+        panels = ''.join(place('PlaylistFilter%d' % n, add(ppw, x), top, w, f_h) for n, x, w in parts)
+        lines.append(view(FULL, PLAYLISTS, unless(get('fp'), 0, when(get('filters'), k, panels))))
+    lines.append(view(FULL, PLAYLISTS, unless(get('fp'), 5, place('PlaylistHeader', ppw, add(top, f_h), pl_w, HEADER) +
+                                               place('BottomPlaylist', ppw, add(add(top, f_h), HEADER), pl_w, sub(sub(mid, f_h), HEADER)))))
+    ly, ly_w = get('ly'), get('ly_w')
+    split = place('Biography', 0, top, sub(main_w, ly_w), mid) + place('Lyrics', sub(main_w, ly_w), top, ly_w, mid, 'Lyric Show')
+    lines.append(view(FULL, NOW_PLAYING, '$ifequal(%s,0,%s,$ifequal(%s,11,%s,%s))' % (
+        ly, place('Biography', 0, top, main_w, mid), ly, place('Lyrics', 0, top, main_w, mid, 'Lyric Show'), split)))
+    lines.append(view(FULL, VISUALIZATION, place('Spectrum', 0, top, main_w, mid, 'Spectrum')))
     return lines
 
 

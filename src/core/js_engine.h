@@ -205,6 +205,7 @@ public:
     virtual bool panels_ui_variable(const std::string&, std::string&) { return false; }
     virtual void set_panels_ui_variable(const std::string&, const std::string&) {}
     virtual bool panels_ui_action(const std::string&) { return false; }
+    virtual bool visible() { return true; }
     virtual int window_state() { return 0; }
     virtual void set_window_state(int) {}
     virtual bool fullscreen() { return false; }

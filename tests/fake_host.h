@@ -391,6 +391,8 @@ struct FakeHost : jsp::JsHost {
         puiActions.push_back(a);
         return true;
     }
+    bool shown = true;
+    bool visible() override { return shown; }
     int window_state() override { return winState; }
     void set_window_state(int s) override { winState = s; windowCalls.push_back("state " + std::to_string(s)); }
     bool fullscreen() override { return full; }

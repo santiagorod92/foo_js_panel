@@ -1,8 +1,10 @@
 #pragma once
 #include "gfx/canvas.h"
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace jsp {
 
@@ -106,6 +108,43 @@ inline int mac_key_to_vk(int keyCode, char32_t ch) {
     if (ch >= 'a' && ch <= 'z') return (int)(ch - 'a' + 'A');
     if ((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')) return (int)ch;
     return 0;
+}
+
+enum class PowerAction { None, Shutdown, Restart, Sleep };
+
+inline PowerAction windows_power_command(const std::string& command) {
+    std::vector<std::string> words;
+    std::string word;
+    for (char ch : command + " ") {
+        if (ch == ' ' || ch == '"') {
+            if (!word.empty()) words.push_back(word);
+            word.clear();
+        } else {
+            word += (char)std::tolower((unsigned char)ch);
+        }
+    }
+    if (words.empty()) return PowerAction::None;
+    std::string file = words[0].substr(words[0].find_last_of("/\\") + 1);
+    if (file != "shutdown" && file != "shutdown.exe") return PowerAction::None;
+    PowerAction action = PowerAction::None;
+    for (size_t i = 1; i < words.size(); ++i) {
+        const std::string& w = words[i];
+        if (w.size() != 2 || (w[0] != '/' && w[0] != '-')) continue;
+        if (w[1] == 's') action = PowerAction::Shutdown;
+        else if (w[1] == 'r') action = PowerAction::Restart;
+        else if (w[1] == 'h') action = PowerAction::Sleep;
+    }
+    return action;
+}
+
+inline std::string menu_label(const std::string& text) {
+    std::string out;
+    const std::string label = text.substr(0, text.find('\t'));
+    for (size_t i = 0; i < label.size(); ++i) {
+        if (label[i] != '&') out += label[i];
+        else if (i + 1 < label.size() && label[i + 1] == '&') out += label[++i];
+    }
+    return out;
 }
 
 inline unsigned mac_char_to_wm_char(char32_t ch, bool command) {

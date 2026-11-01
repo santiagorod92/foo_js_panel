@@ -713,6 +713,23 @@ TEST("keys: on_key_down gets the virtual key and reports whether it was handled,
     CHECK(!none.key_down(13));
 }
 
+TEST("shell: Windows shutdown commands map to a power action") {
+    CHECK(windows_power_command("shutdown.exe /s /t 00") == PowerAction::Shutdown);
+    CHECK(windows_power_command("shutdown.exe /h") == PowerAction::Sleep);
+    CHECK(windows_power_command("C:/Windows/System32/shutdown.exe /r") == PowerAction::Restart);
+    CHECK(windows_power_command("\"shutdown\" -s") == PowerAction::Shutdown);
+    CHECK(windows_power_command("shutdown.exe /a") == PowerAction::None);
+    CHECK(windows_power_command("notepad.exe /s") == PowerAction::None);
+    CHECK(windows_power_command("") == PowerAction::None);
+}
+
+TEST("menus: Windows menu text becomes a plain label") {
+    CHECK_EQ(menu_label("Covers && Memory usage"), std::string("Covers & Memory usage"));
+    CHECK_EQ(menu_label("&File"), std::string("File"));
+    CHECK_EQ(menu_label("Play\tCtrl+P"), std::string("Play"));
+    CHECK_EQ(menu_label("A&&&B"), std::string("A&B"));
+}
+
 TEST("keys: macOS key codes map to Windows virtual keys") {
     CHECK_EQ(mac_key_to_vk(36, '\r'), 0x0D);
     CHECK_EQ(mac_key_to_vk(76, 3), 0x0D);
@@ -829,11 +846,15 @@ TEST("window: instance info, script info, sizes, colours, fonts, tooltip and pro
     CHECK(e.load("window.DefineScript('Eole', { author: 'me', version: '2' }); window.DlgCode = 4; window.MinWidth = 50;"
                  "const tt = window.CreateTooltip('Segoe UI', 12); tt.Text = 'x'; tt.Activate();"
                  "const p = fb.CreateProfiler('t'); p.Reset();"
-                 "console.log(window.InstanceType, window.IsVisible, window.IsTransparent, window.ScriptInfo.Name,"
+                 "console.log(window.InstanceType, window.IsVisible, window.IsTransparent, window.ScriptInfo.Name, window.Name,"
                  " window.ScriptInfo.Author, window.ScriptInfo.Version, window.DlgCode, window.MinWidth,"
                  " (window.GetColourDUI(1) >>> 0).toString(16), window.GetFontDUI(3).Name, window.Tooltip.Text, p.Time >= 0,"
                  " window.JsMemoryStats.TotalMemoryLimit === window.MemoryLimit, window.TotalMemoryUsage > 0);", ""));
-    CHECK_EQ(host.console_lines.back(), std::string("1 true false Eole me 2 4 50 ff1e1e1e Segoe UI x true true true"));
+    CHECK_EQ(host.console_lines.back(), std::string("1 true false Eole Eole me 2 4 50 ff1e1e1e Segoe UI x true true true"));
+    host.shown = false;
+    JsEngine hidden(host);
+    CHECK(hidden.load("console.log(window.IsVisible);", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("false"));
 }
 
 TEST("fb: paths, volume, flags, menu and context commands, queries, components") {

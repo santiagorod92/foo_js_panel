@@ -249,6 +249,7 @@ public:
     int message_box(const std::string& text, const std::string& caption, int type) override;
     int window_state() override;
     void set_window_state(int state) override;
+    bool visible() override;
     bool fullscreen() override;
     void set_fullscreen(bool on) override;
     void set_window_limits(int minW, int minH, int maxW, int maxH) override;
@@ -468,8 +469,7 @@ NSMenu* build_menu(const jsp::Menu& items, FooJsPanelMenuTarget* target) {
             [m addItem:[NSMenuItem separatorItem]];
             continue;
         }
-        const std::string title = it.text.substr(0, it.text.find('\t'));
-        NSMenuItem* mi = [[NSMenuItem alloc] initWithTitle:ns(title) action:it.submenu ? nil : @selector(picked:) keyEquivalent:@""];
+        NSMenuItem* mi = [[NSMenuItem alloc] initWithTitle:ns(jsp::menu_label(it.text)) action:it.submenu ? nil : @selector(picked:) keyEquivalent:@""];
         mi.target = target;
         mi.tag = it.id;
         mi.enabled = !it.disabled;
@@ -506,9 +506,14 @@ void MacSurface::set_cursor(int idc) {
     [cursor set];
 }
 
+static bool maximized(NSWindow* w) {
+    const NSRect screen = w.screen ? w.screen.visibleFrame : NSZeroRect;
+    return w.zoomed && NSWidth(w.frame) >= NSWidth(screen) - 1 && NSHeight(w.frame) >= NSHeight(screen) - 1;
+}
+
 int MacSurface::window_state() {
     NSWindow* w = view.window;
-    return !w ? 0 : w.miniaturized ? 1 : w.zoomed ? 2 : 0;
+    return !w ? 0 : w.miniaturized ? 1 : maximized(w) ? 2 : 0;
 }
 
 void MacSurface::set_window_state(int state) {
@@ -519,7 +524,7 @@ void MacSurface::set_window_state(int state) {
         return;
     }
     if (w.miniaturized) [w deminiaturize:nil];
-    if ((state == 2) != (bool)w.zoomed) [w zoom:nil];
+    if ((state == 2) != maximized(w)) [w zoom:nil];
 }
 
 bool MacSurface::in_caption(NSEvent* e) {
@@ -529,6 +534,10 @@ bool MacSurface::in_caption(NSEvent* e) {
     NSPoint p = [content convertPoint:e.locationInWindow fromView:nil];
     if (!content.isFlipped) p.y = NSHeight(content.bounds) - p.y;
     return p.x >= caption.x && p.x < caption.x + caption.w && p.y >= caption.y && p.y < caption.y + caption.h;
+}
+
+bool MacSurface::visible() {
+    return view.window && !view.isHiddenOrHasHiddenAncestor;
 }
 
 bool MacSurface::fullscreen() {
@@ -546,7 +555,7 @@ void MacSurface::set_window_limits(int minW, int minH, int maxW, int maxH) {
     if (!w) return;
     w.contentMinSize = NSMakeSize(minW > 0 ? minW : 100, minH > 0 ? minH : 100);
     w.contentMaxSize = NSMakeSize(maxW > 0 ? maxW : FLT_MAX, maxH > 0 ? maxH : FLT_MAX);
-    if (w.zoomed || fullscreen()) return;
+    if (maximized(w) || fullscreen()) return;
     NSRect content = [w contentRectForFrameRect:w.frame];
     NSSize s = content.size;
     if (minW > 0) s.width = std::max<CGFloat>(s.width, minW);
@@ -653,6 +662,13 @@ std::string clipboard_text() {
 }
 
 bool shell_run(const std::string& command) {
+    static const char* const power_scripts[] = { nullptr, "shut down", "restart", "sleep" };
+    if (const char* verb = power_scripts[(int)jsp::windows_power_command(command)]) {
+        NSString* source = [NSString stringWithFormat:@"tell application \"System Events\" to %s", verb];
+        NSDictionary* error = nil;
+        [[[NSAppleScript alloc] initWithSource:source] executeAndReturnError:&error];
+        return error == nil;
+    }
     std::string cmd = command;
     while (!cmd.empty() && (cmd.front() == ' ' || cmd.front() == '"')) cmd.erase(0, 1);
     const auto q = cmd.find('"');

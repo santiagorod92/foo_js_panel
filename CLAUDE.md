@@ -237,6 +237,22 @@ anything repo-specific stays in the repo's own sections.
   rect in main-window client coordinates; a left-down there drags the window
   (`WM_NCLBUTTONDOWN HTCAPTION` / `performWindowDragWithEvent`) instead of reaching the script.
   Unknown ProgIDs throw, as in JScript.
+- **`UIHacks.MainWindowState` on macOS:** 2 (maximized) only when the window is zoomed *and* fills
+  the screen's visible frame. `NSWindow.zoomed` alone is also true for a window shrunk to its
+  `contentMaxSize` (the standard frame is capped by it), and Eole's `on_size` would read that as
+  maximized and leave mini mode right after entering it.
+- **`UIHacks.MinSize` / `MaxSize`** clamp the main window's content area (macOS `contentRect`,
+  Windows client rect, so without the frame and Panels UI's menu bar): Eole computes them from
+  its own panel heights and saves the mini playlist height back, so a frame counted in would
+  shrink it on every round trip.
+- **Eole skin layout:** `tools/eole_skin.py` writes `main.txt` from the FCL's Panel Stack Splitter
+  scripts (one `$puts` per PSS global, panels per Eole state through the `eole.*` pvars the
+  adapter mirrors), with the original panel names (`BottomPlaylist`, `NowPlayingPlaylist`,
+  `TrackInfos`, …): Eole branches on `window.Name`. ESLyric and Shpeck become Panels UI's `Lyric
+  Show` and `Spectrum`. The mini playlist is 1 px shorter than its area, as CUI's splitter, or
+  Eole's saved mini height grows by 1 px per round trip.
+- **`window.IsVisible`** is the host window's visibility: Panels UI hides panels outside the
+  current view without destroying them, and Eole only lets the visible one answer notifications.
 - **Theme checks run third-party code:** `make theme-check` executes a theme's scripts, so
   `render_script --sandbox PROFILE` refuses every write, move or delete outside the theme's
   profile (`JsHost::may_write`, checked by every FSO/`utils` write) and the renderer has no shell,

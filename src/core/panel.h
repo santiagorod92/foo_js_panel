@@ -26,6 +26,7 @@ public:
     virtual void set_cursor(int idc) = 0;
     virtual bool input_box(const std::string& prompt, const std::string& caption, std::string& value) = 0;
     virtual int message_box(const std::string& text, const std::string& caption, int type) = 0;
+    virtual bool visible() = 0;
     virtual int window_state() = 0;
     virtual void set_window_state(int state) = 0;
     virtual bool fullscreen() = 0;
@@ -174,6 +175,7 @@ public:
     int window_state() override { return m_surface.window_state(); }
     void set_window_state(int state) override { m_surface.set_window_state(state); }
     bool fullscreen() override { return m_surface.fullscreen(); }
+    bool visible() override { return m_surface.visible(); }
     void set_fullscreen(bool on) override { m_surface.set_fullscreen(on); }
     void set_window_limits(int minW, int minH, int maxW, int maxH) override { m_surface.set_window_limits(minW, minH, maxW, maxH); }
     void set_caption(const pui::gfx::Rect& r) override { m_surface.set_caption(r); }

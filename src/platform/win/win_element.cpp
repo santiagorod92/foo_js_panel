@@ -108,6 +108,7 @@ public:
         return win::input_box(hwnd, caption, prompt, value);
     }
     HWND root() const { return hwnd ? GetAncestor(hwnd, GA_ROOT) : nullptr; }
+    bool visible() override { return hwnd && IsWindowVisible(hwnd); }
     int window_state() override {
         HWND r = root();
         return !r ? 0 : IsIconic(r) ? 1 : IsZoomed(r) ? 2 : 0;
@@ -141,14 +142,17 @@ public:
     void set_window_limits(int minW, int minH, int maxW, int maxH) override {
         HWND r = root();
         if (!r || IsIconic(r) || IsZoomed(r) || full) return;
-        RECT rc;
+        RECT rc, client;
         GetWindowRect(r, &rc);
-        int w = rc.right - rc.left, h = rc.bottom - rc.top;
+        GetClientRect(r, &client);
+        const int cw = client.right - client.left, ch = client.bottom - client.top;
+        int w = cw, h = ch;
         if (minW > 0) w = std::max(w, minW);
         if (minH > 0) h = std::max(h, minH);
         if (maxW > 0) w = std::min(w, maxW);
         if (maxH > 0) h = std::min(h, maxH);
-        if (w != rc.right - rc.left || h != rc.bottom - rc.top) SetWindowPos(r, nullptr, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        if (w != cw || h != ch)
+            SetWindowPos(r, nullptr, 0, 0, rc.right - rc.left + w - cw, rc.bottom - rc.top + h - ch, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
     pui::gfx::Rect caption{};
     void set_caption(const pui::gfx::Rect& r) override { caption = r; }

@@ -2426,7 +2426,7 @@ JSValue window_host(JSContext* ctx, JSValueConst, int, JSValueConst*) {
     return JS_UNDEFINED;
 }
 
-JSValue window_true(JSContext*, JSValueConst) { return JS_TRUE; }
+JSValue window_IsVisible(JSContext* ctx, JSValueConst) { return JS_NewBool(ctx, I(ctx)->host.visible()); }
 JSValue window_false(JSContext*, JSValueConst) { return JS_FALSE; }
 JSValue window_InstanceType(JSContext* ctx, JSValueConst) { return JS_NewInt32(ctx, 1); }
 
@@ -2439,10 +2439,14 @@ JSValue window_SetInt(JSContext* ctx, JSValueConst, JSValueConst v) {
     return JS_UNDEFINED;
 }
 
+std::string panel_name(JsEngine::Impl* e) { return e->scriptName.empty() ? std::string("JS Panel #") + std::to_string(e->windowId) : e->scriptName; }
+
+JSValue window_Name(JSContext* ctx, JSValueConst) { return new_string(ctx, panel_name(I(ctx))); }
+
 JSValue window_ScriptInfo(JSContext* ctx, JSValueConst) {
     JsEngine::Impl* e = I(ctx);
     JSValue o = JS_NewObject(ctx);
-    set_str(ctx, o, "Name", e->scriptName.empty() ? std::string("JS Panel #") + std::to_string(e->windowId) : e->scriptName);
+    set_str(ctx, o, "Name", panel_name(e));
     set_str(ctx, o, "Author", e->scriptAuthor);
     set_str(ctx, o, "Version", e->scriptVersion);
     return o;
@@ -2514,7 +2518,7 @@ const JSCFunctionListEntry kWindowFuncs[] = {
     JS_CFUNC_DEF("ShowProperties", 0, noop),
     JS_CFUNC_DEF("SetCursor", 1, window_SetCursor),
     JS_CFUNC_DEF("CreatePopupMenu", 0, window_CreatePopupMenu),
-    JS_CGETSET_DEF("IsVisible", window_true, nullptr),
+    JS_CGETSET_DEF("IsVisible", window_IsVisible, nullptr),
     JS_CGETSET_DEF("IsTransparent", window_false, nullptr),
     JS_CGETSET_DEF("InstanceType", window_InstanceType, nullptr),
     JS_CGETSET_DEF("DlgCode", window_GetInt<&JsEngine::Impl::dlgCode>, window_SetInt<&JsEngine::Impl::dlgCode>),
@@ -2523,6 +2527,7 @@ const JSCFunctionListEntry kWindowFuncs[] = {
     JS_CGETSET_DEF("MaxWidth", window_GetInt<&JsEngine::Impl::maxW>, window_SetInt<&JsEngine::Impl::maxW>),
     JS_CGETSET_DEF("MaxHeight", window_GetInt<&JsEngine::Impl::maxH>, window_SetInt<&JsEngine::Impl::maxH>),
     JS_CGETSET_DEF("ScriptInfo", window_ScriptInfo, nullptr),
+    JS_CGETSET_DEF("Name", window_Name, nullptr),
     JS_CFUNC_DEF("DefineScript", 2, window_DefineScript),
     JS_CFUNC_DEF("DefinePanel", 2, window_DefineScript),
     JS_CGETSET_DEF("MemoryLimit", window_MemoryLimit, nullptr),
