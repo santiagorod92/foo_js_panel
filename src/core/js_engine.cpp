@@ -1413,6 +1413,8 @@ struct MenuData {
     struct Entry {
         MenuItem item;
         MenuPtr sub;
+        std::weak_ptr<MenuData> loop;
+        MenuPtr child() const { return sub ? sub : loop.lock(); }
     };
     std::vector<Entry> entries;
 };
@@ -1445,9 +1447,9 @@ Menu flatten(const MenuData& menu, int depth) {
     Menu out;
     for (const auto& e : menu.entries) {
         MenuItem m = e.item;
-        if (e.sub) {
+        if (const MenuPtr c = e.child()) {
             m.submenu = true;
-            if (depth < kMenuDepth) m.children = flatten(*e.sub, depth + 1);
+            if (depth < kMenuDepth) m.children = flatten(*c, depth + 1);
         }
         out.push_back(std::move(m));
     }
@@ -1465,9 +1467,10 @@ void for_each_item(Menu& items, F&& f) {
 template <typename F>
 void for_each_item(MenuData& menu, F&& f, int depth = 0) {
     for (auto& e : menu.entries) {
-        if (!e.item.separator && !e.item.submenu && !e.sub) f(e.item);
+        const MenuPtr c = e.child();
+        if (!e.item.separator && !e.item.submenu && !c) f(e.item);
         for_each_item(e.item.children, f);
-        if (e.sub && depth < kMenuDepth) for_each_item(*e.sub, f, depth + 1);
+        if (c && depth < kMenuDepth) for_each_item(*c, f, depth + 1);
     }
 }
 
@@ -1482,15 +1485,23 @@ JSValue menu_AppendMenuItem(JSContext* ctx, JSValueConst self, int argc, JSValue
     if (!m) return JS_EXCEPTION;
     const uint32_t flags = arg_u32(ctx, argc, argv, 0);
     if (flags & kMfPopup) return JS_ThrowTypeError(ctx, "AppendMenuItem: use AppendTo for submenus");
-    m->entries.push_back({ flags_item(flags, arg_int(ctx, argc, argv, 1), arg_str(ctx, argc, argv, 2)), nullptr });
+    m->entries.push_back({ flags_item(flags, arg_int(ctx, argc, argv, 1), arg_str(ctx, argc, argv, 2)), nullptr, {} });
     return JS_UNDEFINED;
 }
 
 JSValue menu_AppendMenuSeparator(JSContext* ctx, JSValueConst self, int, JSValueConst*) {
     MenuData* m = menu_or_throw(ctx, self);
     if (!m) return JS_EXCEPTION;
-    m->entries.push_back({ flags_item(kMfSeparator, 0, {}), nullptr });
+    m->entries.push_back({ flags_item(kMfSeparator, 0, {}), nullptr, {} });
     return JS_UNDEFINED;
+}
+
+bool menu_reaches(const MenuData& from, const MenuData* target, int depth = 0) {
+    if (&from == target) return true;
+    if (depth >= kMenuDepth) return false;
+    for (const auto& e : from.entries)
+        if (e.sub && menu_reaches(*e.sub, target, depth + 1)) return true;
+    return false;
 }
 
 JSValue menu_AppendTo(JSContext* ctx, JSValueConst self, int argc, JSValueConst* argv) {
@@ -1499,7 +1510,8 @@ JSValue menu_AppendTo(JSContext* ctx, JSValueConst self, int argc, JSValueConst*
     if (!m || !*m || !parent || !*parent) return JS_ThrowTypeError(ctx, "AppendTo: argument 1 is not a MenuObject");
     MenuItem item = flags_item(arg_u32(ctx, argc, argv, 1), 0, arg_str(ctx, argc, argv, 2));
     item.submenu = true;
-    (*parent)->entries.push_back({ item, *m });
+    if (menu_reaches(**m, parent->get())) (*parent)->entries.push_back({ item, nullptr, *m });
+    else (*parent)->entries.push_back({ item, *m, {} });
     return JS_UNDEFINED;
 }
 
@@ -1611,7 +1623,7 @@ JSValue manager_BuildMenu(JSContext* ctx, JSValueConst self, int argc, JSValueCo
     const int base = arg_int(ctx, argc, argv, 1, 1);
     const int count = arg_int(ctx, argc, argv, 2, -1);
     const int maxId = count < 0 ? -1 : mm->main ? base + count - 1 : count;
-    for (MenuItem& item : mm->source->build(base, maxId)) (*m)->entries.push_back({ std::move(item), nullptr });
+    for (MenuItem& item : mm->source->build(base, maxId)) (*m)->entries.push_back({ std::move(item), nullptr, {} });
     return JS_UNDEFINED;
 }
 
