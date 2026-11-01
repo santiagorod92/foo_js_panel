@@ -3,11 +3,13 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
+#include <variant>
 #include <vector>
 
 namespace jsp {
 
-enum class Playback { Play, Pause, PlayOrPause, Stop, Next, Prev };
+enum class Playback { Play, Pause, PlayOrPause, Stop, Next, Prev, Random };
 
 struct LibraryAlbum {
     std::string id, name, artist, artistId, coverArtId, created;
@@ -19,12 +21,58 @@ struct LibraryArtist {
     int albumCount = 0, songCount = 0;
 };
 
+struct ArtistInfo {
+    std::string id, biography, imageUrl, lastFmUrl;
+};
+using ArtistInfoDone = std::function<void(ArtistInfo info, std::string error)>;
+
 struct Track {
     virtual ~Track() = default;
 };
 using TrackPtr = std::shared_ptr<Track>;
 using Tracks = std::vector<TrackPtr>;
 using ArtDone = std::function<void(pui::gfx::ImagePtr image, std::string path)>;
+
+struct TrackInfo {
+    std::vector<std::pair<std::string, std::vector<std::string>>> meta;
+    std::vector<std::pair<std::string, std::string>> info;
+    double length = 0;
+    long long size = -1;
+};
+
+enum class Flag { StopAfterCurrent, CursorFollowPlayback, PlaybackFollowCursor };
+
+struct ItemLocation {
+    int playlist = -1, item = -1;
+};
+
+struct MenuItem {
+    std::string text;
+    int id = 0;
+    bool separator = false, submenu = false, checked = false, radio = false, disabled = false;
+    std::vector<MenuItem> children;
+};
+using Menu = std::vector<MenuItem>;
+
+class MenuSource {
+public:
+    virtual ~MenuSource() = default;
+    virtual Menu build(int baseId, int maxId) = 0;
+    virtual bool execute(int id) = 0;
+};
+using MenuSourcePtr = std::shared_ptr<MenuSource>;
+
+enum class ContextKind { Tracks, Playlist, NowPlaying };
+
+struct HttpRequest {
+    std::string method, url, body;
+    std::vector<std::string> headers;
+};
+struct HttpResponse {
+    int status = 0;
+    std::string text, error;
+};
+using HttpDone = std::function<void(HttpResponse)>;
 
 enum class LibraryState { Missing, NotConfigured, Ready };
 using AlbumsDone = std::function<void(std::vector<LibraryAlbum> albums, std::string error)>;
@@ -49,6 +97,7 @@ public:
     virtual LibraryState navidrome_state() { return LibraryState::Missing; }
     virtual void navidrome_albums(AlbumsDone done) { done({}, "foo_navidrome isn't installed"); }
     virtual void navidrome_play(bool, const std::string&, bool, bool) {}
+    virtual void navidrome_artist_info(const std::string&, ArtistInfoDone done) { done({}, "foo_navidrome isn't installed"); }
     virtual TrackPtr now_playing() { return nullptr; }
     virtual Tracks library_items() { return {}; }
     virtual std::string track_path(const TrackPtr&) { return {}; }
@@ -68,9 +117,110 @@ public:
     virtual void insert_playlist_items(int, int, const Tracks&, bool) {}
     virtual void execute_default_action(int, int) {}
     virtual bool key_pressed(int) { return false; }
+
+    virtual std::string load_properties() { return {}; }
+    virtual void save_properties(const std::string&) {}
+    struct NotifyItem {
+        Tracks tracks;
+        bool single = false;
+    };
+    virtual void notify_others(const std::string&, const std::string&, const std::vector<NotifyItem>&) {}
+    virtual void reload_script() {}
+    virtual void edit_script() {}
+    virtual std::string profile_path() { return {}; }
+    virtual std::string component_path() { return {}; }
+    virtual std::string foobar_path() { return {}; }
+    virtual std::string version() { return {}; }
+    virtual double volume() { return 0; }
+    virtual void set_volume(double) {}
+    virtual bool flag(Flag) { return false; }
+    virtual void set_flag(Flag, bool) {}
+    virtual bool run_main_menu_command(const std::string&) { return false; }
+    virtual bool run_context_command(const std::string&, const Tracks*) { return false; }
+    virtual void popup_message(const std::string&, const std::string&) {}
+    virtual TrackPtr focus_item() { return nullptr; }
+    virtual Tracks query_items(const Tracks&, const std::string&, std::string& error) {
+        error = "queries aren't available";
+        return {};
+    }
+    virtual bool in_library(const TrackPtr&) { return false; }
+    virtual std::string library_relative_path(const TrackPtr&) { return {}; }
+    virtual std::string path_sort_key(const TrackPtr& t) { return track_path(t); }
+    virtual bool has_component(const std::string&, bool) { return false; }
+    virtual void exit_app() {}
+    virtual TrackInfo track_info(const TrackPtr&) { return {}; }
+    virtual bool write_text_file(const std::string&, const std::string&) { return false; }
+
+    virtual int playlist_item_count(int) { return 0; }
+    virtual Tracks playlist_items(int, bool) { return {}; }
+    virtual std::vector<bool> playlist_selection(int) { return {}; }
+    virtual void set_playlist_selection(int, const std::vector<int>&, bool) {}
+    virtual void clear_playlist_selection(int) {}
+    virtual void remove_playlist_selection(int, bool) {}
+    virtual void move_playlist_selection(int, int) {}
+    virtual int playlist_focus(int) { return -1; }
+    virtual void set_playlist_focus(int, int) {}
+    virtual void ensure_visible(int, int) {}
+    virtual int create_playlist(int, const std::string&) { return -1; }
+    virtual int duplicate_playlist(int, const std::string&) { return -1; }
+    virtual bool remove_playlist(int, bool) { return false; }
+    virtual bool rename_playlist(int, const std::string&) { return false; }
+    virtual bool move_playlist(int, int) { return false; }
+    virtual bool playlist_is_auto(int) { return false; }
+    virtual bool playlist_is_locked(int) { return false; }
+    virtual int create_autoplaylist(int, const std::string&, const std::string&, const std::string&, int) { return -1; }
+    virtual void show_autoplaylist_ui(int) {}
+    virtual int playback_order() { return 0; }
+    virtual void set_playback_order(int) {}
+    virtual ItemLocation playing_location() { return {}; }
+    virtual bool sort_playlist(int, const std::string&, bool) { return false; }
+    virtual bool reorder_playlist(int, const std::vector<int>&) { return false; }
+    virtual void undo_backup(int) {}
+    virtual void queue_add(const TrackPtr&) {}
+    virtual void queue_add_playlist_item(int, int) {}
+    virtual void queue_flush() {}
+    virtual Tracks queue_items() { return {}; }
+
+    virtual int popup_menu(int, int, const Menu&) { return 0; }
+    virtual MenuSourcePtr context_menu(ContextKind, const Tracks&) { return nullptr; }
+    virtual MenuSourcePtr main_menu(const std::string&) { return nullptr; }
+    virtual void set_cursor(int) {}
+    virtual bool input_box(const std::string&, const std::string&, std::string&) { return false; }
+
+    virtual bool image_pixels(const pui::gfx::Image&, pui::gfx::Pixels&) { return false; }
+    virtual pui::gfx::ImagePtr image_from_pixels(const pui::gfx::Pixels&) { return nullptr; }
+    virtual std::unique_ptr<pui::gfx::Canvas> pixels_canvas(pui::gfx::Pixels&, double) { return nullptr; }
+    virtual bool save_png(const pui::gfx::Image&, const std::string&) { return false; }
+    virtual pui::gfx::ImagePtr album_art_sync(const TrackPtr&, int, std::string&) { return nullptr; }
+    virtual void load_image_async(const std::string& path, ArtDone done) { done(load_image(path), path); }
+
+    virtual void http_request(const HttpRequest&, HttpDone done) { done({ 0, {}, "no network" }); }
+    virtual HttpResponse http_request_sync(const HttpRequest&) { return { 0, {}, "no network" }; }
+    virtual bool shell_run(const std::string&) { return false; }
+    virtual std::string clipboard_text() { return {}; }
+    virtual bool set_clipboard_text(const std::string&) { return false; }
+    virtual int message_box(const std::string&, const std::string&, int) { return 1; }
+    virtual bool may_write(const std::string&) { return true; }
+    virtual bool panels_ui_available() { return false; }
+    virtual bool panels_ui_variable(const std::string&, std::string&) { return false; }
+    virtual void set_panels_ui_variable(const std::string&, const std::string&) {}
+    virtual bool panels_ui_action(const std::string&) { return false; }
+    virtual int window_state() { return 0; }
+    virtual void set_window_state(int) {}
+    virtual bool fullscreen() { return false; }
+    virtual void set_fullscreen(bool) {}
+    virtual void set_window_limits(int, int, int, int) {}
+    virtual void set_caption(const pui::gfx::Rect&) {}
+    using TagSet = std::vector<std::pair<std::string, std::vector<std::string>>>;
+    virtual bool update_tags(const Tracks&, const std::vector<TagSet>&) { return false; }
+    enum class SelectionMode { Tracks, PlaylistSelection, Playlist, Released };
+    virtual void ui_selection(SelectionMode, const Tracks&) {}
+    virtual Tracks get_ui_selection() { return {}; }
 };
 
-enum class Mouse { Move, LeftDown, LeftUp, LeftDouble, RightDown, RightUp, Leave };
+using Arg = std::variant<int, double, bool, std::string, TrackPtr, Tracks>;
+
+enum class Mouse { Move, LeftDown, LeftUp, LeftDouble, RightDown, RightUp, Leave, MiddleDown, MiddleUp, MiddleDouble };
 
 class JsEngine {
 public:
@@ -99,6 +249,9 @@ public:
     void playback_pause(bool paused);
     void playback_time(double t);
     void playback_starting(int cmd, bool paused);
+    bool invoke(const char* name, const std::vector<Arg>& args = {});
+    bool in_modal() const;
+    void notify_data(const std::string& name, const std::string& json, const std::vector<JsHost::NotifyItem>& items = {});
 
     struct Impl;
 

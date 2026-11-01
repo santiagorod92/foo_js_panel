@@ -4,6 +4,8 @@
 #include "core/js_api_util.h"
 #include "core/sample_script.h"
 #include <algorithm>
+#include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 
@@ -69,6 +71,39 @@ TEST("engine: GdiDrawText sets the font and maps flags") {
     e.paint(c);
     CHECK(has_op(c, "font Arial 14 bold"));
     CHECK(has_prefix(c, "text \"hi\" 0,0,50,20 f" + std::to_string(pui::gfx::kAlignCenter | pui::gfx::kVCenter | pui::gfx::kSingleLine)));
+}
+
+TEST("engine: GdiDrawText with DT_CALCRECT grows the box to the text, bottom or centre aligned like SMP") {
+    t::FakeHost host;
+    JsEngine e(host);
+    e.load("const f = gdi.Font('Arial', 14);"
+           "function on_paint(gr) { gr.GdiDrawText('a', f, 0xffffffff, 0, 30, 50, 4, 0x400 | 0x8);"
+           " gr.GdiDrawText('b', f, 0xffffffff, 0, 0, 50, 40, 0x400 | 0x4 | 0x20);"
+           " gr.GdiDrawText('c', f, 0xffffffff, 0, 0, 50, 40, 0x8 | 0x20); }", "");
+    t::RecordingCanvas c;
+    e.paint(c);
+    CHECK(has_prefix(c, "text \"a\" 0,22,50,12 f0"));
+    CHECK(has_prefix(c, "text \"b\" 0,14,50,12 f" + std::to_string(pui::gfx::kSingleLine)));
+    CHECK(has_prefix(c, "text \"c\" 0,28,50,12 f" + std::to_string(pui::gfx::kSingleLine)));
+}
+
+TEST("api: library relative paths use Windows separators, as SMP scripts split them on backslashes") {
+#ifdef _WIN32
+    CHECK_EQ(jsp::windows_separators("A\\B\\c.flac"), std::string("A\\B\\c.flac"));
+#else
+    CHECK_EQ(jsp::windows_separators("A/B/c.flac"), std::string("A\\B\\c.flac"));
+#endif
+}
+
+TEST("handles: OrderByPath sorts by the host's path key, so server tracks group by artist and album") {
+    t::FakeHost host;
+    host.libraryTracks = { t::track("navidrome://3"), t::track("navidrome://1"), t::track("/music/a.flac"), t::track("navidrome://2") };
+    host.sortKeys["navidrome://1"] = "navidrome://B\\X\\01";
+    host.sortKeys["navidrome://2"] = "navidrome://A\\Y\\01";
+    host.sortKeys["navidrome://3"] = "navidrome://B\\X\\02";
+    JsEngine e(host);
+    e.load("const l = fb.GetLibraryItems(); l.OrderByPath(); console.log(l.Convert().map(h => h.Path).join(' '));", "");
+    CHECK_EQ(host.console_lines.back(), std::string("/music/a.flac navidrome://2 navidrome://1 navidrome://3"));
 }
 
 TEST("engine: gdi.Font exposes Name, Size and Style") {
@@ -239,10 +274,9 @@ TEST("engine: gradients, lines, ellipses and round rects reach the canvas") {
     CHECK(has_op(c, "gradient 0,0,10,20 #000000>#ffffff"));
     CHECK(has_op(c, "fill_rect 0,0,1,2 #000000"));
     CHECK(has_op(c, "fill_rect 2,0,1,2 #ffffff"));
-    CHECK(has_op(c, "line"));
-    CHECK(has_op(c, "polygon"));
-    CHECK(has_op(c, "round_rect 0,0,10,8 5,4 #00ff00"));
-    CHECK(has_op(c, "round_rect 0,0,10,10 2,3 #0000ff"));
+    CHECK(std::count(c.ops.begin(), c.ops.end(), std::string("polygon")) >= 2);
+    CHECK(has_op(c, "round_rect 0,0,10,8 10,8 #00ff00"));
+    CHECK(has_op(c, "round_rect 0,0,10,10 4,6 #0000ff"));
     CHECK(has_op(c, "frame_rect 0,0,10,10 #ff0000"));
     CHECK(!e.failed());
 }
@@ -502,6 +536,18 @@ TEST("navidrome: availability follows the host") {
     }
 }
 
+TEST("navidrome: GetArtistInfoAsync resolves with the biography and image URL, rejects an unknown artist") {
+    t::FakeHost host;
+    host.library = jsp::LibraryState::Ready;
+    host.artistInfos["Anberlin"] = { "ar-1", "An American band.", "https://nd/share/img/a?size=600", "https://www.last.fm/music/Anberlin" };
+    JsEngine e(host);
+    e.load("navidrome.GetArtistInfoAsync('Anberlin').then(i => console.log(i.Id, i.Biography, i.ImageUrl, i.LastFmUrl));"
+           "navidrome.GetArtistInfoAsync('Nobody').then(() => console.log('no'), err => console.log('rejected', err.message));", "");
+    CHECK_EQ(host.console_lines.size(), (size_t)2);
+    CHECK_EQ(host.console_lines[0], std::string("ar-1 An American band. https://nd/share/img/a?size=600 https://www.last.fm/music/Anberlin"));
+    CHECK_EQ(host.console_lines[1], std::string("rejected no artist named \"Nobody\" on the server"));
+}
+
 TEST("navidrome: GetAlbumsAsync and GetArtistsAsync resolve with plain objects") {
     t::FakeHost host;
     host.library = LibraryState::Ready;
@@ -738,4 +784,694 @@ TEST("Panels UI templates: library_tree.js walks the tree with the arrows and pl
     CHECK(e.key_down(0x0D));
     CHECK_EQ(host.playlistItems[1].size(), (size_t)3);
     CHECK(!e.failed());
+}
+
+TEST("properties: GetProperty stores the default, SetProperty updates or deletes, saved once per callback") {
+    t::FakeHost host;
+    {
+        JsEngine e(host);
+        CHECK(e.load("const a = window.GetProperty('size', 12), b = window.GetProperty('name', 'x'), c = window.GetProperty('none');"
+                     "console.log(a, b, c, window.GetProperty('toString'));", ""));
+        CHECK_EQ(host.console_lines.back(), std::string("12 x null null"));
+        CHECK_EQ(host.propertySaves, 1);
+        CHECK_EQ(host.properties, std::string(R"({"size":12,"name":"x"})"));
+        e.load("function on_size() { window.SetProperty('size', 14); window.SetProperty('name', null); window.SetProperty('obj', { a: [1] }); }", "");
+        e.resize(10, 10);
+        CHECK_EQ(host.properties, std::string(R"({"size":14,"obj":{"a":[1]}})"));
+    }
+    JsEngine again(host);
+    again.load("console.log(window.GetProperty('size', 1), JSON.stringify(window.GetProperty('obj')), window.GetProperty('name'));", "");
+    CHECK_EQ(host.console_lines.back(), std::string("14 {\"a\":[1]} null"));
+    host.properties = "not json";
+    JsEngine broken(host);
+    broken.load("console.log(window.GetProperty('size', 3));", "");
+    CHECK_EQ(host.console_lines.back(), std::string("3"));
+}
+
+TEST("notify: NotifyOthers hands the host a JSON copy, on_notify_data gets it back as a value") {
+    t::FakeHost host;
+    JsEngine e(host);
+    e.load("window.NotifyOthers('sel', { ids: [1, 2], name: 'a' }); window.NotifyOthers('ping');"
+           "function on_notify_data(name, info) { console.log(name, JSON.stringify(info)); }", "");
+    CHECK(host.notes.size() == 2);
+    CHECK_EQ(host.notes[0].first, std::string("sel"));
+    CHECK_EQ(host.notes[0].second, std::string(R"({"ids":[1,2],"name":"a"})"));
+    CHECK_EQ(host.notes[1].second, std::string());
+    e.notify_data("sel", host.notes[0].second);
+    CHECK_EQ(host.console_lines.back(), std::string(R"(sel {"ids":[1,2],"name":"a"})"));
+    e.notify_data("ping", "");
+    CHECK_EQ(host.console_lines.back(), std::string("ping undefined"));
+}
+
+TEST("window: instance info, script info, sizes, colours, fonts, tooltip and profiler stubs") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("window.DefineScript('Eole', { author: 'me', version: '2' }); window.DlgCode = 4; window.MinWidth = 50;"
+                 "const tt = window.CreateTooltip('Segoe UI', 12); tt.Text = 'x'; tt.Activate();"
+                 "const p = fb.CreateProfiler('t'); p.Reset();"
+                 "console.log(window.InstanceType, window.IsVisible, window.IsTransparent, window.ScriptInfo.Name,"
+                 " window.ScriptInfo.Author, window.ScriptInfo.Version, window.DlgCode, window.MinWidth,"
+                 " (window.GetColourDUI(1) >>> 0).toString(16), window.GetFontDUI(3).Name, window.Tooltip.Text, p.Time >= 0,"
+                 " window.JsMemoryStats.TotalMemoryLimit === window.MemoryLimit, window.TotalMemoryUsage > 0);", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("1 true false Eole me 2 4 50 ff1e1e1e Segoe UI x true true true"));
+}
+
+TEST("fb: paths, volume, flags, menu and context commands, queries, components") {
+    t::FakeHost host;
+    host.libraryTracks = { t::track("/a/1"), t::track("/b/2") };
+    JsEngine e(host);
+    CHECK(e.load("fb.Volume = -10; fb.VolumeDown(); fb.StopAfterCurrent = true; fb.Random();"
+                 "const lib = fb.GetLibraryItems();"
+                 "console.log(fb.ProfilePath, fb.Volume, fb.StopAfterCurrent, fb.CursorFollowPlayback,"
+                 " fb.RunMainMenuCommand('View/Console'), fb.RunMainMenuCommand('Nope'),"
+                 " fb.RunContextCommandWithMetadb('Properties', lib), fb.GetQueryItems(lib, '/b/').Count,"
+                 " utils.CheckComponent('foo_playcount', true), utils.CheckComponent('foo_uie_eslyric'));"
+                 "try { fb.GetQueryItems(lib, 'bad('); } catch (e) { console.log(e.name); }", ""));
+    CHECK_EQ(host.console_lines[host.console_lines.size() - 2], std::string("/profile/ -12 true false true false true 1 true false"));
+    CHECK_EQ(host.console_lines.back(), std::string("SyntaxError"));
+    const std::vector<std::string> want = { "main View/Console", "main Nope", "context Properties 2" };
+    CHECK(host.commands_run == want);
+    CHECK(host.commands.back() == Playback::Random);
+}
+
+TEST("handles: GetFileInfo, Length, FileSize; lists insert, find, remove, combine, order and total") {
+    t::FakeHost host;
+    auto a = t::track("/a", { { "%title%", "beta" } }), b = t::track("/b", { { "%title%", "Alpha" } }), c = t::track("/c", { { "%title%", "gamma" } });
+    a->info.meta = { { "ARTIST", { "X", "Y" } }, { "TITLE", { "beta" } } };
+    a->info.info = { { "codec", "FLAC" } };
+    a->info.length = 61.5;
+    a->info.size = 1000;
+    b->info.length = 10;
+    host.libraryTracks = { a, b, c };
+    JsEngine e(host);
+    CHECK(e.load("const l = fb.GetLibraryItems(), h = l.Item(0), fi = h.GetFileInfo(), i = fi.MetaFind('artist');"
+                 "console.log(fi.MetaCount, i, fi.MetaName(i), fi.MetaValueCount(i), fi.MetaValue(i, 1), fi.InfoValue(fi.InfoFind('CODEC')),"
+                 " fi.MetaFind('none'), h.Length, h.FileSize);"
+                 "const tf = fb.TitleFormat('%title%');"
+                 "const m = l.Clone(); m.OrderByFormat(tf, 1); const ordered = tf.EvalWithMetadbs(m).join(',');"
+                 "m.OrderByFormat(tf, -1); const back = tf.EvalWithMetadbs(m).join(',');"
+                 "const two = fb.CreateHandleList(); two.Add(l.Item(2)); two.Insert(0, l.Item(1));"
+                 "const x = l.Clone(); x.MakeIntersection(two); const y = l.Clone(); y.MakeDifference(two);"
+                 "const u = two.Clone(); u.MakeUnion(l); const r = l.Clone(); r.Remove(l.Item(1)); r.RemoveById(0);"
+                 "console.log(ordered, back, two.Find(l.Item(2)), x.Count, y.Count, u.Count, r.Count, r.Item(0).Path,"
+                 " l.CalcTotalDuration(), l.CalcTotalSize());", ""));
+    CHECK_EQ(host.console_lines[host.console_lines.size() - 2], std::string("2 0 ARTIST 2 Y FLAC -1 61.5 1000"));
+    CHECK_EQ(host.console_lines.back(), std::string("Alpha,beta,gamma gamma,beta,Alpha 1 2 1 3 1 /c 71.5 1000"));
+}
+
+TEST("plman: items, selection, focus, order, playing location, sort, queue") {
+    t::FakeHost host;
+    auto a = t::track("/a", { { "%title%", "c" } }), b = t::track("/b", { { "%title%", "a" } }), c = t::track("/c", { { "%title%", "b" } });
+    host.playlistItems[0] = { a, b, c };
+    host.location = { 0, 2 };
+    JsEngine e(host);
+    CHECK(e.load("plman.SetPlaylistSelection(0, [0, 2], true); plman.SetPlaylistSelectionSingle(0, 0, false);"
+                 "plman.SetPlaylistFocusItemByHandle(0, plman.GetPlaylistItems(0).Item(1)); plman.PlaybackOrder = 3;"
+                 "const loc = plman.GetPlayingItemLocation();"
+                 "console.log(plman.PlaylistItemCount(0), plman.GetPlaylistSelectedItems(0).Item(0).Path,"
+                 " plman.IsPlaylistItemSelected(0, 0), plman.IsPlaylistItemSelected(0, 2), plman.GetPlaylistFocusItemIndex(0),"
+                 " plman.PlaybackOrder, loc.IsValid, loc.PlaylistIndex, loc.PlaylistItemIndex);"
+                 "plman.SortByFormatV2(0, '%title%', 1); plman.AddItemToPlaybackQueue(fb.CreateHandleList().Count === 0 ? plman.GetPlaylistItems(0).Item(0) : null);"
+                 "console.log(fb.TitleFormat('%title%').EvalWithMetadbs(plman.GetPlaylistItems(0)).join(''), plman.GetPlaybackQueueHandles().Count);"
+                 "plman.FlushPlaybackQueue(); console.log(plman.GetPlaybackQueueHandles().Count);", ""));
+    const auto& out = host.console_lines;
+    CHECK_EQ(out[out.size() - 3], std::string("3 /c false true 1 3 true 0 2"));
+    CHECK_EQ(out[out.size() - 2], std::string("abc 1"));
+    CHECK_EQ(out.back(), std::string("0"));
+}
+
+TEST("utils: files, Glob, split paths, durations and sizes; backslashes work as separators off Windows") {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "jsp_utils_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir / "sub");
+    std::ofstream(dir / "PSS_1.txt") << "abc";
+    std::ofstream(dir / "pss_2.txt") << "";
+    std::ofstream(dir / "other.txt") << "";
+    t::FakeHost host;
+    std::string d = dir.string() + "/";
+#ifndef _WIN32
+    std::string bs = d;
+    std::replace(bs.begin(), bs.end(), '/', '\\');
+#else
+    std::string bs = d;
+#endif
+    const auto js = [](const std::string& in) { std::string s; for (char c : in) { if (c == '\\') s += "\\\\"; else s += c; } return s; };
+    JsEngine e(host);
+    CHECK(e.load("const d = '" + js(d) + "', bs = '" + js(bs) + "';"
+                 "const g = utils.Glob(bs + 'PSS_*').map(p => p.slice(d.length));"
+                 "console.log(g.join(','), utils.Glob(d + '*', 0).length, utils.FileTest(d + 'PSS_1.txt', 'e'), utils.FileTest(bs + 'PSS_1.txt', 's'),"
+                 " utils.IsDirectory(d + 'sub'), utils.IsFile(d + 'sub'), utils.FileTest(d + 'nope', 'e'),"
+                 " utils.SplitFilePath('C:\\\\x\\\\song.flac').join('|'), utils.FormatDuration(3725), utils.FormatDuration(65),"
+                 " utils.FormatFileSize(1536), utils.WriteTextFile('/p/x.txt', 'hi'), utils.ReadTextFile('/p/x.txt'));", ""));
+    std::string split = "C:/x/|song|.flac";
+#ifdef _WIN32
+    split = "C:\\x\\|song|.flac";
+#endif
+    CHECK_EQ(host.console_lines.back(), "PSS_1.txt,pss_2.txt 4 true 3 true false false " + split + " 1:02:05 1:05 1.50 KB true hi");
+    fs::remove_all(dir);
+}
+
+TEST("invoke: generic callbacks get ints, strings, handles and lists, and report the return value") {
+    t::FakeHost host;
+    JsEngine e(host);
+    e.load("function on_playlist_items_removed(p, n) { console.log('removed', p, n); }"
+           "function on_metadb_changed(list, fromhook) { console.log('changed', list.Count, fromhook); return true; }"
+           "function on_item_focus_change(p, from, to) { console.log('focus', p, from, to); }", "");
+    e.invoke("on_playlist_items_removed", { 1, 4 });
+    CHECK_EQ(host.console_lines.back(), std::string("removed 1 4"));
+    CHECK(e.invoke("on_metadb_changed", { Tracks{ t::track("/a") }, false }));
+    CHECK_EQ(host.console_lines.back(), std::string("changed 1 false"));
+    CHECK(!e.invoke("on_item_focus_change", { 0, -1, 2 }));
+    CHECK_EQ(host.console_lines.back(), std::string("focus 0 -1 2"));
+    CHECK(!e.invoke("on_nothing"));
+}
+
+TEST("menus: items, separators, submenus, checks and radio reach the host; TrackPopupMenu returns the pick") {
+    t::FakeHost host;
+    host.menuChoice = [](const Menu& m) { return m.size() > 3 ? m[3].children[1].id : 0; };
+    JsEngine e(host);
+    CHECK(e.load("const m = window.CreatePopupMenu(), sub = window.CreatePopupMenu();"
+                 "m.AppendMenuItem(0, 1, 'One'); m.AppendMenuItem(0x1, 2, 'Grayed'); m.AppendMenuSeparator();"
+                 "sub.AppendMenuItem(0, 10, 'A'); sub.AppendMenuItem(0, 11, 'B'); sub.AppendMenuItem(0, 12, 'C');"
+                 "sub.AppendTo(m, 0, 'Sub'); sub.CheckMenuRadioItem(10, 12, 11); m.CheckMenuItem(1, true); m.EnableMenuItem(2, true);"
+                 "sub.AppendMenuItem(0x8, 13, 'Late');"
+                 "console.log('picked', m.TrackPopupMenu(5, 6));"
+                 "try { m.AppendMenuItem(0x10, sub, 'x'); } catch (e) { console.log(e.name); }", ""));
+    CHECK_EQ(host.console_lines[host.console_lines.size() - 2], std::string("picked 11"));
+    CHECK_EQ(host.console_lines.back(), std::string("TypeError"));
+    const Menu& m = host.shownMenu;
+    CHECK_EQ(m.size(), (size_t)4);
+    CHECK(m[0].checked && !m[0].disabled && m[0].text == "One" && m[0].id == 1);
+    CHECK(!m[1].disabled);
+    CHECK(m[2].separator);
+    CHECK(m[3].submenu && m[3].text == "Sub" && m[3].children.size() == 4);
+    CHECK(m[3].children[1].radio && m[3].children[1].checked && !m[3].children[0].checked && m[3].children[0].radio);
+    CHECK(m[3].children[3].checked && !m[3].children[3].radio);
+}
+
+TEST("menus: a menu appended to itself doesn't recurse forever") {
+    t::FakeHost host;
+    host.menuChoice = [](const Menu& m) {
+        int depth = 0;
+        for (const Menu* cur = &m; !cur->empty() && cur->back().submenu; cur = &cur->back().children) ++depth;
+        return depth;
+    };
+    JsEngine e(host);
+    CHECK(e.load("const m = window.CreatePopupMenu(); m.AppendMenuItem(0, 1, 'x'); m.AppendTo(m, 0, 'self'); console.log(m.TrackPopupMenu(0, 0) > 0);", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("true"));
+}
+
+TEST("menus: context and main menu managers build into a menu and execute by id") {
+    t::FakeHost host;
+    host.libraryTracks = { t::track("/a"), t::track("/b") };
+    host.menuChoice = [](const Menu& m) { return m.back().children.back().id; };
+    JsEngine e(host);
+    CHECK(e.load("const m = window.CreatePopupMenu(), cm = fb.CreateContextMenuManager(), mm = fb.CreateMainMenuManager();"
+                 "cm.InitContext(fb.GetLibraryItems()); cm.BuildMenu(m, 1, -1);"
+                 "mm.Init('Playback'); mm.BuildMenu(m, 100, 1);"
+                 "const id = m.TrackPopupMenu(0, 0);"
+                 "console.log(id, mm.ExecuteByID(id - 100), cm.ExecuteByID(1));"
+                 "try { fb.CreateMainMenuManager().Init('Nope'); } catch (e) { console.log(e.name); }"
+                 "try { fb.CreateContextMenuManager().BuildMenu(m, 1); } catch (e) { console.log(e.name); }", ""));
+    const auto& out = host.console_lines;
+    CHECK_EQ(out[out.size() - 3], std::string("100 true true"));
+    CHECK_EQ(out[out.size() - 2], std::string("RangeError"));
+    CHECK_EQ(out.back(), std::string("InternalError"));
+    CHECK_EQ(host.shownMenu.size(), (size_t)2);
+    CHECK_EQ(host.shownMenu[0].text, std::string("tracks:2"));
+    CHECK_EQ(host.shownMenu[0].children.size(), (size_t)2);
+    CHECK_EQ(host.shownMenu[1].children.size(), (size_t)1);
+    CHECK_EQ(host.shownMenu[0].children[1].id, 2);
+}
+
+TEST("menus: time spent in a popup menu or input box doesn't count against the call budget") {
+    t::FakeHost host;
+    host.menuChoice = [](const Menu&) {
+        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+        while (std::chrono::steady_clock::now() < until) {}
+        return 1;
+    };
+    JsEngine e(host, 200);
+    e.load("function on_mouse_rbtn_up() { const m = window.CreatePopupMenu(); m.AppendMenuItem(0, 1, 'x');"
+           " const id = m.TrackPopupMenu(0, 0); let n = 0; for (let i = 0; i < 200000; ++i) n += i; console.log('after', id); return true; }", "");
+    CHECK(e.mouse(Mouse::RightUp, 0, 0, 0));
+    CHECK(!e.failed());
+    CHECK_EQ(host.console_lines.back(), std::string("after 1"));
+    CHECK(!e.in_modal());
+}
+
+TEST("utils.InputBox returns the text, the default on cancel, or throws when asked to") {
+    t::FakeHost host;
+    host.inputValue = "typed";
+    JsEngine e(host);
+    CHECK(e.load("console.log(utils.InputBox(window.ID, 'Name?', 'Title', 'def', true));", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("typed"));
+    CHECK_EQ(host.inputPrompt, std::string("Name?"));
+    host.inputOk = false;
+    CHECK(e.load("console.log(utils.InputBox(window.ID, 'Name?', 'Title', 'def'));"
+                 "try { utils.InputBox(window.ID, 'a', 'b', 'c', true); } catch (e) { console.log('cancelled'); }", ""));
+    CHECK_EQ(host.console_lines[host.console_lines.size() - 2], std::string("def"));
+    CHECK_EQ(host.console_lines.back(), std::string("cancelled"));
+}
+
+TEST("input: cursor, middle button, key up, chars and focus reach the script") {
+    t::FakeHost host;
+    JsEngine e(host);
+    e.load("window.SetCursor(32649);"
+           "function on_mouse_mbtn_down(x, y, m) { console.log('mdown', x, y, m); }"
+           "function on_mouse_mbtn_up(x, y) { console.log('mup', x, y); return true; }"
+           "function on_mouse_mbtn_dblclk(x, y) { console.log('mdbl', x, y); }"
+           "function on_key_up(vk) { console.log('up', vk); return true; }"
+           "function on_char(c) { console.log('char', String.fromCodePoint(c)); }"
+           "function on_focus(f) { console.log('focus', f); }", "");
+    CHECK(host.cursors == std::vector<int>{ 32649 });
+    e.mouse(Mouse::MiddleDown, 3, 4, 0x10);
+    CHECK_EQ(host.console_lines.back(), std::string("mdown 3 4 16"));
+    CHECK(e.mouse(Mouse::MiddleUp, 3, 4, 0));
+    e.mouse(Mouse::MiddleDouble, 1, 2, 0);
+    CHECK_EQ(host.console_lines.back(), std::string("mdbl 1 2"));
+    CHECK(e.invoke("on_key_up", { 65 }));
+    e.invoke("on_char", { 0x1F600 });
+    CHECK_EQ(host.console_lines.back(), std::string("char \xF0\x9F\x98\x80"));
+    e.invoke("on_focus", { true });
+    CHECK_EQ(host.console_lines.back(), std::string("focus true"));
+}
+
+TEST("keys: macOS characters map to the WM_CHAR codes scripts expect") {
+    CHECK_EQ(mac_char_to_wm_char(U'a', false), 97u);
+    CHECK_EQ(mac_char_to_wm_char(0x7f, false), 8u);
+    CHECK_EQ(mac_char_to_wm_char(U'\r', false), 13u);
+    CHECK_EQ(mac_char_to_wm_char(0x1b, false), 27u);
+    CHECK_EQ(mac_char_to_wm_char(U'\t', false), 9u);
+    CHECK_EQ(mac_char_to_wm_char(0xF700, false), 0u);
+    CHECK_EQ(mac_char_to_wm_char(U'c', true), 0u);
+    CHECK_EQ(mac_char_to_wm_char(0x1F600, false), 0x1F600u);
+}
+
+TEST("images: CreateImage, GetGraphics draws into the pixels, ReleaseGraphics ends that gr") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("const img = gdi.CreateImage(4, 3); let kept;"
+                 "let g = img.GetGraphics(); g.FillSolidRect(0, 0, 4, 3, 0xff112233); g.FillSolidRect(0, 0, 2, 3, 0x80ffffff); img.ReleaseGraphics(g);"
+                 "kept = g;"
+                 "console.log(img.Width, img.Height, img.GetColourScheme(2).map(c => (c >>> 0).toString(16)).join(','));"
+                 "try { kept.FillSolidRect(0, 0, 1, 1, 0); } catch (e) { console.log(e.name); }"
+                 "function on_paint(gr) { gr.DrawImage(img, 0, 0, 4, 3, 0, 0, 4, 3); }", ""));
+    const auto& out = host.console_lines;
+    CHECK_EQ(out[out.size() - 2], std::string("4 3 ff182838,ff889898"));
+    CHECK_EQ(out.back(), std::string("TypeError"));
+    t::RecordingCanvas c;
+    e.paint(c);
+    CHECK(has_op(c, "image"));
+    CHECK_EQ(host.canvasOps[0], std::string("fill_rect 0,0,4,3 #112233"));
+}
+
+TEST("images: Clone, Resize, RotateFlip, ApplyMask, StackBlur, InvertColours, ApplyAlpha, SaveAs, raw bitmaps") {
+    t::FakeHost host;
+    host.art["/cover.png"] = std::make_shared<t::FakeImage>(6, 4, 0xFFFF0000u);
+    JsEngine e(host);
+    CHECK(e.load("const src = gdi.Image('/cover.png');"
+                 "const part = src.Clone(1, 1, 3, 2), big = src.Resize(12, 8), near = src.Resize(3, 2, 5);"
+                 "src.RotateFlip(1);"
+                 "const mask = gdi.CreateImage(6, 4); const mg = mask.GetGraphics(); mg.FillSolidRect(0, 0, 3, 4, 0xffffffff); mask.ReleaseGraphics(mg);"
+                 "const masked = gdi.Image('/cover.png'); const ok = masked.ApplyMask(mask), bad = masked.ApplyMask(part);"
+                 "masked.StackBlur(2); const inv = big.InvertColours(), half = big.ApplyAlpha(128);"
+                 "console.log(part.Width, part.Height, big.Width, near.Height, src.Width, src.Height, ok, bad,"
+                 " (inv.GetColourScheme(1)[0] >>> 0).toString(16), JSON.parse(half.GetColourSchemeJSON(1))[0].freq,"
+                 " big.SaveAs('C:\\\\out\\\\x.png'), typeof big.CreateRawBitmap().Width);"
+                 "function on_paint(gr) { const raw = big.CreateRawBitmap(); gr.GdiDrawBitmap(raw, 0, 0, 12, 8, 0, 0, 12, 8); gr.GdiAlphaBlend(raw, 0, 0, 12, 8, 0, 0, 12, 8, 100); }", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("3 2 12 2 4 6 true false ff08f8f8 1 true number"));
+#ifdef _WIN32
+    CHECK_EQ(host.saved.back(), std::string("C:\\out\\x.png 12x8"));
+#else
+    CHECK_EQ(host.saved.back(), std::string("C:/out/x.png 12x8"));
+#endif
+    t::RecordingCanvas c;
+    e.paint(c);
+    CHECK_EQ(std::count(c.ops.begin(), c.ops.end(), std::string("image")), (long)2);
+}
+
+TEST("gr: outlines, polygons from flat or paired points, line wrapping and measuring") {
+    t::FakeHost host;
+    JsEngine e(host);
+    e.load("const f = gdi.Font('Segoe UI', 12);"
+           "function on_paint(gr) {"
+           " gr.DrawEllipse(0, 0, 20, 10, 1, 0xffffffff); gr.DrawRoundRect(0, 0, 40, 20, 4, 4, 3, 0xffffffff);"
+           " gr.FillPolygon(0xff00ff00, 0, [0, 0, 10, 0, 5, 8]); gr.FillPolygon(0xff00ff00, 0, [[0, 0], [10, 0], [5, 8]]);"
+           " gr.DrawPolygon(0xffff0000, 2, [0, 0, 10, 0, 5, 8]);"
+           " const l = gr.EstimateLineWrap('aaa bbb ccc\\ndd', f, 50);"
+           " const m = gr.MeasureString('aaa bbb ccc', f, 1, 2, 50, 100, 0);"
+           " console.log(l.join('|'), m.X, m.Y, m.Width, m.Height, m.Lines, m.Chars); }", "");
+    t::RecordingCanvas c;
+    e.paint(c);
+    CHECK(!e.failed());
+    CHECK(std::count(c.ops.begin(), c.ops.end(), std::string("polygon")) >= 16 + 36 + 2 + 3);
+    CHECK(has_prefix(c, "round_rect"));
+    CHECK_EQ(host.console_lines.back(), std::string("aaa bbb|49|ccc|21|dd|14 1 2 49 24 2 11"));
+}
+
+TEST("images: LoadImageAsync calls on_load_image_done later with its task id; LoadImageAsyncV2 and GetAlbumArtAsyncV2 resolve") {
+    t::FakeHost host;
+    host.art["/a.png"] = std::make_shared<t::FakeImage>(5, 5);
+    host.art["/t"] = std::make_shared<t::FakeImage>(7, 7);
+    host.libraryTracks = { t::track("/t") };
+    JsEngine e(host);
+    e.load("const id = gdi.LoadImageAsync(window.ID, '/a.png'); console.log('asked', id > 0);"
+           "function on_load_image_done(tid, img, path) { console.log('done', tid === id, img.Width, path); }"
+           "gdi.LoadImageAsyncV2(window.ID, '/missing.png').then(img => console.log('v2', img));"
+           "const h = fb.GetLibraryItems().Item(0);"
+           "console.log('sync', utils.GetAlbumArtV2(h, 0).Width);"
+           "utils.GetAlbumArtAsyncV2(window.ID, h, 0).then(r => console.log('art', r.image.Width, r.path));", "");
+    CHECK_EQ(host.console_lines[0], std::string("asked true"));
+    CHECK_EQ(host.console_lines[1], std::string("sync 7"));
+    CHECK_EQ(host.console_lines[2], std::string("art 7 /t.jpg"));
+    host.finish_loads();
+    CHECK_EQ(host.console_lines[3], std::string("done true 5 /a.png"));
+    CHECK_EQ(host.console_lines.back(), std::string("v2 null"));
+}
+
+#ifndef _WIN32
+TEST("images: LoadImageAsync hands the script back the path it asked for, Windows separators included") {
+    t::FakeHost host;
+    host.art["/art/a.jpg"] = std::make_shared<t::FakeImage>(3, 3);
+    JsEngine e(host);
+    e.load("gdi.LoadImageAsync(0, '\\\\art\\\\a.jpg');"
+           "function on_load_image_done(tid, img, path) { console.log(img.Width, path); }", "");
+    host.finish_loads();
+    CHECK_EQ(host.console_lines.back(), std::string("3 \\art\\a.jpg"));
+}
+#endif
+
+TEST("gr: translucent shapes and DrawString are drawn off-screen and composited with their alpha; GdiDrawText stays opaque") {
+    t::FakeHost host;
+    JsEngine e(host);
+    e.load("const f = gdi.Font('Segoe UI', 12);"
+           "function on_paint(gr) { gr.FillRoundRect(10, 10, 20, 10, 5, 5, 0x80ff0000); gr.FillEllipse(0, 0, 4, 4, 0x00ffffff);"
+           " gr.DrawString('a', f, 0x40ffffff, 0, 0, 50, 20, 0); gr.GdiDrawText('b', f, 0x40ffffff, 0, 0, 50, 20, 0); }", "");
+    t::RecordingCanvas c;
+    e.paint(c);
+    CHECK_EQ(std::count(c.ops.begin(), c.ops.end(), std::string("image")), (long)2);
+    CHECK(has_op(c, "text \"b\" 0,0,50,20 f0 #ffffff"));
+    CHECK(std::find(host.canvasOps.begin(), host.canvasOps.end(), std::string("round_rect 0,0,20,10 10,10 #ff0000")) != host.canvasOps.end());
+    CHECK(std::find(host.canvasOps.begin(), host.canvasOps.end(), std::string("text \"a\" 0,0,50,20 f128 #ffffff")) != host.canvasOps.end());
+    CHECK(!has_prefix(c, "round_rect"));
+}
+
+namespace {
+
+std::string js_path(const std::filesystem::path& p) {
+    std::string s;
+    for (char c : p.string()) s += c == '\\' ? std::string("\\\\") : std::string(1, c);
+    return s;
+}
+
+}
+
+TEST("ActiveX: Scripting.FileSystemObject creates, writes, reads, lists, moves and deletes on disk") {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "jsp_fso_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    t::FakeHost host;
+    JsEngine e(host);
+    const std::string root = js_path(dir);
+    CHECK(e.load("const fso = new ActiveXObject('Scripting.FileSystemObject'), root = '" + root + "';"
+                 "const sub = fso.BuildPath(root, 'cache'); fso.CreateFolder(sub);"
+                 "let ts = fso.CreateTextFile(fso.BuildPath(sub, 'a.txt'), true); ts.WriteLine('one'); ts.Write('two'); ts.Close();"
+                 "ts = fso.OpenTextFile(fso.BuildPath(sub, 'a.txt'), 8, true); ts.Write('!'); ts.Close();"
+                 "ts = fso.OpenTextFile(fso.BuildPath(sub, 'a.txt'), 1); const l1 = ts.ReadLine(), rest = ts.ReadAll(); ts.Close();"
+                 "fso.CopyFile(fso.BuildPath(sub, 'a.txt'), fso.BuildPath(sub, 'PSS_1.txt'));"
+                 "fso.CopyFile(fso.BuildPath(sub, 'a.txt'), fso.BuildPath(sub, 'PSS_2.txt'));"
+                 "fso.CreateFolder(fso.BuildPath(sub, 'inner'));"
+                 "const folder = fso.GetFolder(sub), names = []; for (const f of folder.Files) names.push(f.Name);"
+                 "const file = fso.GetFile(fso.BuildPath(sub, 'a.txt'));"
+                 "console.log(l1, rest, names.join(','), folder.Files.Count, folder.SubFolders.Count, folder.SubFolders.Item(0).Name,"
+                 " file.Size, file.DateLastModified instanceof Date, fso.FileExists(fso.BuildPath(sub, 'a.txt')), fso.FolderExists(sub));"
+                 "fso.DeleteFile(fso.BuildPath(sub, 'PSS_*'));"
+                 "fso.MoveFile(fso.BuildPath(sub, 'a.txt'), fso.BuildPath(sub, 'b.txt'));"
+                 "let err = ''; try { fso.GetFile(fso.BuildPath(sub, 'a.txt')); } catch (x) { err = x.message + ' ' + x.number; }"
+                 "try { fso.CreateFolder(sub); } catch (x) { err += ' | ' + x.message; }"
+                 "console.log(fso.GetFolder(sub).Files.Count, fso.FileExists(fso.BuildPath(sub, 'b.txt')), err);"
+                 "fso.DeleteFolder(sub); console.log(fso.FolderExists(sub),"
+                 " fso.GetBaseName('C:\\\\x\\\\song.flac'), fso.GetExtensionName('C:\\\\x\\\\song.flac'), fso.GetParentFolderName('C:\\\\x\\\\song.flac'), fso.GetFileName('C:\\\\x\\\\'));", ""));
+    const auto& out = host.console_lines;
+    CHECK_EQ(out[out.size() - 3], std::string("one two! PSS_1.txt,PSS_2.txt,a.txt 3 1 inner 9 true true true"));
+    CHECK_EQ(out[out.size() - 2], std::string("1 true File not found -2146828235 | File already exists"));
+    CHECK_EQ(out.back(), std::string("false song flac C:\\x x"));
+    fs::remove_all(dir);
+}
+
+TEST("ActiveX: XMLHTTP runs async through the host and calls onreadystatechange; WinHttp works synchronously") {
+    t::FakeHost host;
+    host.web["https://api.example/x"] = { 200, "{\"a\":1}", {} };
+    JsEngine e(host);
+    CHECK(e.load("const x = new ActiveXObject('Microsoft.XMLHTTP');"
+                 "x.open('GET', 'https://api.example/x', true); x.setRequestHeader('User-Agent', 'jsp');"
+                 "x.onreadystatechange = () => { if (x.readyState === 4) console.log('async', x.status, JSON.parse(x.responseText).a); };"
+                 "x.send(); console.log('sent', x.readyState);"
+                 "const w = new ActiveXObject('WinHttp.WinHttpRequest.5.1'); w.Open('POST', 'https://api.example/missing', false);"
+                 "w.SetTimeouts(1, 2, 3, 4); w.SetRequestHeader('Content-Type', 'text/plain'); w.Send('hello'); w.WaitForResponse();"
+                 "console.log('sync', w.Status, w.ResponseText);"
+                 "const y = new ActiveXObject('Msxml2.XMLHTTP'); y.open('GET', 'https://api.example/x'); y.onreadystatechange = () => console.log('aborted?'); y.send(); y.abort();", ""));
+    CHECK_EQ(host.console_lines[0], std::string("sent 2"));
+    CHECK_EQ(host.console_lines[1], std::string("sync 404 not found"));
+    host.finish_http();
+    CHECK_EQ(host.console_lines.back(), std::string("async 200 1"));
+    CHECK_EQ(host.console_lines.size(), (size_t)3);
+    CHECK_EQ(host.requests[0], std::string("POST https://api.example/missing [Content-Type: text/plain] body=hello"));
+    CHECK_EQ(host.requests[1], std::string("GET https://api.example/x [User-Agent: jsp]"));
+}
+
+TEST("ActiveX: htmlfile parses HTML for scrapers: tags, classes, attributes, innerHTML and innerText") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("const doc = new ActiveXObject('htmlfile'); doc.open(); const div = doc.createElement('div');"
+                 "div.innerHTML = '<!DOCTYPE html><ul><li class=\"tag\"><a href=\"/tag/rock\">Rock &amp; Roll</a><li class=tag>Pop</ul>"
+                 "<div class=\"wiki-content\"><p>One<br>two</p><img src=\"https://x/a.jpg\"><script>if (a < b) {}</script></div>';"
+                 "const li = div.getElementsByTagName('li');"
+                 "console.log(li.length, li[0].className, li[0].innerText, li[1].innerText, li[0].getElementsByTagName('a')[0].href);"
+                 "const w = div.getElementsByTagName('div')[0];"
+                 "console.log(w.tagName, JSON.stringify(w.innerText.trim()), w.getElementsByTagName('img')[0].src, w.innerHTML.slice(0, 9), li[0].parentNode.tagName);", ""));
+    CHECK_EQ(host.console_lines[0], std::string("2 tag Rock & Roll Pop about:/tag/rock"));
+    CHECK_EQ(host.console_lines[1], std::string("DIV \"One\\ntwo\" https://x/a.jpg <p>One<br UL"));
+}
+
+TEST("ActiveX: WScript.Shell.Run of a cscript download VBS fetches the URL into the file") {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "jsp_vbs_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const std::string vbs = (dir / "img.vbs").generic_string(), out = (dir / "art" / "a.jpg").generic_string();
+    std::ofstream(vbs) << "Set x = CreateObject(\"MSXML2.XMLHTTP\")\ns.SaveToFile file\n";
+    t::FakeHost host;
+    host.web["https://img.example/a.jpg"] = { 200, std::string("\xff\xd8\x00jpg", 6), {} };
+    JsEngine e(host);
+    CHECK(e.load("new ActiveXObject('WScript.Shell').Run('cscript //nologo \"" + vbs + "\" \"https://img.example/a.jpg\" \"" + out + "\"', 0);", ""));
+    CHECK(host.runs.empty());
+    host.finish_http();
+    std::string got;
+    {
+        std::ifstream in(out, std::ios::binary);
+        got.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    CHECK(got == std::string("\xff\xd8\x00jpg", 6));
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
+TEST("ActiveX: WScript.Shell, htmlfile clipboard, UIHacks, ESLyric and unknown objects") {
+    t::FakeHost host;
+    host.clip = "copied";
+    JsEngine e(host);
+    CHECK(e.load("const sh = new ActiveXObject('WScript.Shell');"
+                 "sh.Run('\"https://last.fm/x\"'); sh.Run('shutdown.exe /h', 0);"
+                 "const v = sh.RegRead('HKLM\\\\SOFTWARE\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\CurrentMajorVersionNumber');"
+                 "let reg = ''; try { sh.RegRead('HKCU\\\\Nope'); } catch (x) { reg = 'threw'; }"
+                 "const answer = sh.Popup('Delete?', 0, 'Biography', 4);"
+                 "const doc = new ActiveXObject('htmlfile'), was = doc.parentWindow.clipboardData.getData('Text');"
+                 "doc.parentWindow.clipboardData.setData('Text', 'new text');"
+                 "const ui = new ActiveXObject('UIHacks'); ui.DisableSizing = true; ui.SetPseudoCaption(0, 0, 10, 10);"
+                 "const esl = new ActiveXObject('ESLyric'), panel = esl.GetAll(); panel.SetTextColor(1); panel.SetTextFont('Segoe UI', 12, 0);"
+                 "let unknown = ''; try { new ActiveXObject('Some.Thing'); } catch (x) { unknown = x.message; }"
+                 "let vbs = ''; try { const s = new ActiveXObject('ScriptControl'); s.Language = 'VBScript'; s.Eval('MsgBox(1)'); } catch (x) { vbs = 'no vbs'; }"
+                 "console.log(v, reg, answer, was, ui.FrameStyle, ui.DisableSizing, ui.MaxSize.Enabled, typeof panel, unknown, vbs);", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("10 threw 6 copied 0 true false function Automation server can't create object (Some.Thing) no vbs"));
+    CHECK(host.runs == (std::vector<std::string>{ "\"https://last.fm/x\"", "shutdown.exe /h" }));
+    CHECK_EQ(host.boxes[0], std::string("Biography: Delete? (4)"));
+    CHECK_EQ(host.clip, std::string("new text"));
+    CHECK(std::find(host.console_lines.begin(), host.console_lines.end(), std::string("WScript.Shell.Run: can't run shutdown.exe /h")) != host.console_lines.end());
+}
+
+TEST("globals: setTimeout / setInterval / clear* with extra arguments, new FbMetadbHandleList from a handle, list or array") {
+    t::FakeHost host;
+    host.libraryTracks = { t::track("/a"), t::track("/b") };
+    JsEngine e(host);
+    CHECK(e.load("let n = 0; const iv = setInterval((step) => { n += step; if (n >= 4) clearInterval(iv); }, 5, 2);"
+                 "const t1 = setTimeout((a, b) => console.log('timeout', a + b), 0, 1, 2); const t2 = setTimeout(() => console.log('never'), 10); clearTimeout(t2);"
+                 "const lib = fb.GetLibraryItems();"
+                 "console.log(new FbMetadbHandleList().Count, new FbMetadbHandleList(lib.Item(0)).Count, new FbMetadbHandleList(lib).Count,"
+                 " new FbMetadbHandleList([lib.Item(0), lib.Item(1), lib.Item(0)]).Count, typeof setTimeout(() => {}, 1));"
+                 "function report() { console.log('n', n); }", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("0 1 2 3 number"));
+    for (int round = 0; round < 3; ++round) {
+        const auto pending = host.timers;
+        for (const auto& [id, ms] : pending) e.timer(id);
+    }
+    e.invoke("report");
+    CHECK(std::find(host.console_lines.begin(), host.console_lines.end(), std::string("timeout 3")) != host.console_lines.end());
+    CHECK(std::find(host.console_lines.begin(), host.console_lines.end(), std::string("never")) == host.console_lines.end());
+    CHECK_EQ(host.console_lines.back(), std::string("n 4"));
+}
+
+TEST("ActiveX: a host can refuse file writes outside an allowed folder") {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "jsp_sandbox_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir / "inside");
+    struct Host : t::FakeHost {
+        std::string root;
+        bool may_write(const std::string& p) override { return p.rfind(root, 0) == 0; }
+    } host;
+    host.root = (dir / "inside").string();
+    JsEngine e(host);
+    const std::string in = js_path(dir / "inside"), out = js_path(dir);
+    CHECK(e.load("const fso = new ActiveXObject('Scripting.FileSystemObject');"
+                 "fso.CreateTextFile('" + in + "/ok.txt').Write('x');"
+                 "const s = fso.CreateTextFile('" + out + "/nope.txt'); s.Write('y');"
+                 "console.log(fso.FileExists('" + in + "/ok.txt'), fso.FileExists('" + out + "/nope.txt'), utils.WriteTextFile('" + out + "/n2.txt', 'z'));", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("true false false"));
+    CHECK(std::any_of(host.console_lines.begin(), host.console_lines.end(), [](const std::string& l) { return l.rfind("blocked a write", 0) == 0; }));
+    fs::remove_all(dir);
+}
+
+TEST("SMP extras: include is relative to the including file, utils.Version, CreateThemeManager, ShowHtmlDialog") {
+    t::FakeHost host;
+    host.files["/theme/main.js"] = "include('lib\\\\a.js');";
+    host.files["/theme/lib/a.js"] = "include('b.js'); var fromA = fromB + 1;";
+    host.files["/theme/lib/b.js"] = "var fromB = 41;";
+    host.boxAnswer = 7;
+    JsEngine e(host);
+    CHECK(e.load("include('/theme/main.js');"
+                 "const tm = window.CreateThemeManager('TREEVIEW'); tm.SetPartAndStateId(2, 1);"
+                 "const got = [];"
+                 "utils.ShowHtmlDialog(window.ID, '<div id=btn_cancel></div>', { data: ['Confirm', 'Delete <b>it</b>?', 'Yes', 'No', (s, v) => got.push(s + ':' + v)] });"
+                 "utils.ShowHtmlDialog(window.ID, '<div id=btn_ok></div>', { data: ['Note', 'Done', 'OK', '', (s, v) => got.push(s + ':' + v)] });"
+                 "utils.ShowHtmlDialog(window.ID, '<div id=radio_container></div>', { data: ['Pick', 'x', 'Cancel', (s, v) => got.push(s + ':' + v)] });"
+                 "console.log(fromA, utils.Version, typeof tm.DrawThemeBackground, got.join(' '));"
+                 "function on_paint(gr) { tm.DrawThemeBackground(gr, 0, 0, 12, 12); }", "/theme/panel.js"));
+    CHECK_EQ(host.console_lines.back(), std::string("42 1.6.1 function ok:false ok:true cancel:false"));
+    CHECK_EQ(host.boxes[0], std::string("Confirm: Delete it? (4)"));
+    CHECK_EQ(host.boxes[1], std::string("Note: Done (0)"));
+    CHECK_EQ(host.boxes.size(), (size_t)2);
+    t::RecordingCanvas c;
+    e.paint(c);
+    CHECK(has_op(c, "polygon"));
+}
+
+TEST("SMP extras: new FbTitleFormat and a small Intl (DateTimeFormat, NumberFormat, numeric Collator)") {
+    t::FakeHost host;
+    host.fields["%title%"] = "Song";
+    JsEngine e(host);
+    CHECK(e.load("const d = new Date(2001, 2, 12);"
+                 "console.log(new FbTitleFormat('%title%').Eval(), typeof new FbProfiler('p').Time,"
+                 " new Intl.DateTimeFormat('en-GB', {year: 'numeric', month: 'long', day: 'numeric'}).format(d),"
+                 " new Intl.DateTimeFormat('en-GB', {year: 'numeric', month: 'long'}).format(d),"
+                 " new Intl.DateTimeFormat('en-GB', {year: 'numeric'}).format(d),"
+                 " new Intl.NumberFormat().format(1234567.5),"
+                 " ['Track 10', 'track 2', 'Track 1'].sort(new Intl.Collator(undefined, {numeric: true}).compare).join('|'));", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("Song number 12 March 2001 March 2001 2001 1,234,567.5 Track 1|track 2|Track 10"));
+}
+
+TEST("selection: AcquireUiSelectionHolder sets the UI selection or tracking; GetSelection and GetSelections read it") {
+    t::FakeHost host;
+    host.libraryTracks = { t::track("/a"), t::track("/b") };
+    JsEngine e(host);
+    CHECK(e.load("const h = fb.AcquireUiSelectionHolder(); const none = fb.GetSelection();"
+                 "h.SetSelection(fb.GetLibraryItems()); h.SetPlaylistSelectionTracking(); h.SetPlaylistTracking(); h.Dispose();"
+                 "console.log(none, fb.GetSelection().Path, fb.GetSelections().Count);", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("null /a 2"));
+    CHECK(host.selectionLog == (std::vector<std::string>{ "0:2", "1:0", "2:0", "3:0" }));
+}
+
+TEST("handle lists can be read with [i] like in Spider Monkey Panel") {
+    t::FakeHost host;
+    host.libraryTracks = { t::track("/a"), t::track("/b") };
+    JsEngine e(host);
+    CHECK(e.load("const l = fb.GetLibraryItems(); let paths = [];"
+                 "for (let i = 0; i < l.Count; i++) paths.push(l[i].Path);"
+                 "console.log(paths.join(','), l[2], l['1'].Path, typeof l.Item, 0 in l, 5 in l);", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("/a,/b undefined /b function true false"));
+}
+
+TEST("gr: FillGradRect with alpha or a focus is composited as an image, opaque square gradients stay native") {
+    t::FakeHost host;
+    JsEngine e(host);
+    e.load("function on_paint(gr) { gr.FillGradRect(0, 0, 10, 10, 270, 0x00000000, 0x99000000, 1);"
+           " gr.FillGradRect(0, 0, 10, 10, 0, 0xff000000, 0xffffffff, 0.5); gr.FillGradRect(0, 0, 10, 10, 90, 0xff000000, 0xffffffff); }", "");
+    t::RecordingCanvas c;
+    e.paint(c);
+    CHECK_EQ(std::count(c.ops.begin(), c.ops.end(), std::string("image")), (long)2);
+    CHECK(has_op(c, "gradient 0,0,10,10 #000000>#ffffff"));
+}
+
+TEST("tags: UpdateFileInfoFromJSON takes one object per item or one for all; values, arrays and removals") {
+    t::FakeHost host;
+    host.libraryTracks = { t::track("/a"), t::track("/b") };
+    JsEngine e(host);
+    CHECK(e.load("const l = fb.GetLibraryItems();"
+                 "l.UpdateFileInfoFromJSON(JSON.stringify([{ rating: 4 }, { rating: '', genre: ['Rock', 'Metal'] }]));"
+                 "l.UpdateFileInfoFromJSON(JSON.stringify({ mood: 'happy' }));"
+                 "try { l.UpdateFileInfoFromJSON('[{}]'); } catch (x) { console.log(x.name); }", ""));
+    const std::vector<std::string> want = { "/a rating=4", "/b rating= genre=Rock|Metal", "/a mood=happy", "/b mood=happy" };
+    CHECK(host.tagWrites == want);
+    CHECK_EQ(host.console_lines.back(), std::string("SyntaxError"));
+}
+
+TEST("titleformat: %rating% falls back to foo_navidrome's NAVIDROME_RATING tag") {
+    CHECK_EQ(with_fallback_rating("$if2(%rating%,0)"), std::string("$if2($if2(%rating%,$meta(NAVIDROME_RATING)),0)"));
+    CHECK_EQ(with_fallback_rating("%RATING% %title%"), std::string("$if2(%rating%,$meta(NAVIDROME_RATING)) %title%"));
+    CHECK_EQ(with_fallback_rating("%ratings% %rating"), std::string("%ratings% %rating"));
+}
+
+TEST("Panels UI bridge: panelsui reads and writes skin variables and runs actions") {
+    t::FakeHost host;
+    host.puiVars["eole.view"] = "0";
+    JsEngine e(host);
+    CHECK(e.load("panelsui.SetVariable('eole.view', 2); console.log(panelsui.IsAvailable, panelsui.GetVariable('eole.view'),"
+                 " panelsui.GetVariable('none', 'def'), panelsui.RunAction('MINIMODE:TOGGLE'));", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("true 2 def true"));
+    CHECK(host.puiActions == std::vector<std::string>{ "MINIMODE:TOGGLE" });
+}
+
+TEST("UIHacks drives the main window: state, fullscreen, size limits and the pseudo caption") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("const ui = new ActiveXObject('UIHacks');"
+                 "ui.MainWindowState = 2; ui.FullScreen = true; ui.MaxSize.Width = 400; ui.MaxSize.Height = 300; ui.MaxSize.Enabled = true;"
+                 "ui.MinSize.Width = 200; ui.MinSize.Enabled = true; ui.MaxSize.Enabled = false; ui.SetPseudoCaption(40, 8, 900, 28);"
+                 "console.log(ui.MainWindowState, ui.FullScreen, ui.MaxSize.Width, ui.MinSize.Enabled);", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("2 true 400 true"));
+    const std::vector<std::string> want = { "state 2", "full 1", "limits 0,0,0,0", "limits 0,0,0,0", "limits 0,0,400,300",
+                                            "limits 0,0,400,300", "limits 200,0,400,300", "limits 200,0,0,0",
+                                            "caption 40,8,900,28" };
+    CHECK(host.windowCalls == want);
+}
+
+TEST("notify: handles and handle lists inside NotifyOthers' info arrive as real objects") {
+    t::FakeHost host;
+    host.libraryTracks = { t::track("/a"), t::track("/b") };
+    JsEngine sender(host);
+    CHECK(sender.load("const l = fb.GetLibraryItems();"
+                      "window.NotifyOthers('rating_updated', l.Item(1));"
+                      "window.NotifyOthers('mixed', { list: l, nested: [l.Item(0), 3], text: 'x' });", ""));
+    CHECK_EQ(host.notes.size(), (size_t)2);
+    JsEngine receiver(host);
+    receiver.load("function on_notify_data(name, info) {"
+                  " if (name === 'rating_updated') console.log(name, info.Path, info.Compare(fb.GetLibraryItems().Item(1)));"
+                  " else console.log(name, info.list.Count, info.nested[0].Path, info.nested[1], info.text); }", "");
+    receiver.notify_data(host.notes[0].first, host.notes[0].second, host.noteItems[0]);
+    CHECK_EQ(host.console_lines.back(), std::string("rating_updated /b true"));
+    receiver.notify_data(host.notes[1].first, host.notes[1].second, host.noteItems[1]);
+    CHECK_EQ(host.console_lines.back(), std::string("mixed 2 /a 3 x"));
 }

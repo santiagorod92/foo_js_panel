@@ -19,7 +19,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 . scripts/toolchain.sh
 MODE="${1:-host}"
-SRC=(tests/*.cpp src/core/js_engine.cpp src/core/sample_script.cpp src/core/log.cpp src/core/diagnostics.cpp)
+SRC=(tests/*.cpp src/core/js_engine.cpp src/core/image_ops.cpp src/core/sample_script.cpp src/core/log.cpp src/core/diagnostics.cpp)
 QJS=(third_party/quickjs/dtoa.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/quickjs.c)
 INC=(-I"$PWD/src" -I"$PANELS_UI_SRC" -I"$PWD/third_party/quickjs")
 [ -f "$PANELS_UI_SRC/gfx/canvas.h" ] || { echo "no $PANELS_UI_SRC/gfx/canvas.h (clone foo_ui_panels next to this repo, or set PANELS_UI_SRC)" >&2; exit 1; }

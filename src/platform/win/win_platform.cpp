@@ -1,4 +1,5 @@
 #include "win_sdk.h"
+#include <shellapi.h>
 #include "platform/win/gdi_canvas.h"
 #include "../../core/platform.h"
 
@@ -35,6 +36,48 @@ std::string home_dir() {
     wchar_t buf[MAX_PATH] = {};
     const DWORD n = GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH);
     return n > 0 && n < MAX_PATH ? narrow(buf) : std::string();
+}
+
+std::string app_dir() {
+    wchar_t buf[MAX_PATH] = {};
+    const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    std::string path = narrow(buf);
+    return path.substr(0, path.find_last_of('\\') + 1);
+}
+
+std::string clipboard_text() {
+    if (!OpenClipboard(nullptr)) return {};
+    std::string out;
+    if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) {
+        if (const auto* w = static_cast<const wchar_t*>(GlobalLock(h))) {
+            out = narrow(w);
+            GlobalUnlock(h);
+        }
+    }
+    CloseClipboard();
+    return out;
+}
+
+bool shell_run(const std::string& command) {
+    std::string cmd = command;
+    while (!cmd.empty() && cmd.front() == ' ') cmd.erase(0, 1);
+    std::string file, params;
+    if (!cmd.empty() && cmd.front() == '"') {
+        const auto end = cmd.find('"', 1);
+        file = cmd.substr(1, end == std::string::npos ? std::string::npos : end - 1);
+        if (end != std::string::npos) params = cmd.substr(end + 1);
+    } else if (GetFileAttributesW(widen(cmd).c_str()) != INVALID_FILE_ATTRIBUTES || cmd.find("://") != std::string::npos) {
+        file = cmd;
+    } else {
+        const auto sp = cmd.find(' ');
+        file = cmd.substr(0, sp);
+        if (sp != std::string::npos) params = cmd.substr(sp + 1);
+    }
+    while (!params.empty() && params.front() == ' ') params.erase(0, 1);
+    if (file.empty()) return false;
+    const auto r = (INT_PTR)ShellExecuteW(nullptr, L"open", widen(file).c_str(), params.empty() ? nullptr : widen(params).c_str(), nullptr, SW_SHOWNORMAL);
+    return r > 32;
 }
 
 bool copy_to_clipboard(const std::string& text) {

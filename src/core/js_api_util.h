@@ -1,6 +1,8 @@
 #pragma once
 #include "gfx/canvas.h"
+#include <algorithm>
 #include <cstdint>
+#include <string>
 
 namespace jsp {
 
@@ -18,6 +20,7 @@ enum : uint32_t {
     DT_WORDBREAK_ = 0x10,
     DT_SINGLELINE_ = 0x20,
     DT_NOCLIP_ = 0x100,
+    DT_CALCRECT_ = 0x400,
     DT_END_ELLIPSIS_ = 0x8000,
     DT_WORD_ELLIPSIS_ = 0x40000,
 };
@@ -34,6 +37,24 @@ inline unsigned dt_to_text_flags(uint32_t dt) {
     if (dt & DT_END_ELLIPSIS_) f |= g::kEndEllipsis;
     if (dt & DT_WORD_ELLIPSIS_) f |= g::kWordEllipsis;
     return f;
+}
+
+inline std::string windows_separators(std::string path) {
+#ifndef _WIN32
+    std::replace(path.begin(), path.end(), '/', '\\');
+#endif
+    return path;
+}
+
+inline pui::gfx::Rect dt_text_rect(pui::gfx::Rect r, uint32_t dt, int text_h) {
+    if (dt & DT_CALCRECT_) {
+        if (dt & DT_VCENTER_) return { r.x, r.y + (r.h - text_h) / 2, r.w, text_h };
+        if (dt & DT_BOTTOM_) return { r.x, r.y + r.h - text_h, r.w, text_h };
+        return r;
+    }
+    if ((dt & DT_BOTTOM_) && (dt & DT_SINGLELINE_) && !(dt & DT_VCENTER_) && text_h < r.h)
+        return { r.x, r.y + r.h - text_h, r.w, text_h };
+    return r;
 }
 
 inline unsigned string_format_to_text_flags(uint32_t sf) {
@@ -85,6 +106,35 @@ inline int mac_key_to_vk(int keyCode, char32_t ch) {
     if (ch >= 'a' && ch <= 'z') return (int)(ch - 'a' + 'A');
     if ((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')) return (int)ch;
     return 0;
+}
+
+inline unsigned mac_char_to_wm_char(char32_t ch, bool command) {
+    if (command || (ch >= 0xF700 && ch <= 0xF8FF)) return 0;
+    switch (ch) {
+    case 0x7f: return VK_BACK_;
+    case 0x03: case '\n': case '\r': return VK_RETURN_;
+    case 0x08: case '\t': case 0x1b: return (unsigned)ch;
+    default: break;
+    }
+    return ch < 0x20 ? 0 : (unsigned)ch;
+}
+
+inline std::string with_fallback_rating(const std::string& expr) {
+    static const std::string field = "%rating%", fallback = "$if2(%rating%,$meta(NAVIDROME_RATING))";
+    std::string out;
+    out.reserve(expr.size());
+    for (size_t i = 0; i < expr.size();) {
+        bool hit = expr.size() - i >= field.size();
+        for (size_t k = 0; hit && k < field.size(); ++k)
+            hit = std::tolower((unsigned char)expr[i + k]) == field[k];
+        if (hit) {
+            out += fallback;
+            i += field.size();
+        } else {
+            out += expr[i++];
+        }
+    }
+    return out;
 }
 
 enum FontStyle : int { kFontBold = 1, kFontItalic = 2, kFontUnderline = 4 };

@@ -147,7 +147,10 @@ anything repo-specific stays in the repo's own sections.
   HVF, launchd jobs). Every repo drives it with the same `make win11-arm*` targets; foo_ui_panels
   and foo_js_panel point at `../foo_navidrome/scripts/win11-arm.sh` (`WIN11_ARM=`). `deploy <dll>` installs into
   `user-components-arm64ec/<dll name>`, `push` copies a folder in, `COMPONENT=` picks the log
-  `fb2k log` reads, `make win11-arm-test` runs each repo's unit tests in the guest.
+  `fb2k log` reads, `make win11-arm-test` runs each repo's unit tests in the guest. Windows
+  ignores the QEMU tablet, so `click [X Y]` and `tap 'X,Y;wait,MS;key,VK'` click from inside
+  the desktop session (scheduled task + `SetCursorPos`/`mouse_event`); `tap` runs a whole
+  sequence in one go so a popup menu stays open for the next click.
 - **All three Windows builds run in that one VM:** ARM64EC natively, x64 in the same ARM
   foobar2000 (an ARM64EC process loads x64 DLLs), x86 in a portable 32-bit foobar2000 at
   `C:\fb2k-x86` (`FB2K_ARCH=x86`, foo_ui_panels and foo_js_panel: `ARCH=x86`; `provision` installs it once and
@@ -191,6 +194,58 @@ anything repo-specific stays in the repo's own sections.
   A host hands a panel its own script through `src/core/js_panel_api.h` (the original of the
   contract Panels UI vendors, see Shared conventions › Hosting): config data on Windows, the
   `script` dictionary key on macOS; such a script is never written back as the default.
+- **Panel properties:** `window.GetProperty/SetProperty` live in
+  `<profile>/foo_js_panel/properties/<FNV-1a of the script path>.json` (`sample.json` for the
+  built-in one), written once after a callback that changed them. Panels running the same script
+  share them; a converted theme gives each panel its own script file.
+- **Deferred dispatch:** `NotifyOthers` (info cloned as JSON), the playlist/metadb callbacks and
+  `window.Reload`/`fb.Exit` go through `Panel::later` (`fb2k::inMainThread` + the panel's abort),
+  like SMP's posted messages: scripts may modify playlists from them and never destroy the engine
+  they're running in. Playback callbacks stay synchronous.
+- **Menus:** `MenuObject` keeps SMP's mutable tree (`AppendTo` links the child, so later edits
+  show) and `flatten`s it to a `jsp::Menu` value tree for `Surface::popup_menu` (depth-capped, a
+  menu appended to itself is fine). The managers are host `MenuSource`s: context = the
+  `contextmenu_manager` node tree, main = `mainmenu_manager_v2::generate_menu()` (portable since
+  fb2k 2.0). Ids are `base + n` in build order; `ExecuteByID(n)` runs the n-th command.
+- **Modal calls:** `TrackPopupMenu` and `InputBox` run through `Impl::modal` (the time spent
+  doesn't count against the 5 s budget; `Budget` is RAII so nested callbacks in the modal loop keep
+  the outer deadline) and `Panel::reload` waits while `in_modal()`.
+- **No `SetForegroundWindow` before `TrackPopupMenu`:** on a window that isn't foreground it
+  hides the menu and stops the panels painting. A right-click already makes the window
+  foreground; the VM UI test clicks first (`win11-arm.sh move` + `click`) for the same reason.
+- **Off-screen images:** pixels are `pui::gfx::Pixels` (premultiplied `0xAARRGGBB`), with
+  `image_pixels` / `image_from_pixels` / `pixels_canvas(px, scale)` in Panels UI's canvas
+  backends. GDI can't write alpha, so the Windows pixel canvas draws every call on a copy over
+  black and one over white and recovers alpha from the difference; CoreGraphics draws straight
+  into the buffer. A `GdiBitmap` holds a drawable image and/or pixels (`pixels_of` reads them on
+  first use, `drawable` rebuilds the image after an edit); the pixel operations are SDK-free in
+  `image_ops.cpp`. Each `gr` carries its canvas (`Graphics`): `on_paint`'s is cleared after the
+  call, `GetGraphics`' writes back on `ReleaseGraphics` or when collected.
+- **Alpha:** `Canvas` only has alpha for rectangles and images, so `with_alpha` draws a
+  translucent shape or `DrawString` opaque into a box-sized pixel canvas (at the device scale)
+  and composites it with the colour's alpha. `GdiDrawText` stays opaque, as in SMP.
+- **Arcs:** SMP's `FillRoundRect` arcs are radii; `Canvas::fill_round_rect` takes the corner
+  ellipse's size (GDI `RoundRect`), so the engine passes `2 * arc` and `FillEllipse` the full size.
+- **ActiveX stand-ins:** `ActiveXObject` is JS in `kPrelude`, dispatching on the ProgID to
+  stand-ins over the hidden native `__jsp` object (disk via `std::filesystem` straight, not through
+  the host, so FSO and `stat`/`list` agree; HTTP, shell, clipboard and message box through the
+  host). HTTP is the SDK's `http_client` (`Panel::run_http`, a detached thread + `inMainThread` for
+  async); `WScript.Shell.Run` is `ui::shell_run` (`ShellExecuteW` / `NSWorkspace`; Windows-only
+  commands do nothing on macOS), except `cscript` of a download VBS (XMLHTTP + `SaveToFile`), which
+  becomes `__jsp.download`. `htmlfile` is a small DOM: elements keep offsets into the parsed
+  source, so `innerHTML` is the original markup, not a re-serialisation. `SetPseudoCaption` is a
+  rect in main-window client coordinates; a left-down there drags the window
+  (`WM_NCLBUTTONDOWN HTCAPTION` / `performWindowDragWithEvent`) instead of reaching the script.
+  Unknown ProgIDs throw, as in JScript.
+- **Theme checks run third-party code:** `make theme-check` executes a theme's scripts, so
+  `render_script --sandbox PROFILE` refuses every write, move or delete outside the theme's
+  profile (`JsHost::may_write`, checked by every FSO/`utils` write) and the renderer has no shell,
+  network or clipboard. Still run it only on a theme the user asked for, never from CI.
+- **HTML dialogs:** `utils.ShowHtmlDialog` has no HTML engine on either platform; it reads the
+  dialog kind from the HTML's element ids (`btn_cancel`, `btn_later`, `input_container`,
+  `radio_container`, as Eole's dialogs use) and answers through `message_box`, or Cancel for forms.
+- **Windows paths in scripts:** `fix_path` turns `\` into `/` off Windows for `include`,
+  `gdi.Image` and the `utils` file functions (themes build paths as `fb.ProfilePath + 'a\\b.js'`).
 - **Edit script:** `Surface::open_editor` (one editor window per panel, closed with it; Windows
   `win_editor.cpp` = plain `EDIT` control, macOS `NSTextView` in `mac_element.mm`). Applying writes
   the file and reloads; the built-in sample is saved as `<profile>/foo_js_panel/script[-N].js`.
@@ -199,8 +254,10 @@ anything repo-specific stays in the repo's own sections.
   (identical to Panels UI's copy). `list_albums[_v2]` blocks, so `Panel::navidrome_albums` runs it on
   a detached thread with the panel's `abort_callback` and hands the result back with
   `fb2k::inMainThread`; the engine resolves the Promise only while it's alive (`Impl::alive`).
-  Artists are derived from the albums (`library_artists`). Songs/search need a new contract
-  version in foo_navidrome.
+  Artists are derived from the albums (`library_artists`). v3 adds `list_tracks` (merged into
+  `fb.GetLibraryItems()`) and `artist_info` (`GetArtistInfoAsync`; `tools/eole_patches.py` makes
+  Eole's Biography fetch artist photos from it, since last.fm's photo pages now answer non-browser
+  clients with a JS challenge).
 - **Hardening:** 5 s budget per call (interrupt handler), 512 MB runtime memory, 1 MB stack. A
   script error stops the script (timers killed) and the panel paints the error + stack, like SMP.
 - Panels UI bridge (variables/actions/notify) and drawing onto the Panels UI canvas are planned
@@ -231,11 +288,16 @@ anything repo-specific stays in the repo's own sections.
   `console`, `utils`, `include`; classes `GdiGraphics` (`gr`, valid only inside `on_paint`),
   `GdiFont`, `FbTitleFormat`; callback dispatch, timers, promise jobs, error capture. Everything
   fb2k/platform goes through `JsHost`. New API = a `JSCFunctionListEntry` row + function + test.
+  New callbacks with plain arguments go through `JsEngine::invoke(name, {Arg…})`; small stubs
+  (`CreateTooltip`, `fb.CreateProfiler`) are JS in `kPrelude`.
+- `src/core/image_ops.{h,cpp}` — SDK-free pixel operations (crop, resize, mask, alpha, invert,
+  rotate/flip, stack blur, colour scheme), tested in `tests/test_image_ops.cpp`.
 - `src/core/js_api_util.h` — SMP conventions → canvas: ARGB, `DT_*`, StringFormat, font style.
 - `src/core/sample_script.cpp` — built-in sample (tested in both states).
 - `src/core/panel.{h,cpp}` — `Panel`: one engine per element, `JsHost` over the SDK
   (titleformat cache, playback_control, play_callback), context menu, script loading; `Surface`
-  is what a platform window does (invalidate, timers, file picker, popup menu).
+  is what a platform window does (invalidate, timers, file picker, popup menu tree, cursor,
+  input box: `win_input.cpp` / `NSAlert`).
 - `src/core/settings.cpp` — `cfg_var`s (verbose, default script) + *View › JS Panel* menu.
 - `src/core/{log,diagnostics,fs_util}` — same shape as the sister repos (session banner, ring,
   rotation, redaction); `diagnostics_collect.cpp` starts the log (`initquit`) and builds the report.
@@ -263,6 +325,10 @@ anything repo-specific stays in the repo's own sections.
   the panel's abort and the engine's `alive` token. The library tree starts from
   `fb.GetLibraryItems()` and rebuilds on the library callbacks (the library is still loading
   when a panel starts with foobar2000).
+- `tools/fcl_extract.py` + `scripts/theme-check.sh` (`make theme-check`) — pull every Spider
+  Monkey Panel panel (SMP 1.x binary config: version, GUID, edge style, properties, window
+  placement, script) out of a Columns UI `.fcl` export and run each with `render_script`
+  (`--profile`, `--properties`).
 - `tools/render_script.mm` (`make render`, macOS) — runs a script once on a `CGCanvas` (pending
   timers fired, `--click`s, `--art`, a TSV `--library`/`--navidrome`) and writes the frame as a
   PNG. The JS layouts' wizard previews are Panels UI's `albums.png`/`playlist.png` (demo library)

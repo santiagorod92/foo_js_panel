@@ -22,7 +22,16 @@ public:
     virtual void start_timer(int id, int ms) = 0;
     virtual void stop_timer(int id) = 0;
     virtual std::string choose_script_file() = 0;
-    virtual int popup_menu(int x, int y, const std::vector<std::string>& items) = 0;
+    virtual int popup_menu(int x, int y, const Menu& menu) = 0;
+    virtual void set_cursor(int idc) = 0;
+    virtual bool input_box(const std::string& prompt, const std::string& caption, std::string& value) = 0;
+    virtual int message_box(const std::string& text, const std::string& caption, int type) = 0;
+    virtual int window_state() = 0;
+    virtual void set_window_state(int state) = 0;
+    virtual bool fullscreen() = 0;
+    virtual void set_fullscreen(bool on) = 0;
+    virtual void set_window_limits(int minW, int minH, int maxW, int maxH) = 0;
+    virtual void set_caption(const pui::gfx::Rect& r) = 0;
     virtual void open_editor(const std::string& title, const std::string& text, EditorHooks hooks) = 0;
     virtual bool key_pressed(int vk) = 0;
 };
@@ -36,7 +45,7 @@ public:
     std::string status() const;
     void set_script(const std::string& path);
     void reload();
-    void edit_script();
+    void edit_script() override;
     std::string apply_source(const std::string& source);
 
     void paint(pui::gfx::Canvas& canvas);
@@ -44,6 +53,9 @@ public:
     void mouse(Mouse kind, int x, int y, unsigned mask);
     void wheel(int step);
     bool key_down(int vk);
+    bool key_up(int vk);
+    void char_input(unsigned codepoint);
+    void focus(bool focused);
     void timer(int id);
 
     static std::vector<Panel*>& live();
@@ -63,6 +75,7 @@ public:
     LibraryState navidrome_state() override;
     void navidrome_albums(AlbumsDone done) override;
     void navidrome_play(bool artist, const std::string& id, bool replace, bool play) override;
+    void navidrome_artist_info(const std::string& name, ArtistInfoDone done) override;
     TrackPtr now_playing() override;
     Tracks library_items() override;
     std::string track_path(const TrackPtr& t) override;
@@ -81,7 +94,96 @@ public:
     void execute_default_action(int p, int item) override;
     bool key_pressed(int vk) override;
 
+    std::string load_properties() override;
+    void save_properties(const std::string& json) override;
+    void notify_others(const std::string& name, const std::string& json, const std::vector<NotifyItem>& items) override;
+    void reload_script() override;
+    std::string profile_path() override;
+    std::string component_path() override;
+    std::string foobar_path() override;
+    std::string version() override;
+    double volume() override;
+    void set_volume(double db) override;
+    bool flag(Flag f) override;
+    void set_flag(Flag f, bool on) override;
+    bool run_main_menu_command(const std::string& path) override;
+    bool run_context_command(const std::string& path, const Tracks* tracks) override;
+    void popup_message(const std::string& text, const std::string& title) override;
+    TrackPtr focus_item() override;
+    Tracks query_items(const Tracks& tracks, const std::string& query, std::string& error) override;
+    bool in_library(const TrackPtr& t) override;
+    std::string library_relative_path(const TrackPtr& t) override;
+    std::string path_sort_key(const TrackPtr& t) override;
+    bool has_component(const std::string& name, bool dll) override;
+    void exit_app() override;
+    TrackInfo track_info(const TrackPtr& t) override;
+    bool write_text_file(const std::string& path, const std::string& text) override;
+
+    int playlist_item_count(int p) override;
+    Tracks playlist_items(int p, bool selectedOnly) override;
+    std::vector<bool> playlist_selection(int p) override;
+    void set_playlist_selection(int p, const std::vector<int>& items, bool state) override;
+    void clear_playlist_selection(int p) override;
+    void remove_playlist_selection(int p, bool crop) override;
+    void move_playlist_selection(int p, int delta) override;
+    int playlist_focus(int p) override;
+    void set_playlist_focus(int p, int item) override;
+    void ensure_visible(int p, int item) override;
+    int create_playlist(int p, const std::string& name) override;
+    int duplicate_playlist(int p, const std::string& name) override;
+    bool remove_playlist(int p, bool switchActive) override;
+    bool rename_playlist(int p, const std::string& name) override;
+    bool move_playlist(int from, int to) override;
+    bool playlist_is_auto(int p) override;
+    bool playlist_is_locked(int p) override;
+    int create_autoplaylist(int p, const std::string& name, const std::string& query, const std::string& sort, int flags) override;
+    void show_autoplaylist_ui(int p) override;
+    int playback_order() override;
+    void set_playback_order(int order) override;
+    ItemLocation playing_location() override;
+    bool sort_playlist(int p, const std::string& pattern, bool selOnly) override;
+    bool reorder_playlist(int p, const std::vector<int>& order) override;
+    void undo_backup(int p) override;
+    void queue_add(const TrackPtr& t) override;
+    void queue_add_playlist_item(int p, int item) override;
+    void queue_flush() override;
+    Tracks queue_items() override;
+    int popup_menu(int x, int y, const Menu& menu) override;
+    MenuSourcePtr context_menu(ContextKind kind, const Tracks& tracks) override;
+    MenuSourcePtr main_menu(const std::string& root) override;
+    void set_cursor(int idc) override;
+    bool input_box(const std::string& prompt, const std::string& caption, std::string& value) override;
+    bool image_pixels(const pui::gfx::Image& img, pui::gfx::Pixels& out) override;
+    pui::gfx::ImagePtr image_from_pixels(const pui::gfx::Pixels& px) override;
+    std::unique_ptr<pui::gfx::Canvas> pixels_canvas(pui::gfx::Pixels& px, double scale) override;
+    bool save_png(const pui::gfx::Image& img, const std::string& path) override;
+    pui::gfx::ImagePtr album_art_sync(const TrackPtr& t, int artId, std::string& path) override;
+    void load_image_async(const std::string& path, ArtDone done) override;
+    void http_request(const HttpRequest& req, HttpDone done) override;
+    HttpResponse http_request_sync(const HttpRequest& req) override;
+    bool shell_run(const std::string& command) override;
+    std::string clipboard_text() override;
+    bool set_clipboard_text(const std::string& text) override;
+    int message_box(const std::string& text, const std::string& caption, int type) override;
+    void ui_selection(SelectionMode mode, const Tracks& tracks) override;
+    bool update_tags(const Tracks& tracks, const std::vector<TagSet>& sets) override;
+    bool panels_ui_available() override;
+    bool panels_ui_variable(const std::string& name, std::string& out) override;
+    void set_panels_ui_variable(const std::string& name, const std::string& value) override;
+    bool panels_ui_action(const std::string& action) override;
+    int window_state() override { return m_surface.window_state(); }
+    void set_window_state(int state) override { m_surface.set_window_state(state); }
+    bool fullscreen() override { return m_surface.fullscreen(); }
+    void set_fullscreen(bool on) override { m_surface.set_fullscreen(on); }
+    void set_window_limits(int minW, int minH, int maxW, int maxH) override { m_surface.set_window_limits(minW, minH, maxW, maxH); }
+    void set_caption(const pui::gfx::Rect& r) override { m_surface.set_caption(r); }
+    Tracks get_ui_selection() override;
+
 private:
+    struct Callbacks;
+    void later(std::function<void()> fn);
+    void invoke(const char* name, const std::vector<Arg>& args = {});
+    bool valid(int p);
     void context_menu(int x, int y);
     std::string current_source();
     titleformat_object::ptr compiled(const std::string& expr);
@@ -90,17 +192,18 @@ private:
     void on_playback_starting(play_control::t_track_command cmd, bool paused) override;
     void on_playback_new_track(metadb_handle_ptr track) override;
     void on_playback_stop(play_control::t_stop_reason reason) override;
-    void on_playback_seek(double) override {}
+    void on_playback_seek(double t) override;
     void on_playback_pause(bool paused) override;
-    void on_playback_edited(metadb_handle_ptr) override {}
-    void on_playback_dynamic_info(const file_info&) override {}
-    void on_playback_dynamic_info_track(const file_info&) override {}
+    void on_playback_edited(metadb_handle_ptr track) override;
+    void on_playback_dynamic_info(const file_info&) override;
+    void on_playback_dynamic_info_track(const file_info&) override;
     void on_playback_time(double t) override;
-    void on_volume_change(float) override {}
+    void on_volume_change(float db) override;
     void on_items_added(metadb_handle_list_cref items) override;
     void on_items_removed(metadb_handle_list_cref items) override;
     void on_items_modified(metadb_handle_list_cref items) override;
     void library_event(JsEngine::LibraryChange kind, metadb_handle_list_cref items);
+    void load_navidrome_library();
 
     Surface& m_surface;
     std::string m_path;
@@ -116,6 +219,8 @@ private:
         std::shared_ptr<ArtDone> done;
     };
     std::vector<ArtWait> m_artWaiting;
+    std::unique_ptr<Callbacks> m_callbacks;
+    ui_selection_holder::ptr m_selection;
 };
 
 }

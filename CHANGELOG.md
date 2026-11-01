@@ -3,6 +3,73 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.1.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.0.0...v1.1.0) (2026-10-31)
+
+### Highlights
+- **Eole runs on macOS and Windows**: the Eole theme (Columns UI + Spider Monkey Panel) becomes a
+  Panels UI skin whose panels are JS Panels, with your Navidrome server as the library. The README's
+  *Running the Eole theme* walks through it: get Eole, patch it, build the skin, pick it.
+- **Most of the Spider Monkey Panel API**: properties, panel messages, popup menus with the
+  context and main menus, input boxes, off-screen images and image effects, translucent drawing,
+  the ActiveX objects Windows themes create, and many more `fb`, `plman`, `utils` and `window`
+  members (the README's *What's implemented* has the full list).
+
+### Added
+- **Panel properties**: `window.GetProperty` / `SetProperty`, kept per script in
+  `<profile>/foo_js_panel/properties/`.
+- **Panel messages**: `window.NotifyOthers(name, info)` and `on_notify_data`; track handles and
+  handle lists inside `info` arrive as real objects.
+- **Popup menus**: `window.CreatePopupMenu()` (items, separators, checks, radio groups, submenus,
+  `TrackPopupMenu`), `fb.CreateContextMenuManager()` and `fb.CreateMainMenuManager()` with
+  `ExecuteByID`, on Windows and macOS.
+- **Input and message boxes**: `utils.InputBox`, `WScript.Shell.Popup`, `utils.ShowHtmlDialog`
+  for the confirm/alert dialogs themes build in HTML.
+- **Keyboard and mouse**: `on_key_up`, `on_char`, `on_focus`, the middle button,
+  `window.SetCursor`.
+- **Off-screen images**: `gdi.CreateImage`, `GetGraphics` / `ReleaseGraphics`, `Clone`, `Resize`,
+  `RotateFlip`, `ApplyMask`, `ApplyAlpha`, `InvertColours`, `StackBlur`, `GetColourScheme(JSON)`,
+  `SaveAs`; `gdi.LoadImageAsync(V2)`, `utils.GetAlbumArtV2` / `GetAlbumArtAsyncV2`.
+- **Drawing**: translucent shapes and `DrawString` honour the colour's alpha; anti-aliased
+  strokes; `FillGradRect` at any angle with alpha and a focus point; `MeasureString`,
+  `EstimateLineWrap`, `CalcTextHeight`.
+- **ActiveX stand-ins** (both platforms): `Scripting.FileSystemObject`, `Microsoft.XMLHTTP` /
+  `Msxml2.XMLHTTP` / `WinHttp.WinHttpRequest.5.1` through foobar2000's HTTP client,
+  `WScript.Shell` (`Run`, `RegRead`, `Popup`), `htmlfile` (clipboard and a small HTML DOM for
+  scrapers: `innerHTML`, `getElementsByTagName`, `className`, `innerText`, `href`, `src`),
+  `UIHacks` (window state, full screen, minimum and maximum size, and a draggable pseudo caption
+  for themes that hide the title bar), plus inert `ESLyric`, `Shell.Application` and
+  `ScriptControl`.
+- `WScript.Shell.Run` of a `cscript` download script (XMLHTTP + `SaveToFile`, as Biography's
+  `foo_lastfm_img.vbs`) downloads the URL into the file on both platforms.
+- **Globals**: `setTimeout` / `setInterval` / `clear*`, `new FbMetadbHandleList`,
+  `new FbTitleFormat`, `new FbProfiler`, a small `Intl`; `include` resolves paths relative to the
+  file that calls it.
+- **Handles and playlists**: `FbMetadbHandleList[i]`, sorting, searching and set operations,
+  `UpdateFileInfoFromJSON` (Navidrome tracks rate through foo_navidrome), the UI selection
+  holder, and many more `plman` and `fb` members.
+- **Ratings**: `%rating%` falls back to Navidrome's rating on server tracks.
+- **`panelsui` object** (with Panels UI 1.19 or later): read and write skin variables and run
+  skin actions, so a script can switch the skin's views.
+- **Navidrome**: with foo_navidrome 1.38 or later, the server's tracks join
+  `fb.GetLibraryItems()` (*View › JS Panel › Navidrome tracks in the library*, on by default),
+  and `navidrome.GetArtistInfoAsync(name)` returns the biography and the artist's image.
+- **Eole tools** in a source checkout: `tools/eole_patches.py` and `tools/eole_skin.py` (see the
+  README), `make theme-check` to run a Columns UI layout's panels offline in a sandbox.
+
+### Fixed
+- `FillRoundRect` corners were twice too round and `FillEllipse` half size.
+- `GdiDrawText` with `DT_CALCRECT` and `DT_BOTTOM` clipped the text to a box shorter than the
+  line (Eole's controls bar cut the track title).
+- `gdi.LoadImageAsync` handed the script back a path with `/` instead of the one it asked for,
+  so themes that look images up by path (Eole's Biography photos) never showed them.
+- `fb.GetLibraryRelativePath` uses `\` separators on macOS too, and Navidrome tracks get an
+  *Album artist\Album\NN - Title* path, so folder views (Eole's Library Tree) group them;
+  `OrderByPath` sorts them by that path.
+- `InitNowPlaying` on a context menu manager with nothing playing returns an empty menu instead
+  of stopping the script.
+- The Windows unit tests ran again (three tests wrote Windows paths into JavaScript strings
+  without escaping them).
+
 ## 1.0.0 (2026-10-27)
 
 ### Highlights

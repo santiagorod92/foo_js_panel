@@ -1,4 +1,5 @@
 $drawrect(0,0,%_width%,%_height%,brushcolor-24-25-30 pencolor-null)
 $font(Segoe UI,12,bold)
 $drawstring(Panels UI hosting a JS Panel,12,10,400,22,235-238-245)
-$panel(JS,JS Panel,12,40,$eval(%_width% - 24),$eval(%_height% - 52))
+$panel(JS,JS Panel,12,40,$eval(%_width% - 24),$eval(%_height% - 112))
+$panel(JS2,JS Panel,12,$eval(%_height% - 64),$eval(%_width% - 24),52)

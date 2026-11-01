@@ -1,5 +1,5 @@
 .PHONY: help build build-arm64ec build-x86 build-all deploy launch run kill clean check-portable test win-test \
-	mac-build mac-local mac-smoke mac-demo mac-restore render ui-smoke win11-arm win11-arm-deploy win11-arm-test win11-arm-smoke
+	mac-build mac-local mac-smoke mac-demo mac-restore render theme-check mac-shot mac-click ui-smoke win11-arm win11-arm-deploy win11-arm-test win11-arm-smoke win11-arm-menus win11-arm-images
 
 help:
 	@echo "foo_js_panel — make targets"
@@ -23,11 +23,16 @@ help:
 	@echo "                  wizard template TEMPLATE=albums-js (default), playlist-js or library-js as the active skin, launch (undo: mac-restore)"
 	@echo "  mac-restore     undo mac-local / mac-demo: previous skin, default script and components back"
 	@echo "  render          (macOS) build build/tools/render_script; SCRIPT=x.js OUT=x.png ARGS='--size 600x56 --playing ...' renders one frame"
+	@echo "  theme-check     (macOS) LAYOUT=x.fcl PROFILE=dir runs every SMP panel of a Columns UI layout in the engine"
+	@echo "  mac-shot        screenshot of this Mac's foobar2000 window (OUT=file.png)"
+	@echo "  mac-click       click this Mac's foobar2000 window at X= Y= points (KIND=right|double)"
 	@echo ""
 	@echo "  Windows 11 ARM VM on an Apple Silicon Mac (../foo_navidrome/scripts/win11-arm.sh, set up from foo_navidrome):"
 	@echo "  win11-arm         start the VM and open its screen (VNC=0: no browser)"
 	@echo "  win11-arm-deploy  build ARCH=arm64ec (default), x64 or x86, install the DLL in the guest, restart foobar2000, screenshot"
 	@echo "  win11-arm-smoke   build ARCH=..., then the smoke test in the guest (scripts/ui-test.sh win11-arm smoke)"
+	@echo "  win11-arm-menus   build ARCH=..., then a popup menu and an InputBox in the guest, with screenshots"
+	@echo "  win11-arm-images  build ARCH=..., then off-screen images and translucent shapes in the guest, with a screenshot"
 	@echo "  win11-arm-test    unit tests built for Windows, run in the guest"
 	@echo "  win11-arm-<cmd>   any win11-arm.sh command: -up, -down, -status, -shot, -ssh, -fb2k ARGS=start, -fb2k ARGS='log 60 ERROR', ..."
 
@@ -102,12 +107,21 @@ mac-restore:
 
 RENDER_BIN = build/tools/render_script
 QJS_C = third_party/quickjs/dtoa.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/quickjs.c
-$(RENDER_BIN): tools/render_script.mm src/core/js_engine.cpp src/core/js_engine.h $(PANELS_UI_SRC)/platform/mac/mac_canvas.mm
+$(RENDER_BIN): tools/render_script.mm src/core/js_engine.cpp src/core/js_engine.h src/core/image_ops.cpp $(PANELS_UI_SRC)/platform/mac/mac_canvas.mm
 	@mkdir -p build/tools/qjs
 	@for f in $(QJS_C); do $(CC_HOST) -std=gnu11 -O2 -w -D_GNU_SOURCE -c $$f -o build/tools/qjs/$$(basename $$f .c).o; done
-	$(CXX_HOST) -std=c++20 -O1 -fobjc-arc -Isrc -I$(PANELS_UI_SRC) -Ithird_party/quickjs tools/render_script.mm src/core/js_engine.cpp \
+	$(CXX_HOST) -std=c++20 -O1 -fobjc-arc -Isrc -I$(PANELS_UI_SRC) -Ithird_party/quickjs tools/render_script.mm src/core/js_engine.cpp src/core/image_ops.cpp \
 	  $(PANELS_UI_SRC)/platform/mac/mac_canvas.mm build/tools/qjs/*.o -framework CoreGraphics -framework CoreText -framework ImageIO \
 	  -framework CoreFoundation -framework Foundation -o $(RENDER_BIN)
+mac-shot:
+	./scripts/mac-shot.sh $(OUT)
+
+mac-click:
+	./scripts/mac-click.sh $(X) $(Y) $(KIND)
+
+theme-check:
+	./scripts/theme-check.sh $(LAYOUT) $(PROFILE) $(OUT)
+
 render: $(RENDER_BIN)
 	@if [ -n "$(SCRIPT)" ]; then ./$(RENDER_BIN) $(SCRIPT) $(OUT) $(ARGS); fi
 
@@ -131,6 +145,14 @@ win11-arm-deploy:
 win11-arm-smoke:
 	WIN_ARCH=$(ARCH) ./build.sh
 	WIN11_ARM=$(WIN11_ARM) ARCH=$(ARCH) ./scripts/ui-test.sh win11-arm smoke
+
+win11-arm-menus:
+	WIN_ARCH=$(ARCH) ./build.sh
+	WIN11_ARM=$(WIN11_ARM) ARCH=$(ARCH) ./scripts/ui-test.sh win11-arm menus
+
+win11-arm-images:
+	WIN_ARCH=$(ARCH) ./build.sh
+	WIN11_ARM=$(WIN11_ARM) ARCH=$(ARCH) ./scripts/ui-test.sh win11-arm images
 
 win11-arm-test:
 	WIN11_ARM=$(WIN11_ARM) ./scripts/run-unit-tests.sh win11-arm

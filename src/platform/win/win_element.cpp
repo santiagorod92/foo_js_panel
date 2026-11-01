@@ -7,6 +7,7 @@
 #include "../../core/panel.h"
 #include "../../core/settings.h"
 #include "win_editor.h"
+#include "win_input.h"
 #include <memory>
 
 namespace jsp {
@@ -66,14 +67,106 @@ public:
         ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
         return GetOpenFileNameW(&ofn) ? narrow(file) : std::string();
     }
-    int popup_menu(int x, int y, const std::vector<std::string>& items) override {
+    static HMENU build_menu(const Menu& items) {
         HMENU menu = CreatePopupMenu();
-        for (size_t i = 0; i < items.size(); ++i) AppendMenuW(menu, MF_STRING, i + 1, widen(items[i]).c_str());
+        UINT pos = 0;
+        for (const MenuItem& it : items) {
+            std::wstring text = widen(it.text);
+            MENUITEMINFOW mi{};
+            mi.cbSize = sizeof mi;
+            mi.fMask = MIIM_FTYPE | MIIM_STATE | MIIM_ID;
+            mi.fType = it.separator ? MFT_SEPARATOR : it.radio ? MFT_RADIOCHECK : MFT_STRING;
+            mi.fState = (it.checked ? MFS_CHECKED : 0u) | (it.disabled ? MFS_DISABLED : 0u);
+            mi.wID = (UINT)it.id;
+            if (!it.separator) {
+                mi.fMask |= MIIM_STRING;
+                mi.dwTypeData = text.data();
+            }
+            if (it.submenu) {
+                mi.fMask |= MIIM_SUBMENU;
+                mi.hSubMenu = build_menu(it.children);
+            }
+            InsertMenuItemW(menu, pos++, TRUE, &mi);
+        }
+        return menu;
+    }
+    int popup_menu(int x, int y, const Menu& items) override {
+        HMENU menu = build_menu(items);
         POINT pt{ x, y };
         ClientToScreen(hwnd, &pt);
         const int cmd = (int)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
+        PostMessageW(hwnd, WM_NULL, 0, 0);
         DestroyMenu(menu);
-        return cmd - 1;
+        return cmd;
+    }
+    HCURSOR cursor = nullptr;
+    void set_cursor(int idc) override {
+        cursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(idc));
+        if (cursor) SetCursor(cursor);
+    }
+    bool input_box(const std::string& prompt, const std::string& caption, std::string& value) override {
+        return win::input_box(hwnd, caption, prompt, value);
+    }
+    HWND root() const { return hwnd ? GetAncestor(hwnd, GA_ROOT) : nullptr; }
+    int window_state() override {
+        HWND r = root();
+        return !r ? 0 : IsIconic(r) ? 1 : IsZoomed(r) ? 2 : 0;
+    }
+    void set_window_state(int state) override {
+        if (HWND r = root()) ShowWindow(r, state == 1 ? SW_MINIMIZE : state == 2 ? SW_MAXIMIZE : SW_RESTORE);
+    }
+    bool full = false;
+    WINDOWPLACEMENT saved{};
+    LONG_PTR savedStyle = 0;
+    bool fullscreen() override { return full; }
+    void set_fullscreen(bool on) override {
+        HWND r = root();
+        if (!r || on == full) return;
+        if (on) {
+            saved.length = sizeof saved;
+            GetWindowPlacement(r, &saved);
+            savedStyle = GetWindowLongPtrW(r, GWL_STYLE);
+            MONITORINFO mi{ sizeof mi };
+            GetMonitorInfoW(MonitorFromWindow(r, MONITOR_DEFAULTTONEAREST), &mi);
+            SetWindowLongPtrW(r, GWL_STYLE, savedStyle & ~(LONG_PTR)(WS_CAPTION | WS_THICKFRAME));
+            SetWindowPos(r, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
+                         mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+        } else {
+            SetWindowLongPtrW(r, GWL_STYLE, savedStyle);
+            SetWindowPlacement(r, &saved);
+            SetWindowPos(r, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+        }
+        full = on;
+    }
+    void set_window_limits(int minW, int minH, int maxW, int maxH) override {
+        HWND r = root();
+        if (!r || IsIconic(r) || IsZoomed(r) || full) return;
+        RECT rc;
+        GetWindowRect(r, &rc);
+        int w = rc.right - rc.left, h = rc.bottom - rc.top;
+        if (minW > 0) w = std::max(w, minW);
+        if (minH > 0) h = std::max(h, minH);
+        if (maxW > 0) w = std::min(w, maxW);
+        if (maxH > 0) h = std::min(h, maxH);
+        if (w != rc.right - rc.left || h != rc.bottom - rc.top) SetWindowPos(r, nullptr, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    pui::gfx::Rect caption{};
+    void set_caption(const pui::gfx::Rect& r) override { caption = r; }
+    bool in_caption(int x, int y) {
+        HWND r = root();
+        if (!r || caption.w <= 0 || caption.h <= 0 || full) return false;
+        POINT p{ x, y };
+        MapWindowPoints(hwnd, r, &p, 1);
+        return p.x >= caption.x && p.x < caption.x + caption.w && p.y >= caption.y && p.y < caption.y + caption.h;
+    }
+    void drag_window() {
+        HWND r = root();
+        POINT p;
+        GetCursorPos(&p);
+        SendMessageW(r, WM_NCLBUTTONDOWN, HTCAPTION, MAKELPARAM(p.x, p.y));
+    }
+    int message_box(const std::string& text, const std::string& caption, int type) override {
+        return MessageBoxW(hwnd ? GetAncestor(hwnd, GA_ROOT) : nullptr, widen(text).c_str(), widen(caption).c_str(), (UINT)(type & 0xFFFF));
     }
 };
 
@@ -185,6 +278,10 @@ private:
             if (m_panel) m_panel->mouse(Mouse::Leave, 0, 0, 0);
             return 0;
         case WM_LBUTTONDOWN:
+            if (m_surface.in_caption(x, y)) {
+                m_surface.drag_window();
+                return 0;
+            }
             SetFocus(hwnd);
             SetCapture(hwnd);
             if (m_panel) m_panel->mouse(Mouse::LeftDown, x, y, mask);
@@ -194,12 +291,52 @@ private:
             if (m_panel) m_panel->mouse(Mouse::LeftUp, x, y, mask);
             return 0;
         case WM_LBUTTONDBLCLK:
+            if (m_surface.in_caption(x, y)) {
+                m_surface.set_window_state(m_surface.window_state() == 2 ? 0 : 2);
+                return 0;
+            }
             if (m_panel) m_panel->mouse(Mouse::LeftDouble, x, y, mask);
             return 0;
         case WM_RBUTTONDOWN:
             SetFocus(hwnd);
             if (m_panel) m_panel->mouse(Mouse::RightDown, x, y, mask);
             return 0;
+        case WM_MBUTTONDOWN:
+            SetFocus(hwnd);
+            if (m_panel) m_panel->mouse(Mouse::MiddleDown, x, y, mask);
+            return 0;
+        case WM_MBUTTONUP:
+            if (m_panel) m_panel->mouse(Mouse::MiddleUp, x, y, mask);
+            return 0;
+        case WM_MBUTTONDBLCLK:
+            if (m_panel) m_panel->mouse(Mouse::MiddleDouble, x, y, mask);
+            return 0;
+        case WM_SETCURSOR:
+            if (LOWORD(lp) == HTCLIENT && m_surface.cursor) {
+                SetCursor(m_surface.cursor);
+                return TRUE;
+            }
+            break;
+        case WM_SETFOCUS:
+        case WM_KILLFOCUS:
+            if (m_panel) m_panel->focus(msg == WM_SETFOCUS);
+            return 0;
+        case WM_KEYUP:
+        case WM_SYSKEYUP:
+            if (m_panel && m_panel->key_up((int)wp)) return 0;
+            break;
+        case WM_CHAR: {
+            const wchar_t c = (wchar_t)wp;
+            if (c >= 0xD800 && c <= 0xDBFF) {
+                m_highSurrogate = c;
+                return 0;
+            }
+            unsigned cp = c;
+            if (c >= 0xDC00 && c <= 0xDFFF && m_highSurrogate) cp = 0x10000 + ((m_highSurrogate - 0xD800u) << 10) + (c - 0xDC00u);
+            m_highSurrogate = 0;
+            if (m_panel) m_panel->char_input(cp);
+            return 0;
+        }
         case WM_RBUTTONUP:
             if (m_callback.is_valid() && m_callback->is_edit_mode_enabled()) break;
             if (m_panel) m_panel->mouse(Mouse::RightUp, x, y, mask);
@@ -228,6 +365,7 @@ private:
     WinSurface m_surface;
     std::unique_ptr<Panel> m_panel;
     bool m_tracking = false;
+    wchar_t m_highSurrogate = 0;
 };
 
 class JsElement : public ui_element {

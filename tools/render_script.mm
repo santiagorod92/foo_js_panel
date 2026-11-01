@@ -26,6 +26,53 @@ struct StillHost : jsp::JsHost {
     jsp::Tracks library;
     std::vector<jsp::LibraryAlbum> albums;
     std::map<int, int> timers;
+    std::string profile, properties;
+    std::string profile_path() override { return profile; }
+    std::string load_properties() override { return properties; }
+    std::vector<std::string> playlists = { "Default" };
+    std::map<int, jsp::Tracks> items;
+    int active = 0;
+    int playlist_count() override { return (int)playlists.size(); }
+    int active_playlist() override { return active; }
+    void set_active_playlist(int p) override {
+        if (p >= 0 && p < (int)playlists.size()) active = p;
+    }
+    std::string playlist_name(int p) override { return p >= 0 && p < (int)playlists.size() ? playlists[(size_t)p] : std::string(); }
+    int create_playlist(int p, const std::string& name) override {
+        const int at = p < 0 || p > (int)playlists.size() ? (int)playlists.size() : p;
+        playlists.insert(playlists.begin() + at, name.empty() ? "New Playlist" : name);
+        return at;
+    }
+    int find_or_create_playlist(const std::string& name, bool) override {
+        for (size_t i = 0; i < playlists.size(); ++i)
+            if (playlists[i] == name) return (int)i;
+        return create_playlist(-1, name);
+    }
+    bool rename_playlist(int p, const std::string& name) override {
+        if (p < 0 || p >= (int)playlists.size()) return false;
+        playlists[(size_t)p] = name;
+        return true;
+    }
+    bool remove_playlist(int p, bool) override {
+        if (p < 0 || p >= (int)playlists.size()) return false;
+        playlists.erase(playlists.begin() + p);
+        return true;
+    }
+    int playlist_item_count(int p) override { return (int)items[p].size(); }
+    jsp::Tracks playlist_items(int p, bool) override { return items[p]; }
+    std::string sandbox;
+    bool may_write(const std::string& path) override {
+        if (sandbox.empty()) return true;
+        std::error_code ec;
+        const auto root = std::filesystem::weakly_canonical(jsp::fs_path(sandbox), ec);
+        const auto target = std::filesystem::weakly_canonical(jsp::fs_path(path), ec);
+        const auto rel = target.lexically_relative(root);
+        return !ec && !rel.empty() && *rel.begin() != "..";
+    }
+    bool write_text_file(const std::string& path, const std::string& text) override { return may_write(path) && jsp::write_file(path, text); }
+    bool save_png(const pui::gfx::Image& img, const std::string& path) override {
+        return may_write(path) && pui::gfx::encode_png_file(img, path, std::max(1, img.width()));
+    }
     void repaint() override {}
     void repaint_rect(const pui::gfx::Rect&) override {}
     void set_timer(int id, int ms) override { timers[id] = ms; }
@@ -47,6 +94,10 @@ struct StillHost : jsp::JsHost {
     }
     void album_art(const jsp::TrackPtr&, int, jsp::ArtDone done) override { done(art, std::string()); }
     pui::gfx::ImagePtr load_image(const std::string& path) override { return pui::gfx::decode_image_file(path); }
+    bool image_pixels(const pui::gfx::Image& img, pui::gfx::Pixels& out) override { return pui::gfx::image_pixels(img, out); }
+    pui::gfx::ImagePtr image_from_pixels(const pui::gfx::Pixels& px) override { return pui::gfx::image_from_pixels(px); }
+    std::unique_ptr<pui::gfx::Canvas> pixels_canvas(pui::gfx::Pixels& px, double scale) override { return pui::gfx::pixels_canvas(px, scale); }
+    pui::gfx::ImagePtr album_art_sync(const jsp::TrackPtr&, int, std::string&) override { return art; }
     jsp::LibraryState navidrome_state() override { return albums.empty() ? jsp::LibraryState::Missing : jsp::LibraryState::Ready; }
     void navidrome_albums(jsp::AlbumsDone done) override { done(albums, std::string()); }
     std::string titleformat(const std::string& expr) override {
@@ -72,11 +123,15 @@ int usage() {
                  "usage: render_script SCRIPT.js OUT.png [--size WxH] [--scale S] [--playing] [--paused]\n"
                  "                     [--time SECONDS] [--length SECONDS] [--field 'EXPR=VALUE']... [--art IMAGE]\n"
                  "                     [--library FILE.tsv] [--navidrome FILE.tsv] [--click X,Y]...\n"
+                 "                     [--profile DIR] [--properties FILE.json] [--sandbox DIR] [--new-track]\n"
                  "Runs SCRIPT.js in the JS Panel engine (resize, pending timers, clicks, then on_paint) on a\n"
                  "CoreGraphics canvas and writes the frame as a PNG. --field answers fb.TitleFormat(EXPR).Eval();\n"
                  "--art is every album art request's image; --library is the Media Library, a TSV whose first\n"
                  "line holds titleformat expressions and each further line one track's values; --navidrome is\n"
-                 "the server's albums, TSV lines id, name, artist, artist id, year, song count.\n");
+                 "the server's albums, TSV lines id, name, artist, artist id, year, song count. --profile is\n"
+                 "fb.ProfilePath, --properties the panel's window.GetProperty values (JSON). --sandbox refuses\n"
+                 "every file write, move or delete outside DIR (shell commands, the network and the clipboard\n"
+                 "are never reached from this tool). --new-track sends on_playback_new_track after loading.\n");
     return 2;
 }
 
@@ -89,6 +144,7 @@ int main(int argc, char** argv) {
     double scale = 1;
     StillHost host;
     std::vector<std::pair<int, int>> clicks;
+    bool newTrack = false;
     auto read_tsv = [](const char* path) {
         std::vector<std::vector<std::string>> rows;
         std::ifstream in(path);
@@ -145,6 +201,20 @@ int main(int argc, char** argv) {
             int x = 0, y = 0;
             if (!v || std::sscanf(v, "%d,%d", &x, &y) != 2) return usage();
             clicks.emplace_back(x, y);
+        } else if (a == "--profile") {
+            const char* v = next();
+            if (!v) return usage();
+            host.profile = v;
+            if (!host.profile.empty() && host.profile.back() != '/') host.profile += '/';
+        } else if (a == "--new-track") {
+            newTrack = true;
+        } else if (a == "--sandbox") {
+            const char* v = next();
+            if (!v) return usage();
+            host.sandbox = v;
+        } else if (a == "--properties") {
+            const char* v = next();
+            if (!v || !host.read_text_file(v, host.properties)) return usage();
         } else if (a == "--field") {
             const char* v = next();
             const char* eq = v ? std::strchr(v, '=') : nullptr;
@@ -157,9 +227,14 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "can't read %s\n", script.c_str());
         return 1;
     }
+    if (auto* t = dynamic_cast<StillTrack*>(host.playingTrack.get())) {
+        t->fields = host.fields;
+        if (t->path.empty()) t->path = "now-playing";
+    }
     jsp::JsEngine engine(host);
     engine.load(source, script);
     engine.resize(w, h);
+    if (newTrack) engine.playback_new_track(host.playingTrack);
     for (int round = 0; round < 3 && !host.timers.empty(); ++round) {
         const auto pending = host.timers;
         for (const auto& [id, ms] : pending) engine.timer(id);

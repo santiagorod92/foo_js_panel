@@ -209,6 +209,7 @@ public:
     __weak FooJsPanelView* view = nil;
     std::map<int, NSTimer*> timers;
     FooJsPanelEditor* editor = nil;
+    NSCursor* cursor = nil;
 
     ~MacSurface() override {
         for (auto& [id, t] : timers) [t invalidate];
@@ -242,7 +243,18 @@ public:
         if ([p runModal] != NSModalResponseOK || !p.URL.fileSystemRepresentation) return {};
         return p.URL.fileSystemRepresentation;
     }
-    int popup_menu(int x, int y, const std::vector<std::string>& items) override;
+    int popup_menu(int x, int y, const jsp::Menu& menu) override;
+    void set_cursor(int idc) override;
+    bool input_box(const std::string& prompt, const std::string& caption, std::string& value) override;
+    int message_box(const std::string& text, const std::string& caption, int type) override;
+    int window_state() override;
+    void set_window_state(int state) override;
+    bool fullscreen() override;
+    void set_fullscreen(bool on) override;
+    void set_window_limits(int minW, int minH, int maxW, int maxH) override;
+    pui::gfx::Rect caption{};
+    void set_caption(const pui::gfx::Rect& r) override { caption = r; }
+    bool in_caption(NSEvent* e);
     bool key_pressed(int vk) override {
         const NSEventModifierFlags m = NSEvent.modifierFlags;
         switch (vk) {
@@ -288,13 +300,48 @@ public:
 - (BOOL)isFlipped { return YES; }
 - (BOOL)acceptsFirstResponder { return YES; }
 
-- (void)keyDown:(NSEvent*)e {
+- (int)vk:(NSEvent*)e {
     NSString* chars = e.charactersIgnoringModifiers;
     const char32_t ch = chars.length ? (char32_t)[chars characterAtIndex:0] : 0;
-    const int vk = jsp::mac_key_to_vk((int)e.keyCode, ch);
+    return jsp::mac_key_to_vk((int)e.keyCode, ch);
+}
+
+- (void)keyDown:(NSEvent*)e {
+    const int vk = [self vk:e];
     bool handled = false;
     if (_panel && vk) jsp::log::guarded("js", "key", [&] { handled = _panel->key_down(vk); });
+    const bool command = (e.modifierFlags & NSEventModifierFlagCommand) != 0;
+    NSString* typed = e.characters;
+    if (_panel && typed.length) {
+        jsp::log::guarded("js", "char", [&] {
+            [typed enumerateSubstringsInRange:NSMakeRange(0, typed.length)
+                                      options:NSStringEnumerationByComposedCharacterSequences
+                                   usingBlock:^(NSString* sub, NSRange, NSRange, BOOL*) {
+                                       NSData* d = [sub dataUsingEncoding:NSUTF32LittleEndianStringEncoding];
+                                       const auto* cps = static_cast<const uint32_t*>(d.bytes);
+                                       for (NSUInteger i = 0; i < d.length / 4; ++i)
+                                           if (_panel) _panel->char_input(jsp::mac_char_to_wm_char((char32_t)cps[i], command));
+                                   }];
+        });
+    }
     if (!handled) [super keyDown:e];
+}
+
+- (void)keyUp:(NSEvent*)e {
+    const int vk = [self vk:e];
+    bool handled = false;
+    if (_panel && vk) jsp::log::guarded("js", "key", [&] { handled = _panel->key_up(vk); });
+    if (!handled) [super keyUp:e];
+}
+
+- (BOOL)becomeFirstResponder {
+    if (_panel) jsp::log::guarded("js", "focus", [&] { _panel->focus(true); });
+    return YES;
+}
+
+- (BOOL)resignFirstResponder {
+    if (_panel) jsp::log::guarded("js", "focus", [&] { _panel->focus(false); });
+    return YES;
 }
 - (BOOL)acceptsFirstMouse:(NSEvent*)e { return YES; }
 
@@ -327,7 +374,7 @@ public:
     [super updateTrackingAreas];
     if (_tracking) [self removeTrackingArea:_tracking];
     _tracking = [[NSTrackingArea alloc] initWithRect:NSZeroRect
-                                             options:NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited |
+                                             options:NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited | NSTrackingCursorUpdate |
                                                      NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
                                                owner:self
                                             userInfo:nil];
@@ -341,6 +388,7 @@ public:
     unsigned m = 0;
     if (pressed & 1) m |= 0x1;
     if (pressed & 2) m |= 0x2;
+    if (pressed & 4) m |= 0x10;
     if (e.modifierFlags & NSEventModifierFlagShift) m |= 0x4;
     if (e.modifierFlags & (NSEventModifierFlagControl | NSEventModifierFlagCommand)) m |= 0x8;
     return m;
@@ -356,7 +404,13 @@ public:
 - (void)mouseMoved:(NSEvent*)e { [self send:jsp::Mouse::Move event:e]; }
 - (void)mouseDragged:(NSEvent*)e { [self send:jsp::Mouse::Move event:e]; }
 - (void)mouseExited:(NSEvent*)e { [self send:jsp::Mouse::Leave event:e]; }
+- (BOOL)mouseDownCanMoveWindow { return NO; }
 - (void)mouseDown:(NSEvent*)e {
+    if (_surface.in_caption(e)) {
+        if (e.clickCount == 2) [self.window zoom:nil];
+        else [self.window performWindowDragWithEvent:e];
+        return;
+    }
     [self.window makeFirstResponder:self];
     [self send:e.clickCount == 2 ? jsp::Mouse::LeftDouble : jsp::Mouse::LeftDown event:e];
 }
@@ -366,6 +420,16 @@ public:
     [self send:jsp::Mouse::RightDown event:e];
 }
 - (void)rightMouseUp:(NSEvent*)e { [self send:jsp::Mouse::RightUp event:e]; }
+- (void)otherMouseDown:(NSEvent*)e {
+    if (e.buttonNumber != 2) return [super otherMouseDown:e];
+    [self.window makeFirstResponder:self];
+    [self send:e.clickCount == 2 ? jsp::Mouse::MiddleDouble : jsp::Mouse::MiddleDown event:e];
+}
+- (void)otherMouseUp:(NSEvent*)e {
+    if (e.buttonNumber != 2) return [super otherMouseUp:e];
+    [self send:jsp::Mouse::MiddleUp event:e];
+}
+- (void)cursorUpdate:(NSEvent*)e { [_surface.cursor ?: NSCursor.arrowCursor set]; }
 
 - (void)scrollWheel:(NSEvent*)e {
     if (!_panel) return;
@@ -396,19 +460,139 @@ void MacSurface::start_timer(int id, int ms) {
     timers[id] = t;
 }
 
-int MacSurface::popup_menu(int x, int y, const std::vector<std::string>& items) {
-    FooJsPanelMenuTarget* target = [FooJsPanelMenuTarget new];
+NSMenu* build_menu(const jsp::Menu& items, FooJsPanelMenuTarget* target) {
     NSMenu* m = [[NSMenu alloc] initWithTitle:@""];
     m.autoenablesItems = NO;
-    for (size_t i = 0; i < items.size(); ++i) {
-        NSMenuItem* mi = [[NSMenuItem alloc] initWithTitle:ns(items[i]) action:@selector(picked:) keyEquivalent:@""];
+    for (const jsp::MenuItem& it : items) {
+        if (it.separator) {
+            [m addItem:[NSMenuItem separatorItem]];
+            continue;
+        }
+        const std::string title = it.text.substr(0, it.text.find('\t'));
+        NSMenuItem* mi = [[NSMenuItem alloc] initWithTitle:ns(title) action:it.submenu ? nil : @selector(picked:) keyEquivalent:@""];
         mi.target = target;
-        mi.tag = (NSInteger)(i + 1);
+        mi.tag = it.id;
+        mi.enabled = !it.disabled;
+        mi.state = it.checked ? NSControlStateValueOn : NSControlStateValueOff;
+        if (it.submenu) mi.submenu = build_menu(it.children, target);
         [m addItem:mi];
     }
+    return m;
+}
+
+int MacSurface::popup_menu(int x, int y, const jsp::Menu& menu) {
+    FooJsPanelMenuTarget* target = [FooJsPanelMenuTarget new];
+    NSMenu* m = build_menu(menu, target);
     target.chosen = 0;
     [m popUpMenuPositioningItem:nil atLocation:NSMakePoint(x, y) inView:view];
-    return (int)target.chosen - 1;
+    return (int)target.chosen;
+}
+
+NSCursor* cursor_for(int idc) {
+    switch (idc) {
+    case 32513: return NSCursor.IBeamCursor;
+    case 32515: return NSCursor.crosshairCursor;
+    case 32644: return NSCursor.resizeLeftRightCursor;
+    case 32645: return NSCursor.resizeUpDownCursor;
+    case 32646: return NSCursor.openHandCursor;
+    case 32648: return NSCursor.operationNotAllowedCursor;
+    case 32649: return NSCursor.pointingHandCursor;
+    default: return NSCursor.arrowCursor;
+    }
+}
+
+void MacSurface::set_cursor(int idc) {
+    cursor = cursor_for(idc);
+    [cursor set];
+}
+
+int MacSurface::window_state() {
+    NSWindow* w = view.window;
+    return !w ? 0 : w.miniaturized ? 1 : w.zoomed ? 2 : 0;
+}
+
+void MacSurface::set_window_state(int state) {
+    NSWindow* w = view.window;
+    if (!w) return;
+    if (state == 1) {
+        [w miniaturize:nil];
+        return;
+    }
+    if (w.miniaturized) [w deminiaturize:nil];
+    if ((state == 2) != (bool)w.zoomed) [w zoom:nil];
+}
+
+bool MacSurface::in_caption(NSEvent* e) {
+    NSWindow* w = view.window;
+    NSView* content = w.contentView;
+    if (!w || !content || caption.w <= 0 || caption.h <= 0 || fullscreen()) return false;
+    NSPoint p = [content convertPoint:e.locationInWindow fromView:nil];
+    if (!content.isFlipped) p.y = NSHeight(content.bounds) - p.y;
+    return p.x >= caption.x && p.x < caption.x + caption.w && p.y >= caption.y && p.y < caption.y + caption.h;
+}
+
+bool MacSurface::fullscreen() {
+    NSWindow* w = view.window;
+    return w && (w.styleMask & NSWindowStyleMaskFullScreen) != 0;
+}
+
+void MacSurface::set_fullscreen(bool on) {
+    NSWindow* w = view.window;
+    if (w && on != fullscreen()) [w toggleFullScreen:nil];
+}
+
+void MacSurface::set_window_limits(int minW, int minH, int maxW, int maxH) {
+    NSWindow* w = view.window;
+    if (!w) return;
+    w.contentMinSize = NSMakeSize(minW > 0 ? minW : 100, minH > 0 ? minH : 100);
+    w.contentMaxSize = NSMakeSize(maxW > 0 ? maxW : FLT_MAX, maxH > 0 ? maxH : FLT_MAX);
+    if (w.zoomed || fullscreen()) return;
+    NSRect content = [w contentRectForFrameRect:w.frame];
+    NSSize s = content.size;
+    if (minW > 0) s.width = std::max<CGFloat>(s.width, minW);
+    if (minH > 0) s.height = std::max<CGFloat>(s.height, minH);
+    if (maxW > 0) s.width = std::min<CGFloat>(s.width, maxW);
+    if (maxH > 0) s.height = std::min<CGFloat>(s.height, maxH);
+    if (NSEqualSizes(s, content.size)) return;
+    const CGFloat top = NSMaxY(content);
+    content.size = s;
+    content.origin.y = top - s.height;
+    [w setFrame:[w frameRectForContentRect:content] display:YES];
+}
+
+int MacSurface::message_box(const std::string& text, const std::string& caption, int type) {
+    static const std::vector<std::pair<NSString*, int>> sets[] = {
+        { { @"OK", 1 } },
+        { { @"OK", 1 }, { @"Cancel", 2 } },
+        { { @"Abort", 3 }, { @"Retry", 4 }, { @"Ignore", 5 } },
+        { { @"Yes", 6 }, { @"No", 7 }, { @"Cancel", 2 } },
+        { { @"Yes", 6 }, { @"No", 7 } },
+        { { @"Retry", 4 }, { @"Cancel", 2 } },
+    };
+    const auto& buttons = sets[(type & 0xF) < 6 ? (type & 0xF) : 0];
+    NSAlert* alert = [NSAlert new];
+    alert.messageText = ns(caption.empty() ? std::string("JS Panel") : caption);
+    alert.informativeText = ns(text);
+    if (type & 0x10) alert.alertStyle = NSAlertStyleCritical;
+    for (const auto& b : buttons) [alert addButtonWithTitle:b.first];
+    const NSModalResponse r = [alert runModal];
+    const long index = (long)r - (long)NSAlertFirstButtonReturn;
+    return index >= 0 && index < (long)buttons.size() ? buttons[(size_t)index].second : buttons.back().second;
+}
+
+bool MacSurface::input_box(const std::string& prompt, const std::string& caption, std::string& value) {
+    NSAlert* alert = [NSAlert new];
+    alert.messageText = ns(caption.empty() ? std::string("JS Panel") : caption);
+    alert.informativeText = ns(prompt);
+    [alert addButtonWithTitle:@"OK"];
+    [alert addButtonWithTitle:@"Cancel"];
+    NSTextField* field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 320, 24)];
+    field.stringValue = ns(value);
+    alert.accessoryView = field;
+    alert.window.initialFirstResponder = field;
+    if ([alert runModal] != NSAlertFirstButtonReturn) return false;
+    value = field.stringValue.UTF8String ?: "";
+    return true;
 }
 
 }
@@ -456,6 +640,32 @@ std::string wine_version() { return {}; }
 std::string home_dir() {
     NSString* h = NSHomeDirectory();
     return h.fileSystemRepresentation ? h.fileSystemRepresentation : "";
+}
+
+std::string app_dir() {
+    NSString* b = [NSBundle mainBundle].bundlePath;
+    return b.fileSystemRepresentation ? std::string(b.fileSystemRepresentation) + "/" : std::string();
+}
+
+std::string clipboard_text() {
+    NSString* s = [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString];
+    return s.UTF8String ? s.UTF8String : "";
+}
+
+bool shell_run(const std::string& command) {
+    std::string cmd = command;
+    while (!cmd.empty() && (cmd.front() == ' ' || cmd.front() == '"')) cmd.erase(0, 1);
+    const auto q = cmd.find('"');
+    if (q != std::string::npos) cmd.erase(q);
+    while (!cmd.empty() && cmd.back() == ' ') cmd.pop_back();
+    if (cmd.empty()) return false;
+    if (cmd.find("://") != std::string::npos || cmd.rfind("mailto:", 0) == 0) {
+        NSURL* url = [NSURL URLWithString:ns(cmd)];
+        return url && [[NSWorkspace sharedWorkspace] openURL:url];
+    }
+    NSString* path = ns(cmd);
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) return false;
+    return [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:path]];
 }
 
 bool copy_to_clipboard(const std::string& text) {
