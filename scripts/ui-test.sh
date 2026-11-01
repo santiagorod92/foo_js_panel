@@ -59,17 +59,20 @@ mac_restore() {
   osascript -e 'tell application "foobar2000" to quit' >/dev/null 2>&1 || true
   for _ in $(seq 1 20); do pgrep -x foobar2000 >/dev/null || break; sleep 0.5; done
   "$REPO/scripts/mac-local.sh" --restore
-  sqlite3 "$MAC_DB" "delete from configStrings where name='$DEFAULT_SCRIPT'; delete from configInts where name='$VERBOSE';"
-  rm -rf "$MAC_PROFILE/foo_ui_panels-skins/$SKIN"
+  if [ -n "$MAC_PREV_VERBOSE" ]; then sqlite3 "$MAC_DB" "insert or replace into configInts(name,value) values('$VERBOSE',$MAC_PREV_VERBOSE);"
+  else sqlite3 "$MAC_DB" "delete from configInts where name='$VERBOSE';"; fi
+  rm -rf "$MAC_PROFILE/foo_ui_panels-skins/$SKIN" "$MAC_LOCAL_STATE"
 }
 
 mac_smoke() {
   local log
   [ -d "$REPO/build-mac/foo_js_panel.component" ] || fail "no build-mac/foo_js_panel.component (make mac-build)"
+  MAC_LOCAL_STATE="$(mktemp -d)"
+  export MAC_LOCAL_STATE
+  MAC_PREV_VERBOSE="$(sqlite3 "$MAC_DB" "select value from configInts where name='$VERBOSE'")"
   trap mac_restore EXIT
-  "$REPO/scripts/mac-local.sh" --panels-ui --skin "$REPO/tests/skins/$SKIN"
-  sqlite3 "$MAC_DB" "insert or replace into configStrings(name,value) values('$DEFAULT_SCRIPT','$REPO/tests/scripts/smoke.js');
-                 insert or replace into configInts(name,value) values('$VERBOSE',1);"
+  "$REPO/scripts/mac-local.sh" --panels-ui --skin "$REPO/tests/skins/$SKIN" --script "$REPO/tests/scripts/smoke.js"
+  sqlite3 "$MAC_DB" "insert or replace into configInts(name,value) values('$VERBOSE',1);"
   local start; start=$(( $(wc -c < "$MAC_PROFILE/foo_js_panel.log" 2>/dev/null || echo 0) + 1 ))
   say "launch foobar2000"
   open -a foobar2000

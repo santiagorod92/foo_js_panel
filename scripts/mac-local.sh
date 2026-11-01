@@ -13,6 +13,8 @@ Installs build-mac/foo_js_panel.component into this Mac's foobar2000
   --restore     put back what this script replaced: the active skin and every component folder
                 it overwrote (saved under build/mac-local-backup; one that wasn't there is removed) and the default script
 Installed components are never deleted: the folder being replaced is moved to the backup first.
+MAC_LOCAL_STATE=DIR keeps the saved skin, script and backups in DIR instead of build/, so a run
+that restores itself (ui-test.sh) never picks up what an earlier run left there.
 USAGE
 }
 
@@ -22,10 +24,11 @@ PROFILE="$HOME/Library/foobar2000-v2"
 DB="$PROFILE/config.sqlite"
 ACTIVE_SKIN='cfg_var.2A7E4C11-8B3F-4D6A-9E52-1C8F3A6B0D24'
 SKINS_ROOT='cfg_var.1F8A6C2E-4D9B-4E71-8C3A-5B2D9E0F6A17'
-SAVED="$REPO/build/mac-local-previous-skin"
-BACKUP="$REPO/build/mac-local-backup"
+STATE="${MAC_LOCAL_STATE:-$REPO/build}"
+SAVED="$STATE/mac-local-previous-skin"
+BACKUP="$STATE/mac-local-backup"
 DEFAULT_SCRIPT='cfg_var.4876F6EE-F0D3-47D7-BFA4-58D677FC9ADF'
-SAVED_SCRIPT="$REPO/build/mac-local-previous-script"
+SAVED_SCRIPT="$STATE/mac-local-previous-script"
 LAUNCH=0 PUI=0 SKIN="" SCRIPT="" RESTORE=0
 while [ $# -gt 0 ]; do
   case "$1" in
