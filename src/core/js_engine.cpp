@@ -2,6 +2,7 @@
 #include "js_api_util.h"
 #include "fs_util.h"
 #include "image_ops.h"
+#include "theme_patches.h"
 #include "quickjs.h"
 #include <algorithm>
 #include <cctype>
@@ -40,6 +41,7 @@ BitmapPtr* bitmap_of(JSValueConst v);
 
 struct Graphics {
     Canvas* canvas = nullptr;
+    int clips = 0;
     std::unique_ptr<Canvas> own;
     BitmapPtr target;
 };
@@ -71,6 +73,7 @@ struct JsEngine::Impl {
     std::string dir;
     int w = 0, h = 0;
     int nextTimer = 1;
+    std::vector<std::string> files;
     std::map<int, Timer> timers;
     long long deadline = 0;
     std::shared_ptr<bool> alive = std::make_shared<bool>(true);
@@ -181,6 +184,18 @@ std::vector<int> arg_ints(JSContext* ctx, int argc, JSValueConst* argv, int i) {
         JSValue v = JS_GetPropertyUint32(ctx, argv[i], (uint32_t)k);
         int32_t x = 0;
         if (JS_ToInt32(ctx, &x, v) == 0) out.push_back(x);
+        JS_FreeValue(ctx, v);
+    }
+    return out;
+}
+
+std::vector<std::string> arg_strings(JSContext* ctx, int argc, JSValueConst* argv, int i) {
+    std::vector<std::string> out;
+    int64_t n = 0;
+    if (i >= argc || !JS_IsArray(argv[i]) || JS_GetLength(ctx, argv[i], &n) != 0) return out;
+    for (int64_t k = 0; k < n; ++k) {
+        JSValue v = JS_GetPropertyUint32(ctx, argv[i], (uint32_t)k);
+        out.push_back(to_string(ctx, v));
         JS_FreeValue(ctx, v);
     }
     return out;
@@ -879,6 +894,16 @@ JSValue handle_Length(JSContext* ctx, JSValueConst self) {
     return JS_NewFloat64(ctx, t ? I(ctx)->host.track_info(*t).length : 0);
 }
 
+JSValue handle_SubSong(JSContext* ctx, JSValueConst self) {
+    TrackPtr* t = handle_of(self);
+    return JS_NewInt32(ctx, t ? (int)I(ctx)->host.track_info(*t).subsong : 0);
+}
+
+JSValue handle_LastModified(JSContext* ctx, JSValueConst self) {
+    TrackPtr* t = handle_of(self);
+    return JS_NewFloat64(ctx, t ? I(ctx)->host.track_info(*t).modified : 0);
+}
+
 JSValue handle_FileSize(JSContext* ctx, JSValueConst self) {
     TrackPtr* t = handle_of(self);
     return JS_NewFloat64(ctx, t ? (double)I(ctx)->host.track_info(*t).size : -1);
@@ -1098,6 +1123,9 @@ const JSCFunctionListEntry kHandleFuncs[] = {
     JS_CFUNC_DEF("GetFileInfo", 0, handle_GetFileInfo),
     JS_CGETSET_DEF("Length", handle_Length, nullptr),
     JS_CGETSET_DEF("FileSize", handle_FileSize, nullptr),
+    JS_CGETSET_DEF("SubSong", handle_SubSong, nullptr),
+    JS_CGETSET_DEF("LastModified", handle_LastModified, nullptr),
+    JS_CGETSET_DEF("FileCreated", handle_LastModified, nullptr),
     JS_CFUNC_DEF("RefreshStats", 0, noop),
 };
 
@@ -1395,6 +1423,11 @@ JSValue fb_CreateHandleList(JSContext* ctx, JSValueConst, int, JSValueConst*) { 
 JSValue fb_IsPlaying(JSContext* ctx, JSValueConst) { return JS_NewBool(ctx, I(ctx)->host.is_playing()); }
 JSValue fb_IsPaused(JSContext* ctx, JSValueConst) { return JS_NewBool(ctx, I(ctx)->host.is_paused()); }
 JSValue fb_PlaybackTime(JSContext* ctx, JSValueConst) { return JS_NewFloat64(ctx, I(ctx)->host.playback_time()); }
+JSValue fb_SetPlaybackTime(JSContext* ctx, JSValueConst, JSValueConst v) {
+    double t = 0;
+    if (JS_ToFloat64(ctx, &t, v) == 0 && std::isfinite(t)) I(ctx)->host.seek(std::max(0.0, t));
+    return JS_UNDEFINED;
+}
 JSValue fb_PlaybackLength(JSContext* ctx, JSValueConst) { return JS_NewFloat64(ctx, I(ctx)->host.playback_length()); }
 
 JSValue console_log(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
@@ -1716,6 +1749,86 @@ JSValue fb_Exit(JSContext* ctx, JSValueConst, int, JSValueConst*) {
     return JS_UNDEFINED;
 }
 
+std::string to_json(JSContext* ctx, JSValueConst v);
+
+JSValue json_of(JSContext* ctx, JSValue v) {
+    const std::string s = to_json(ctx, v);
+    JS_FreeValue(ctx, v);
+    return new_string(ctx, s);
+}
+
+JSValue fb_ReplaygainMode(JSContext* ctx, JSValueConst) { return JS_NewInt32(ctx, I(ctx)->host.replaygain_mode()); }
+JSValue fb_SetReplaygainMode(JSContext* ctx, JSValueConst, JSValueConst v) {
+    int32_t m = -1;
+    if (JS_ToInt32(ctx, &m, v) != 0) return JS_EXCEPTION;
+    if (m < 0 || m > 3) return JS_ThrowRangeError(ctx, "ReplaygainMode: %d is not 0-3", m);
+    I(ctx)->host.set_replaygain_mode(m);
+    return JS_UNDEFINED;
+}
+
+JSValue fb_GetOutputDevices(JSContext* ctx, JSValueConst, int, JSValueConst*) {
+    JSValue arr = JS_NewArray(ctx);
+    uint32_t i = 0;
+    for (const OutputDevice& d : I(ctx)->host.output_devices()) {
+        JSValue o = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, o, "active", JS_NewBool(ctx, d.active));
+        set_str(ctx, o, "device_id", d.device);
+        set_str(ctx, o, "name", d.name);
+        set_str(ctx, o, "output_id", d.output);
+        JS_SetPropertyUint32(ctx, arr, i++, o);
+    }
+    return json_of(ctx, arr);
+}
+
+JSValue fb_SetOutputDevice(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    I(ctx)->host.set_output_device(arg_str(ctx, argc, argv, 0), arg_str(ctx, argc, argv, 1));
+    return JS_UNDEFINED;
+}
+
+JSValue fb_GetDSPPresets(JSContext* ctx, JSValueConst, int, JSValueConst*) {
+    int selected = -1;
+    const std::vector<std::string> names = I(ctx)->host.dsp_presets(selected);
+    JSValue arr = JS_NewArray(ctx);
+    for (uint32_t i = 0; i < names.size(); ++i) {
+        JSValue o = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, o, "active", JS_NewBool(ctx, (int)i == selected));
+        set_str(ctx, o, "name", names[i]);
+        JS_SetPropertyUint32(ctx, arr, i, o);
+    }
+    return json_of(ctx, arr);
+}
+
+JSValue fb_SetDSPPreset(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    const int idx = arg_int(ctx, argc, argv, 0, -1);
+    if (!I(ctx)->host.set_dsp_preset(idx)) return JS_ThrowRangeError(ctx, "SetDSPPreset: no preset %d", idx);
+    return JS_UNDEFINED;
+}
+
+JSValue fb_DoDragDrop(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    Tracks* l = arg_tracks(ctx, argc, argv, 1);
+    if (!l) return JS_EXCEPTION;
+    if (l->empty()) return JS_NewInt32(ctx, 0);
+    const int effects = arg_int(ctx, argc, argv, 2, 1);
+    JsEngine::Impl* e = I(ctx);
+    const Tracks tracks = *l;
+    return JS_NewInt32(ctx, e->modal([&] { return e->host.drag_tracks(tracks, effects); }));
+}
+
+JSValue fb_CopyHandleListToClipboard(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    Tracks* l = arg_tracks(ctx, argc, argv, 0);
+    if (!l) return JS_EXCEPTION;
+    return JS_NewBool(ctx, !l->empty() && I(ctx)->host.copy_tracks(*l));
+}
+
+JSValue fb_CheckClipboardContents(JSContext* ctx, JSValueConst, int, JSValueConst*) { return JS_NewBool(ctx, I(ctx)->host.clipboard_has_tracks()); }
+
+JSValue fb_GetClipboardContents(JSContext* ctx, JSValueConst, int, JSValueConst*) { return new_list(ctx, I(ctx)->host.clipboard_tracks()); }
+
+JSValue fb_ShowLibrarySearchUI(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    I(ctx)->host.library_search(arg_str(ctx, argc, argv, 0));
+    return JS_UNDEFINED;
+}
+
 const JSCFunctionListEntry kFbFuncs[] = {
     JS_CFUNC_DEF("TitleFormat", 1, fb_TitleFormat),
     JS_CFUNC_DEF("Play", 0, fb_playback<Playback::Play>),
@@ -1730,7 +1843,7 @@ const JSCFunctionListEntry kFbFuncs[] = {
     JS_CFUNC_DEF("CreateHandleList", 0, fb_CreateHandleList),
     JS_CGETSET_DEF("IsPlaying", fb_IsPlaying, nullptr),
     JS_CGETSET_DEF("IsPaused", fb_IsPaused, nullptr),
-    JS_CGETSET_DEF("PlaybackTime", fb_PlaybackTime, nullptr),
+    JS_CGETSET_DEF("PlaybackTime", fb_PlaybackTime, fb_SetPlaybackTime),
     JS_CGETSET_DEF("PlaybackLength", fb_PlaybackLength, nullptr),
     JS_CFUNC_DEF("Random", 0, fb_playback<Playback::Random>),
     JS_CGETSET_DEF("ProfilePath", fb_string<&JsHost::profile_path>, nullptr),
@@ -1744,6 +1857,17 @@ const JSCFunctionListEntry kFbFuncs[] = {
     JS_CGETSET_DEF("StopAfterCurrent", fb_GetFlag<Flag::StopAfterCurrent>, fb_SetFlag<Flag::StopAfterCurrent>),
     JS_CGETSET_DEF("CursorFollowPlayback", fb_GetFlag<Flag::CursorFollowPlayback>, fb_SetFlag<Flag::CursorFollowPlayback>),
     JS_CGETSET_DEF("PlaybackFollowCursor", fb_GetFlag<Flag::PlaybackFollowCursor>, fb_SetFlag<Flag::PlaybackFollowCursor>),
+    JS_CGETSET_DEF("AlwaysOnTop", fb_GetFlag<Flag::AlwaysOnTop>, fb_SetFlag<Flag::AlwaysOnTop>),
+    JS_CGETSET_DEF("ReplaygainMode", fb_ReplaygainMode, fb_SetReplaygainMode),
+    JS_CFUNC_DEF("GetOutputDevices", 0, fb_GetOutputDevices),
+    JS_CFUNC_DEF("SetOutputDevice", 2, fb_SetOutputDevice),
+    JS_CFUNC_DEF("GetDSPPresets", 0, fb_GetDSPPresets),
+    JS_CFUNC_DEF("SetDSPPreset", 1, fb_SetDSPPreset),
+    JS_CFUNC_DEF("ShowLibrarySearchUI", 1, fb_ShowLibrarySearchUI),
+    JS_CFUNC_DEF("DoDragDrop", 4, fb_DoDragDrop),
+    JS_CFUNC_DEF("CopyHandleListToClipboard", 1, fb_CopyHandleListToClipboard),
+    JS_CFUNC_DEF("CheckClipboardContents", 0, fb_CheckClipboardContents),
+    JS_CFUNC_DEF("GetClipboardContents", 1, fb_GetClipboardContents),
     JS_CFUNC_DEF("RunMainMenuCommand", 1, fb_RunMainMenuCommand),
     JS_CFUNC_DEF("RunContextCommand", 1, fb_RunContextCommand),
     JS_CFUNC_DEF("RunContextCommandWithMetadb", 2, fb_RunContextCommandWithMetadb),
@@ -1900,7 +2024,16 @@ JSValue utils_CheckComponent(JSContext* ctx, JSValueConst, int argc, JSValueCons
     return JS_NewBool(ctx, I(ctx)->host.has_component(arg_str(ctx, argc, argv, 0), arg_bool(ctx, argc, argv, 1, true)));
 }
 
-JSValue utils_true(JSContext*, JSValueConst, int, JSValueConst*) { return JS_TRUE; }
+JSValue utils_CheckFont(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    const std::string name = arg_str(ctx, argc, argv, 0);
+    if (name.empty()) return JS_FALSE;
+    pui::gfx::Pixels px;
+    px.w = px.h = 1;
+    px.pargb.assign(1, 0);
+    auto canvas = I(ctx)->host.pixels_canvas(px, 1.0);
+    if (!canvas) return JS_TRUE;
+    return JS_NewBool(ctx, canvas->set_font(font_spec(name, 12, 0)));
+}
 
 JSValue split_path(JSContext* ctx, const std::string& in) {
     const std::string path = fix_path(in);
@@ -2057,13 +2190,35 @@ JSValue utils_GetAlbumArtAsyncV2(JSContext* ctx, JSValueConst, int argc, JSValue
     return promise;
 }
 
+JSValue utils_GetSysColour(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    uint32_t argb = 0;
+    return JS_NewUint32(ctx, I(ctx)->host.sys_colour(arg_int(ctx, argc, argv, 0, -1), argb) ? argb : 0);
+}
+
+JSValue utils_ColourPicker(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    JsEngine::Impl* e = I(ctx);
+    uint32_t argb = arg_u32(ctx, argc, argv, 1, 0xff000000u);
+    e->modal([&] { return e->host.pick_colour(argb); });
+    return JS_NewUint32(ctx, argb);
+}
+
+JSValue utils_DetectCharset(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    const std::string path = fix_path(arg_str(ctx, argc, argv, 0));
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(fs_path(path), ec)) return JS_NewInt32(ctx, 0);
+    return JS_NewInt32(ctx, detect_codepage(read_file(path)));
+}
+
 const JSCFunctionListEntry kUtilsFuncs[] = {
+    JS_CFUNC_DEF("DetectCharset", 1, utils_DetectCharset),
+    JS_CFUNC_DEF("GetSysColour", 1, utils_GetSysColour),
+    JS_CFUNC_DEF("ColourPicker", 2, utils_ColourPicker),
     JS_CFUNC_DEF("GetAlbumArtAsync", 3, utils_GetAlbumArtAsync),
     JS_CFUNC_DEF("GetAlbumArtV2", 3, utils_GetAlbumArtV2),
     JS_CFUNC_DEF("GetAlbumArtAsyncV2", 3, utils_GetAlbumArtAsyncV2),
     JS_CFUNC_DEF("IsKeyPressed", 1, utils_IsKeyPressed),
     JS_CFUNC_DEF("CheckComponent", 2, utils_CheckComponent),
-    JS_CFUNC_DEF("CheckFont", 1, utils_true),
+    JS_CFUNC_DEF("CheckFont", 1, utils_CheckFont),
     JS_CFUNC_DEF("SplitFilePath", 1, utils_SplitFilePath),
     JS_CFUNC_DEF("FileTest", 2, utils_FileTest),
     JS_CFUNC_DEF("IsFile", 1, utils_file<FileQuery::File>),
@@ -2209,6 +2364,33 @@ JSValue plman_IsPlaylistLocked(JSContext* ctx, JSValueConst, int argc, JSValueCo
     return JS_NewBool(ctx, I(ctx)->host.playlist_is_locked(arg_int(ctx, argc, argv, 0, -1)));
 }
 
+JSValue plman_GetPlaylistLockedActions(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    const int p = arg_int(ctx, argc, argv, 0, -1);
+    if (p < 0 || p >= I(ctx)->host.playlist_count()) return JS_ThrowRangeError(ctx, "GetPlaylistLockedActions: no playlist %d", p);
+    JSValue arr = JS_NewArray(ctx);
+    uint32_t i = 0;
+    for (const std::string& a : lock_actions_of(I(ctx)->host.playlist_lock_mask(p))) JS_SetPropertyUint32(ctx, arr, i++, new_string(ctx, a));
+    return arr;
+}
+
+JSValue plman_GetPlaylistLockName(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    const int p = arg_int(ctx, argc, argv, 0, -1);
+    if (p < 0 || p >= I(ctx)->host.playlist_count()) return JS_ThrowRangeError(ctx, "GetPlaylistLockName: no playlist %d", p);
+    return new_string(ctx, I(ctx)->host.playlist_lock_name(p));
+}
+
+JSValue plman_SetPlaylistLockedActions(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    const int p = arg_int(ctx, argc, argv, 0, -1);
+    if (p < 0 || p >= I(ctx)->host.playlist_count()) return JS_ThrowRangeError(ctx, "SetPlaylistLockedActions: no playlist %d", p);
+    if (argc < 2 || !JS_IsArray(argv[1])) return JS_ThrowTypeError(ctx, "SetPlaylistLockedActions: argument 2 is not an array");
+    std::string unknown;
+    const unsigned mask = lock_mask_of(arg_strings(ctx, argc, argv, 1), unknown);
+    if (!unknown.empty()) return JS_ThrowRangeError(ctx, "SetPlaylistLockedActions: unknown action '%s'", unknown.c_str());
+    if (!I(ctx)->host.set_playlist_lock(p, mask))
+        return JS_ThrowInternalError(ctx, "SetPlaylistLockedActions: playlist %d is locked by another component", p);
+    return JS_UNDEFINED;
+}
+
 JSValue plman_CreateAutoPlaylist(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     return JS_NewInt32(ctx, I(ctx)->host.create_autoplaylist(arg_int(ctx, argc, argv, 0, -1), arg_str(ctx, argc, argv, 1),
                                                              arg_str(ctx, argc, argv, 2), arg_str(ctx, argc, argv, 3),
@@ -2302,6 +2484,9 @@ const JSCFunctionListEntry kPlmanFuncs[] = {
     JS_CFUNC_DEF("MovePlaylist", 2, plman_MovePlaylist),
     JS_CFUNC_DEF("IsAutoPlaylist", 1, plman_IsAutoPlaylist),
     JS_CFUNC_DEF("IsPlaylistLocked", 1, plman_IsPlaylistLocked),
+    JS_CFUNC_DEF("GetPlaylistLockedActions", 1, plman_GetPlaylistLockedActions),
+    JS_CFUNC_DEF("GetPlaylistLockName", 1, plman_GetPlaylistLockName),
+    JS_CFUNC_DEF("SetPlaylistLockedActions", 2, plman_SetPlaylistLockedActions),
     JS_CFUNC_DEF("CreateAutoPlaylist", 5, plman_CreateAutoPlaylist),
     JS_CFUNC_DEF("ShowAutoPlaylistUI", 1, plman_ShowAutoPlaylistUI),
     JS_CGETSET_DEF("PlaybackOrder", plman_PlaybackOrder, plman_SetPlaybackOrder),
@@ -2370,6 +2555,20 @@ JSValue window_SetProperty(JSContext* ctx, JSValueConst, int argc, JSValueConst*
     else JS_SetProperty(ctx, props, atom, JS_DupValue(ctx, argv[1]));
     JS_FreeAtom(ctx, atom);
     e->propsDirty = true;
+    return JS_UNDEFINED;
+}
+
+std::string to_json(JSContext* ctx, JSValueConst v);
+
+JSValue window_ShowProperties(JSContext* ctx, JSValueConst, int, JSValueConst*) {
+    JsEngine::Impl* e = I(ctx);
+    std::string json = "{}";
+    if (JS_IsObject(e->props)) {
+        JSValue s = JS_JSONStringify(ctx, e->props, JS_UNDEFINED, JS_NewInt32(ctx, 2));
+        if (JS_IsString(s)) json = to_string(ctx, s);
+        JS_FreeValue(ctx, s);
+    }
+    e->host.edit_properties(json);
     return JS_UNDEFINED;
 }
 
@@ -2485,18 +2684,29 @@ JSValue window_JsMemoryStats(JSContext* ctx, JSValueConst) {
 
 template <bool Cui>
 JSValue window_GetColour(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
-    static const uint32_t dui[] = { 0xffe0e0e0, 0xff1e1e1e, 0xff6cb4ff, 0xff2f4f6f };
-    static const uint32_t cui[] = { 0xffe0e0e0, 0xffffffff, 0xffe0e0e0, 0xff1e1e1e, 0xff2f4f6f, 0xff3a3a3a, 0xff6cb4ff };
+    using U = UiColour;
+    static const U dui[] = { U::Text, U::Background, U::Highlight, U::Selection };
+    static const U cui[] = { U::Text, U::SelectionText, U::Text, U::Background, U::Selection, U::InactiveSelection, U::Highlight };
+    static const uint32_t fallback[] = { 0xffe0e0e0, 0xff1e1e1e, 0xff6cb4ff, 0xff2f4f6f, 0xffffffff, 0xff3a3a3a };
     const int t = arg_int(ctx, argc, argv, 0);
-    const uint32_t* table = Cui ? cui : dui;
+    const U* table = Cui ? cui : dui;
     const int n = Cui ? (int)std::size(cui) : (int)std::size(dui);
-    return JS_NewUint32(ctx, t >= 0 && t < n ? table[t] : table[0]);
+    const U kind = t >= 0 && t < n ? table[t] : table[0];
+    uint32_t argb = fallback[(int)kind];
+    I(ctx)->host.ui_colour(kind, argb);
+    return JS_NewUint32(ctx, argb);
 }
 
+template <bool Cui>
 JSValue window_GetFont(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    int kind = arg_int(ctx, argc, argv, 0);
+    if (Cui) kind = kind == 0 ? 2 : 0;
+    else if (kind < 0 || kind > 5) kind = 0;
+    UiFont f{ kind == 5 ? "Consolas" : "Segoe UI", 12, 0 };
+    I(ctx)->host.ui_font(kind, f);
     JSValue obj = JS_NewObjectClass(ctx, (int)g_fontClass);
     if (JS_IsException(obj)) return obj;
-    JS_SetOpaque(obj, new FontSpec(font_spec(arg_int(ctx, argc, argv, 0) == 5 ? "Consolas" : "Segoe UI", 12, 0)));
+    JS_SetOpaque(obj, new FontSpec(font_spec(f.face, f.px, f.style)));
     return obj;
 }
 
@@ -2515,7 +2725,7 @@ const JSCFunctionListEntry kWindowFuncs[] = {
     JS_CFUNC_DEF("Reload", 0, window_host<&JsHost::reload_script>),
     JS_CFUNC_DEF("EditScript", 0, window_host<&JsHost::edit_script>),
     JS_CFUNC_DEF("ShowConfigure", 0, window_host<&JsHost::edit_script>),
-    JS_CFUNC_DEF("ShowProperties", 0, noop),
+    JS_CFUNC_DEF("ShowProperties", 0, window_ShowProperties),
     JS_CFUNC_DEF("SetCursor", 1, window_SetCursor),
     JS_CFUNC_DEF("CreatePopupMenu", 0, window_CreatePopupMenu),
     JS_CGETSET_DEF("IsVisible", window_IsVisible, nullptr),
@@ -2536,8 +2746,8 @@ const JSCFunctionListEntry kWindowFuncs[] = {
     JS_CGETSET_DEF("JsMemoryStats", window_JsMemoryStats, nullptr),
     JS_CFUNC_DEF("GetColourCUI", 1, window_GetColour<true>),
     JS_CFUNC_DEF("GetColourDUI", 1, window_GetColour<false>),
-    JS_CFUNC_DEF("GetFontCUI", 1, window_GetFont),
-    JS_CFUNC_DEF("GetFontDUI", 1, window_GetFont),
+    JS_CFUNC_DEF("GetFontCUI", 1, window_GetFont<true>),
+    JS_CFUNC_DEF("GetFontDUI", 1, window_GetFont<false>),
 };
 
 std::filesystem::path native_path(JSContext* ctx, int argc, JSValueConst* argv, int i) { return fs_path(fix_path(arg_str(ctx, argc, argv, i))); }
@@ -2777,7 +2987,43 @@ JSValue fb_GetSelection(JSContext* ctx, JSValueConst, int, JSValueConst*) {
 
 JSValue fb_GetSelections(JSContext* ctx, JSValueConst, int, JSValueConst*) { return new_list(ctx, I(ctx)->host.get_ui_selection()); }
 
+JSValue native_proto(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    const std::string kind = arg_str(ctx, argc, argv, 0);
+    const JSClassID id = kind == "gr" ? g_grClass : kind == "handle" ? g_handleClass : kind == "list" ? g_listClass
+                       : kind == "image" ? g_bitmapClass : kind == "info" ? g_infoClass : 0;
+    return id ? JS_GetClassProto(ctx, id) : JS_UNDEFINED;
+}
+
+JSValue native_pushClip(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    Graphics* g = argc > 0 ? graphics_of(argv[0]) : nullptr;
+    if (!g || !g->canvas) return JS_ThrowInternalError(ctx, "PushLayer: gr is no longer valid");
+    g->canvas->push_clip(Rect{ arg_int(ctx, argc, argv, 1), arg_int(ctx, argc, argv, 2), arg_int(ctx, argc, argv, 3), arg_int(ctx, argc, argv, 4) });
+    ++g->clips;
+    return JS_UNDEFINED;
+}
+
+JSValue native_popClip(JSContext*, JSValueConst, int argc, JSValueConst* argv) {
+    Graphics* g = argc > 0 ? graphics_of(argv[0]) : nullptr;
+    if (g && g->canvas && g->clips > 0) {
+        g->canvas->pop_clip();
+        --g->clips;
+    }
+    return JS_UNDEFINED;
+}
+
+JSValue native_jsp3Path(JSContext* ctx, JSValueConst, int, JSValueConst*) { return new_string(ctx, I(ctx)->host.jsp3_path()); }
+
+JSValue native_tooltip(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    I(ctx)->host.tooltip(arg_str(ctx, argc, argv, 0), arg_bool(ctx, argc, argv, 1), arg_int(ctx, argc, argv, 2));
+    return JS_UNDEFINED;
+}
+
 const JSCFunctionListEntry kNativeFuncs[] = {
+    JS_CFUNC_DEF("tooltip", 3, native_tooltip),
+    JS_CFUNC_DEF("proto", 1, native_proto),
+    JS_CFUNC_DEF("jsp3Path", 0, native_jsp3Path),
+    JS_CFUNC_DEF("pushClip", 5, native_pushClip),
+    JS_CFUNC_DEF("popClip", 1, native_popClip),
     JS_CFUNC_DEF("stat", 1, native_stat),
     JS_CFUNC_DEF("list", 1, native_list),
     JS_CFUNC_DEF("mkdir", 1, native_mkdir),
@@ -2811,8 +3057,18 @@ const JSCFunctionListEntry kNativeFuncs[] = {
 
 const char* const kPrelude = R"JS(
 (function () {
-    const tooltip = { Text: '', TrackActivate: false, Width: 0, Height: 0, Activate() {}, Deactivate() {},
-                      SetMaxWidth() {}, TrackPosition() {}, GetDelayTime() { return 0; }, SetDelayTime() {}, SetFont() {} };
+    const native = __jsp;
+    let text = '', active = false, maxWidth = 0;
+    const show = () => native.tooltip(text, active, maxWidth);
+    const tooltip = {
+        TrackActivate: false, Width: 0, Height: 0,
+        get Text() { return text; },
+        set Text(v) { text = v === undefined || v === null ? '' : String(v); if (active) show(); },
+        Activate() { active = true; show(); },
+        Deactivate() { active = false; show(); },
+        SetMaxWidth(w) { maxWidth = w | 0; if (active) show(); },
+        TrackPosition() {}, GetDelayTime() { return 0; }, SetDelayTime() {}, SetFont() {},
+    };
     window.CreateTooltip = function () { return tooltip; };
     Object.defineProperty(window, 'Tooltip', { get() { return tooltip; } });
     fb.CreateProfiler = function (name) {
@@ -2823,6 +3079,20 @@ const char* const kPrelude = R"JS(
             Reset() { start = Date.now(); },
             Print(msg) { console.log('FbProfiler (' + this.Name + '): ' + (msg ? msg + ' ' : '') + this.Time + ' ms'); },
         };
+    };
+    utils.MapString = function (text, lcid, flags) {
+        let s = String(text);
+        const shift = (from, to, delta) => s = s.replace(/./gsu, c => {
+            const p = c.codePointAt(0);
+            return p >= from && p <= to ? String.fromCodePoint(p + delta) : c;
+        });
+        if (flags & 0x100) s = s.toLowerCase();
+        if (flags & 0x200) s = s.toUpperCase();
+        if (flags & 0x100000) shift(0x30A1, 0x30F6, -0x60);
+        if (flags & 0x200000) shift(0x3041, 0x3096, 0x60);
+        if (flags & 0x400000) { shift(0xFF01, 0xFF5E, -0xFEE0); s = s.replace(/\u3000/g, ' '); }
+        if (flags & 0x800000) { shift(0x21, 0x7E, 0xFEE0); s = s.replace(/ /g, '\u3000'); }
+        return s;
     };
 })();
 (function () {
@@ -3220,6 +3490,7 @@ const char* const kPrelude = R"JS(
         });
         return p;
     };
+    let frameStyle = 0;
     const uiHacks = () => {
         const limits = { min: { Enabled: false, Width: 0, Height: 0 }, max: { Enabled: false, Width: 0, Height: 0 } };
         const apply = () => native.windowLimits(limits.min.Enabled ? limits.min.Width : 0, limits.min.Enabled ? limits.min.Height : 0,
@@ -3231,7 +3502,13 @@ const char* const kPrelude = R"JS(
             return o;
         };
         return {
-            FrameStyle: 0, DisableSizing: false, MoveStyle: 0, BlockMaximize: false,
+            get FrameStyle() { return frameStyle; },
+            set FrameStyle(v) {
+                frameStyle = v | 0;
+                if (typeof panelsui !== 'undefined' && panelsui.IsAvailable)
+                    panelsui.RunAction(frameStyle >= 2 ? 'WINDOWSTYLE:hidetitlebar' : 'WINDOWSTYLE:showtitlebar');
+            },
+            DisableSizing: false, MoveStyle: 0, BlockMaximize: false,
             Aero: { Effect: 0, Left: 0, Top: 0, Right: 0, Bottom: 0 },
             MinSize: size('min'), MaxSize: size('max'),
             get MainWindowState() { return native.windowState(); },
@@ -3266,11 +3543,434 @@ const char* const kPrelude = R"JS(
 })();
 )JS";
 
+const char* const kLodashMixins = R"JS(
+if (!_.sortByOrder) _.sortByOrder = _.orderBy;
+_.mixin({
+    nest(collection, keys) {
+        const list = Array.isArray(keys) ? keys : [keys];
+        if (!list.length) return collection;
+        const [first, ...rest] = list;
+        return _.mapValues(_.groupBy(collection, first), group => _.nest(group, rest));
+    },
+});
+)JS";
+
+const char* const kJsp3Prelude = R"JS(
+(function () {
+    const native = __jsp;
+    const gp = native.proto('gr'), hp = native.proto('handle'), lp = native.proto('list');
+    const smp = { FillEllipse: gp.FillEllipse, DrawEllipse: gp.DrawEllipse, DrawImage: gp.DrawImage };
+    const fonts = new Map();
+    const fontObject = str => {
+        const key = String(str || '');
+        let f = fonts.get(key);
+        if (f) return f;
+        let o = {};
+        try { o = key ? JSON.parse(key) : {}; } catch (e) { o = {}; }
+        if (Array.isArray(o)) o = o[0] || {};
+        const style = ((o.Weight || 400) >= 600 ? 1 : 0) | (o.Style ? 2 : 0) | (o.Underline ? 4 : 0);
+        f = gdi.Font(o.Name || 'Segoe UI', o.Size || 16, style);
+        fonts.set(key, f);
+        return f;
+    };
+    const fontString = f => JSON.stringify({ Name: f.Name, Size: f.Size, Weight: f.Style & 1 ? 700 : 400, Style: f.Style & 2 ? 2 : 0, Stretch: 5 });
+    const codes = /\$rgb\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)\)|\$rgb\(\)|\x03([0-9A-Fa-f]{6})?(?:\|[0-9A-Fa-f]{6})?\x03|\$font\(([^)]*)\)/g;
+    const plain = t => String(t === undefined || t === null ? '' : t).replace(codes, '');
+    const runsOf = (text, font, colour) => {
+        const runs = [];
+        let c = colour, f = font, last = 0, m;
+        const push = end => { if (end > last) runs.push({ text: text.slice(last, end), colour: c, font: f }); };
+        codes.lastIndex = 0;
+        while ((m = codes.exec(text))) {
+            push(m.index);
+            last = codes.lastIndex;
+            if (m[1] !== undefined) c = (0xff000000 | (m[1] << 16) | (m[2] << 8) | +m[3]) >>> 0;
+            else if (m[4] !== undefined) { const v = parseInt(m[4], 16); c = (0xff000000 | ((v & 0xff) << 16) | (v & 0xff00) | (v >>> 16)) >>> 0; }
+            else if (m[5] !== undefined) {
+                const a = m[5].split(',').map(s => s.trim());
+                f = a[0] ? JSON.stringify({ Name: a[0], Size: +a[1] || 16, Weight: +a[2] || 400, Style: +a[3] || 0, Underline: a[4] === '1' }) : font;
+            } else if (m[0].startsWith('$font')) f = font;
+            else c = colour;
+        }
+        push(text.length);
+        return runs;
+    };
+    const rangeRuns = (text, font, ranges) => {
+        const runs = [];
+        let at = 0;
+        for (const r of ranges.slice().sort((a, b) => a.Start - b.Start)) {
+            if (r.Start > at) runs.push({ text: text.slice(at, r.Start), colour: 0xff000000, font });
+            runs.push({ text: text.slice(r.Start, r.Start + r.Length), colour: r.Colour, font });
+            at = r.Start + r.Length;
+        }
+        if (at < text.length) runs.push({ text: text.slice(at), colour: 0xff000000, font });
+        return runs;
+    };
+    const brushOf = c => {
+        if (typeof c !== 'string') return null;
+        try {
+            const b = JSON.parse(c);
+            return b && !Array.isArray(b) && Array.isArray(b.Stops) && b.Stops.length ? b : null;
+        } catch (e) { return null; }
+    };
+    const mix = (a, b, t) => {
+        const ch = s => Math.round(((a >>> s) & 0xff) * (1 - t) + ((b >>> s) & 0xff) * t);
+        return ((ch(24) << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0)) >>> 0;
+    };
+    const solid = c => {
+        if (typeof c === 'number') return c;
+        const b = brushOf(c);
+        if (b) return b.Stops.length > 1 ? mix(b.Stops[0][1], b.Stops[b.Stops.length - 1][1], 0.5) : b.Stops[0][1];
+        try {
+            const a = JSON.parse(c);
+            const first = Array.isArray(a) ? a[0] : a;
+            if (first && typeof first.Colour === 'number') return first.Colour;
+        } catch (e) {}
+        return 0xff000000;
+    };
+    const fillBrush = (gr, x, y, w, h, b) => {
+        if (!b.Start || !b.End) { gr.FillSolidRect(x, y, w, h, solid(JSON.stringify(b))); return; }
+        const dx = b.End[0] - b.Start[0], dy = b.End[1] - b.Start[1];
+        const vertical = Math.abs(dy) >= Math.abs(dx);
+        const stops = b.Stops.slice().sort((p, q) => p[0] - q[0]);
+        const len = vertical ? h : w, flip = vertical ? dy < 0 : dx < 0;
+        if (stops[0][0] > 0) stops.unshift([0, stops[0][1]]);
+        if (stops[stops.length - 1][0] < 1) stops.push([1, stops[stops.length - 1][1]]);
+        for (let i = 0; i + 1 < stops.length; ++i) {
+            const a = Math.round(stops[i][0] * len), z = Math.round(stops[i + 1][0] * len);
+            if (z <= a) continue;
+            const from = flip ? len - z : a, c1 = flip ? stops[i + 1][1] : stops[i][1], c2 = flip ? stops[i][1] : stops[i + 1][1];
+            if (vertical) gr.FillGradRect(x, y + from, w, z - a, 90, c1, c2);
+            else gr.FillGradRect(x + from, y, z - a, h, 0, c1, c2);
+        }
+    };
+    const format = (ta, pa, ww, trim) => {
+        const align = [0, 2, 1, 0][ta | 0] || 0, line = [0, 2, 1][pa | 0] || 0, cut = [0, 3, 4][trim | 0] || 0;
+        return ((align << 28) | (line << 24) | (cut << 20) | ((ww | 0) === 1 ? 0x1000 : 0)) >>> 0;
+    };
+    const write = function (text, font, colour, x, y, w, h, ta, pa, ww, trim) {
+        const raw = String(text === undefined || text === null ? '' : text);
+        let ranges = null;
+        if (typeof colour === 'string') try { const a = JSON.parse(colour); if (Array.isArray(a)) ranges = a; } catch (e) {}
+        codes.lastIndex = 0;
+        const styled = codes.test(raw) || ranges;
+        if (!styled || raw.includes('\n')) {
+            this.DrawString(plain(raw), fontObject(font), solid(colour), x, y, w, h, format(ta, pa, ww, trim));
+            return;
+        }
+        const runs = ranges ? rangeRuns(raw, font, ranges) : runsOf(raw, font, solid(colour));
+        const widths = runs.map(r => this.CalcTextWidth(r.text, fontObject(r.font)));
+        const total = widths.reduce((a, b) => a + b, 0);
+        let cx = x + ((ta | 0) === 1 ? w - total : (ta | 0) === 2 ? (w - total) / 2 : 0);
+        runs.forEach((r, i) => {
+            const right = Math.min(x + w, cx + widths[i]);
+            if (right > cx && cx < x + w) {
+                const lastFit = i === runs.length - 1 || cx + widths[i] >= x + w;
+                this.DrawString(r.text, fontObject(r.font), r.colour, Math.round(cx), y, Math.round((lastFit ? x + w : right) - cx), h,
+                                format(0, pa, 1, lastFit ? trim : 0));
+            }
+            cx += widths[i];
+        });
+    };
+    Object.assign(gp, {
+        Clear(c) { this.FillSolidRect(0, 0, 32767, 32767, solid(c)); },
+        FillRectangle(x, y, w, h, c) {
+            const b = brushOf(c);
+            if (b) fillBrush(this, x, y, w, h, b);
+            else this.FillSolidRect(x, y, w, h, solid(c));
+        },
+        DrawRectangle(x, y, w, h, lw, c) { this.DrawRect(x, y, w, h, lw, solid(c)); },
+        FillRoundedRectangle(x, y, w, h, rx, ry, c) { this.FillRoundRect(x, y, w, h, rx, ry, solid(c)); },
+        DrawRoundedRectangle(x, y, w, h, rx, ry, lw, c) { this.DrawRoundRect(x, y, w, h, rx, ry, lw, solid(c)); },
+        FillEllipse(cx, cy, rx, ry, c) { smp.FillEllipse.call(this, cx - rx, cy - ry, rx * 2, ry * 2, solid(c)); },
+        DrawEllipse(cx, cy, rx, ry, lw, c) { smp.DrawEllipse.call(this, cx - rx, cy - ry, rx * 2, ry * 2, lw, solid(c)); },
+        DrawImage(img, dx, dy, dw, dh, sx, sy, sw, sh, opacity, angle) {
+            smp.DrawImage.call(this, img, dx, dy, dw, dh, sx, sy, sw, sh, angle || 0, Math.round((opacity === undefined ? 1 : opacity) * 255));
+        },
+        WriteText: write, WriteText2: write, WriteTextSimple: write,
+        WriteTextLayout(layout, colour, x, y, w, h, offset) {
+            write.call(this, layout.text, layout.font, colour, x, y - (offset || 0), w, h + (offset || 0), layout.ta, layout.pa, layout.ww, layout.trim);
+        },
+        PushLayer(x, y, w, h) { native.pushClip(this, x, y, w, h); },
+        PopLayer() { native.popClip(this); },
+    });
+    gp.DrawBitmap = gp.DrawImage;
+    let measure = null;
+    const measurer = () => measure || (measure = gdi.CreateImage(1, 1).GetGraphics());
+    const fontOf = (name, size, weight, style) => JSON.stringify({ Name: name, Size: size, Weight: weight || 400, Style: style || 0 });
+    utils.CalcTextWidth = (text, name, size, weight, style) => measurer().CalcTextWidth(plain(text), fontObject(fontOf(name, size, weight, style)));
+    utils.CalcTextWidth2 = (text, font) => measurer().CalcTextWidth(plain(text), fontObject(font));
+    const layout = (text, font, ta, pa, ww, trim) => ({
+        text: String(text), font, ta, pa, ww, trim,
+        CalcTextHeight(maxWidth) {
+            return measurer().MeasureString(plain(this.text), fontObject(this.font), 0, 0, maxWidth, 100000, format(this.ta, this.pa, this.ww, 0)).Height;
+        },
+        Dispose() {},
+    });
+    utils.CreateTextLayout = (text, name, size, weight, style, stretch, ta, pa, ww, trim) => layout(text, fontOf(name, size, weight, style), ta, pa, ww, trim);
+    utils.CreateTextLayout2 = (text, fonts, ta, pa, ww, trim) => layout(text, fonts, ta, pa, ww, trim);
+    const smpFontDUI = window.GetFontDUI, smpFontCUI = window.GetFontCUI;
+    window.GetFontDUI = t => fontString(smpFontDUI.call(window, t));
+    window.GetFontCUI = t => fontString(smpFontCUI.call(window, t));
+    const dark = () => {
+        const c = window.GetColourDUI(1);
+        return (((c >> 16) & 0xff) * 299 + ((c >> 8) & 0xff) * 587 + (c & 0xff) * 114) / 1000 < 128;
+    };
+    Object.defineProperty(window, 'IsDark', { get: dark });
+    Object.defineProperty(window, 'IsDefaultUI', { get: () => true });
+    Object.defineProperty(window, 'DPI', { get: () => 96 });
+    window.SetTooltipFont = () => {};
+    let holder = null;
+    const selection = () => holder || (holder = fb.AcquireUiSelectionHolder());
+    window.SetSelection = list => selection().SetSelection(list);
+    window.SetPlaylistSelectionTracking = () => selection().SetPlaylistSelectionTracking();
+    window.SetPlaylistTracking = () => selection().SetPlaylistTracking();
+    Object.defineProperty(fb, 'ComponentPath', { get: () => native.jsp3Path() });
+    Object.defineProperty(fb, 'VersionString', { get: () => 'foobar2000 v' + fb.Version });
+    Object.defineProperty(fb, 'CustomVolume', { get: () => -1 });
+    fb.CheckComponent = name => utils.CheckComponent(name, true);
+    fb.IsLibraryEnabled = () => true;
+    fb.IsLibraryInitialised = () => true;
+    fb.GetSelectionType = () => 0;
+    fb.ShowPictureViewer = path => utils.Run(path);
+    const menu = cmd => () => fb.RunMainMenuCommand(cmd);
+    Object.assign(fb, {
+        AddDirectory: menu('File/Add folder...'), AddFiles: menu('File/Add files...'), LoadPlaylist: menu('File/Load playlist...'),
+        SavePlaylist: menu('File/Save playlist...'), ShowConsole: menu('View/Console'), ShowPreferences: menu('File/Preferences'),
+        ClearPlaylist: menu('Edit/Clear'),
+    });
+    const smpInputBox = utils.InputBox, smpPicker = utils.ColourPicker;
+    utils.InputBox = (prompt, title, def, errorOnCancel) => smpInputBox(window.ID, prompt, title, def === undefined ? '' : def, !!errorOnCancel);
+    utils.TextBox = (prompt, title, def) => smpInputBox(window.ID, prompt, title, def === undefined ? '' : def, true);
+    utils.ColourPicker = (def, errorOnCancel) => {
+        const c = smpPicker(window.ID, def);
+        if (errorOnCancel && c === def) throw new Error('Dialog window was closed');
+        return c;
+    };
+    utils.MessageBox = (prompt, title, flags) => native.messageBox(String(prompt), String(title), flags | 0);
+    utils.Run = (app, params) => native.shellRun(String(app) + (params ? ' ' + params : ''));
+    utils.RunCmdAsync = (id, app, params) => utils.Run(app, params);
+    utils.ReadUTF8 = path => utils.ReadTextFile(path, 65001);
+    utils.IsFolder = path => utils.IsDirectory(path);
+    utils.CreateFolder = path => { native.mkdir(String(path)); return utils.IsDirectory(path); };
+    utils.RemovePath = path => !!native.remove(String(path), false);
+    utils.RenamePath = (from, to) => !!native.rename(String(from), String(to));
+    utils.CopyFile = (from, to, overwrite) => !!native.copy(String(from), String(to), overwrite !== false);
+    const vb = a => ({ toArray: () => a.slice() });
+    const walk = (folder, files, recursive) => {
+        const out = [];
+        const visit = dir => {
+            for (const e of native.list(String(dir)) || []) {
+                if (e.dir) {
+                    if (!files) out.push(e.path);
+                    if (recursive) visit(e.path);
+                } else if (files) out.push(e.path);
+            }
+        };
+        visit(folder);
+        return vb(out);
+    };
+    utils.ListFiles = (folder, recursive) => walk(folder, true, recursive);
+    utils.ListFolders = (folder, recursive) => walk(folder, false, recursive);
+    utils.GetLastModified = path => { const s = native.stat(String(path)); return s ? Math.floor(s.mtime / 1000) : 0; };
+    utils.GetClipboardText = () => native.clipboard();
+    utils.SetClipboardText = text => native.clipboard(String(text));
+    utils.Now = () => Math.round(Date.now() / 1000);
+    const pad = n => String(n).padStart(2, '0');
+    utils.TimestampToDateString = ts => {
+        const d = new Date(ts * 1000);
+        return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    };
+    utils.DateStringToTimestamp = str => {
+        const m = /^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)$/.exec(String(str));
+        return m ? Math.round(new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime() / 1000) : 0;
+    };
+    utils.ReplaceIllegalChars = (str, modern, strip) => {
+        const map = { '"': "''", '\\': '⧵', '/': '⁄', '*': '∗', '|': '∣', ':': '∶', '<': '˂', '>': '˃', '?': '？' };
+        let s = String(str).replace(/["\\/*|:<>?]/g, c => modern === false ? (c === '"' ? "''" : '_') : map[c]);
+        if (strip) s = s.replace(/[. ]+$/, '');
+        return s;
+    };
+    utils.ConvertToAscii = str => String(str).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\x00-\x7f]/g, '?');
+    plman.GetPlaylistItemCount = p => plman.PlaylistItemCount(p);
+    plman.FindPlaylist = name => {
+        for (let i = 0; i < plman.PlaylistCount; ++i) if (plman.GetPlaylistName(i) === name) return i;
+        return -1;
+    };
+    plman.GetPlaylistSelectedIndexes = p => {
+        const out = [];
+        for (let i = 0, n = plman.PlaylistItemCount(p); i < n; ++i) if (plman.IsPlaylistItemSelected(p, i)) out.push(i);
+        return vb(out);
+    };
+    plman.InvertSelection = p => {
+        const sel = [], unsel = [];
+        for (let i = 0, n = plman.PlaylistItemCount(p); i < n; ++i) (plman.IsPlaylistItemSelected(p, i) ? sel : unsel).push(i);
+        plman.SetPlaylistSelection(p, sel, false);
+        plman.SetPlaylistSelection(p, unsel, true);
+    };
+    plman.RemovePlaylists = indexes => {
+        const list = (indexes && indexes.toArray ? indexes.toArray() : Array.from(indexes || [])).sort((a, b) => b - a);
+        for (const i of list) plman.RemovePlaylist(i);
+        return list.length > 0;
+    };
+    plman.GetPlaybackOrders = () => vb(['Default', 'Repeat (playlist)', 'Repeat (track)', 'Random', 'Shuffle (tracks)', 'Shuffle (albums)', 'Shuffle (folders)']);
+    const actions = ['AddItems', 'RemoveItems', 'ReorderItems', 'ReplaceItems', 'RenamePlaylist', 'RemovePlaylist', 'ExecuteDefaultAction'];
+    plman.GetPlaylistLockFilterMask = p => plman.GetPlaylistLockedActions(p).reduce((m, a) => m | (1 << actions.indexOf(a)), 0);
+    plman.AddPlaylistLock = (p, mask) => { plman.SetPlaylistLockedActions(p, actions.filter((a, i) => mask & (1 << i))); return true; };
+    plman.RemovePlaylistLock = p => { plman.SetPlaylistLockedActions(p, []); return true; };
+    plman.InsertPlaylistItemsFilter = (p, base, list, select) => plman.InsertPlaylistItems(p, base, list, select);
+    plman.MovePlaylistSelectionV2 = (p, pos) => {
+        const sel = plman.GetPlaylistSelectedIndexes(p).toArray();
+        if (sel.length) plman.MovePlaylistSelection(p, pos - sel[0]);
+    };
+    Object.assign(lp, {
+        AddItem(h) { this.Add(h); }, AddItems(l) { this.AddRange(l); }, GetItem(i) { return this.Item(i); },
+        InsertItem(i, h) { this.Insert(i, h); }, InsertItems(i, l) { this.InsertRange(i, l); },
+        RemoveByIdx(i) { this.RemoveById(i); }, RemoveFromIdx(i, n) { this.RemoveRange(i, n); },
+        SortByPath() { this.OrderByPath(); }, SortByRelativePath() { this.OrderByRelativePath(); },
+        SortByFormat(tf, direction) { this.OrderByFormat(fb.TitleFormat(String(tf)), direction); },
+        CopyToClipboard() { return fb.CopyHandleListToClipboard(this); },
+        Dispose() {},
+        GetOtherInfo() {
+            const general = {}, location = {};
+            if (this.Count) {
+                const h = this.Item(0), info = h.GetFileInfo();
+                for (let i = 0; i < info.InfoCount; ++i) general[info.InfoName(i)] = info.InfoValue(i);
+                const path = h.Path, cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+                location['File name' + (this.Count > 1 ? 's' : '')] = path.slice(cut + 1);
+                location['Folder name'] = path.slice(0, cut);
+                location['Total size'] = utils.FormatFileSize(this.CalcTotalSize());
+                general['Duration'] = utils.FormatDuration(this.CalcTotalDuration());
+            }
+            return JSON.stringify({ General: general, Location: location });
+        },
+        Reverse() {
+            const items = [];
+            for (let i = 0; i < this.Count; ++i) items.push(this.Item(i));
+            this.RemoveAll();
+            for (let i = items.length - 1; i >= 0; --i) this.Add(items[i]);
+        },
+        Randomise() {
+            const items = [];
+            for (let i = 0; i < this.Count; ++i) items.push(this.Item(i));
+            for (let i = items.length - 1; i > 0; --i) { const j = Math.floor(Math.random() * (i + 1)); [items[i], items[j]] = [items[j], items[i]]; }
+            this.RemoveAll();
+            for (const h of items) this.Add(h);
+        },
+    });
+    Object.assign(native.proto('info'), { Dispose() {} });
+    Object.defineProperty(Array.prototype, 'toArray', { value() { return this; }, configurable: true, writable: true });
+    const ip = native.proto('image');
+    Object.assign(ip, {
+        CreateBitmap() { return this; },
+        FlipRotate(mode) { this.RotateFlip(mode); },
+        ApplyEffect() {},
+    });
+    gp.DrawImageWithMask = function (img, mask, x, y, w, h) {
+        const c = img.Resize(w, h), m = mask.Resize(w, h);
+        c.ApplyMask(m);
+        this.DrawImage(c, x, y, w, h, 0, 0, w, h);
+    };
+    utils.LoadImage = (path, maxSize) => {
+        let img = null;
+        try { img = gdi.Image(path); } catch (e) { return null; }
+        if (img && maxSize > 0 && (img.Width > maxSize || img.Height > maxSize)) {
+            const s = maxSize / Math.max(img.Width, img.Height);
+            img = img.Resize(Math.max(1, Math.round(img.Width * s)), Math.max(1, Math.round(img.Height * s)));
+        }
+        return img;
+    };
+    utils.LoadImageAsync = (id, path) => {
+        gdi.LoadImageAsyncV2(id, path).then(img => { if (typeof on_load_image_done === 'function') on_load_image_done(path, img); });
+    };
+    utils.LoadBitmap = utils.LoadImage;
+    utils.CreateImage = (w, h) => gdi.CreateImage(w, h);
+    utils.ShowPopupMessage = (text, title) => fb.ShowPopupMessage(text, title);
+    utils.HashString = str => {
+        let h = 0xcbf29ce484222325n;
+        for (const c of unescape(encodeURIComponent(String(str)))) h = BigInt.asUintN(64, (h ^ BigInt(c.charCodeAt(0))) * 0x100000001b3n);
+        return h.toString(16).padStart(16, '0');
+    };
+    utils.RemoveFolderRecursive = path => !!native.remove(String(path), true);
+    const headers = arg => {
+        if (!arg) return [];
+        const a = String(arg);
+        if (a[0] !== '{') return ['User-Agent: ' + a];
+        try { return Object.entries(JSON.parse(a)).map(([k, v]) => k + ': ' + v); } catch (e) { return []; }
+    };
+    let nextTask = 1;
+    utils.HTTPRequestAsync = (id, type, url, ua, post) => {
+        const task = nextTask++;
+        native.httpAsync(type === 1 ? 'POST' : 'GET', String(url), headers(ua), type === 1 ? post : undefined).then(r => {
+            if (typeof on_http_request_done !== 'function') return;
+            const ok = !r.error && r.status > 0;
+            on_http_request_done(task, ok, r.text, ok ? r.status : 0, '{}');
+        });
+        return task;
+    };
+    utils.DownloadFileAsync = (id, url, path) => {
+        native.download(String(url), String(path)).then(ok => {
+            if (typeof on_download_file_done === 'function') on_download_file_done(path, !!ok, ok ? '' : 'download failed');
+        });
+    };
+    utils.DownloadImageAsync = (id, url) => {
+        const file = fb.ProfilePath + 'foo_js_panel' + (native.os === 'windows' ? '\\' : '/') + 'cache' + (native.os === 'windows' ? '\\' : '/') + utils.HashString(url);
+        native.download(String(url), file).then(ok => {
+            if (typeof on_download_image_done !== 'function') return;
+            const img = ok ? utils.LoadImage(file) : null;
+            native.remove(file, false);
+            on_download_image_done(url, img);
+        });
+    };
+    fb.GetAlbumArtStub = () => null;
+    fb.GetAudioChunk = () => null;
+    fb.AddLocationsAsync = () => 0;
+    plman.SortPlaylistsByName = direction => {
+        const desc = direction === -1;
+        for (let i = 0; i < plman.PlaylistCount; ++i) {
+            let best = i;
+            for (let j = i + 1; j < plman.PlaylistCount; ++j) {
+                const c = plman.GetPlaylistName(j).localeCompare(plman.GetPlaylistName(best), undefined, { numeric: true, sensitivity: 'base' });
+                if (desc ? c > 0 : c < 0) best = j;
+            }
+            if (best !== i) plman.MovePlaylist(best, i);
+        }
+    };
+    plman.SelectQueryItems = (p, query) => {
+        const items = plman.GetPlaylistItems(p), match = fb.GetQueryItems(items, query), want = [];
+        for (let i = 0; i < items.Count; ++i) if (match.Find(items.Item(i)) >= 0) want.push(i);
+        plman.ClearPlaylistSelection(p);
+        plman.SetPlaylistSelection(p, want, true);
+    };
+    plman.ShowPlaylistLockUI = () => {};
+    plman.RecyclerCount = 0;
+    plman.GetRecyclerName = () => '';
+    plman.GetRecyclerItems = () => fb.CreateHandleList();
+    plman.RecyclerPurge = () => {};
+    plman.RecyclerRestore = () => {};
+    const tfp = Object.getPrototypeOf(fb.TitleFormat(''));
+    tfp.EvalPlaylistItem = function (p, i) { return this.EvalWithMetadb(plman.GetPlaylistItems(p).Item(i)); };
+    tfp.EvalActivePlaylistItem = function (i) { return this.EvalPlaylistItem(plman.ActivePlaylist, i); };
+    Object.getPrototypeOf(window.CreatePopupMenu()).SetDefault = function () {};
+    Object.assign(hp, {
+        Dispose() {},
+        GetAlbumArtThumbAsync(id, artId) { utils.GetAlbumArtAsync(id, this, artId || 0); },
+        GetAlbumArtEmbedded(artId) { return utils.GetAlbumArtV2(this, artId || 0); },
+        ShowAlbumArtViewer() {}, ShowAlbumArtViewer2() {},
+        IsInLibrary() { return fb.IsMetadbInMediaLibrary(this); },
+        GetAlbumArtAsync(id, artId) { utils.GetAlbumArtAsync(id, this, artId || 0); },
+        GetAlbumArt(artId) { return utils.GetAlbumArtV2(this, artId || 0); },
+    });
+})();
+)JS";
+
 JSValue global_include(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     JsEngine::Impl* e = I(ctx);
     const std::string path = script_relative(e, arg_str(ctx, argc, argv, 0));
     std::string source;
     if (!e->host.read_text_file(path, source)) return JS_ThrowInternalError(ctx, "include: can't read %s", path.c_str());
+    source = patch_theme_source(path, std::move(source));
+    e->files.push_back(path);
     e->includeDirs.push_back(script_dir_of(path));
     JSValue r = JS_Eval(ctx, source.data(), source.size(), path.c_str(), JS_EVAL_TYPE_GLOBAL);
     e->includeDirs.pop_back();
@@ -3646,6 +4346,25 @@ std::string check_syntax(const std::string& source, const std::string& name) {
     return err;
 }
 
+std::string check_properties(const std::string& json) {
+    JSRuntime* rt = JS_NewRuntime();
+    JS_SetMemoryLimit(rt, kSyntaxCheckMemory);
+    JSContext* ctx = JS_NewContext(rt);
+    std::string err;
+    JSValue v = JS_ParseJSON(ctx, json.data(), json.size(), "properties");
+    if (JS_IsException(v)) {
+        JSValue ex = JS_GetException(ctx);
+        err = to_string(ctx, ex);
+        JS_FreeValue(ctx, ex);
+    } else if (!JS_IsObject(v) || JS_IsArray(v)) {
+        err = "Properties must be a JSON object: { \"name\": value, ... }";
+    }
+    JS_FreeValue(ctx, v);
+    JS_FreeContext(ctx);
+    JS_FreeRuntime(rt);
+    return err;
+}
+
 TextPos text_pos(const std::string& utf8, std::size_t byteOffset) {
     TextPos p;
     const std::size_t end = std::min(byteOffset, utf8.size());
@@ -3661,6 +4380,30 @@ TextPos text_pos(const std::string& utf8, std::size_t byteOffset) {
     return p;
 }
 
+int error_line(const std::string& message, const std::string& file) {
+    auto number = [&](std::size_t at) {
+        int n = 0;
+        while (at < message.size() && std::isdigit((unsigned char)message[at])) n = n * 10 + (message[at++] - '0');
+        return n;
+    };
+    if (const std::size_t at = message.find("(line "); at != std::string::npos)
+        if (const int n = number(at + 6)) return n;
+    if (file.empty()) return 0;
+    for (std::size_t at = message.find(file + ":"); at != std::string::npos; at = message.find(file + ":", at + 1))
+        if (const int n = number(at + file.size() + 1)) return n;
+    return 0;
+}
+
+std::size_t line_start(const std::string& utf8, int line) {
+    std::size_t at = 0;
+    for (int n = 1; n < line && at < utf8.size(); ++n) {
+        const std::size_t nl = utf8.find('\n', at);
+        if (nl == std::string::npos) return utf8.size();
+        at = nl + 1;
+    }
+    return std::min(at, utf8.size());
+}
+
 std::string editor_status(const TextPos& pos, const std::string& syntaxError, const std::string& applied) {
     std::string s = "Line " + std::to_string(pos.line) + ", col " + std::to_string(pos.col) + "   ";
     s += syntaxError.empty() ? std::string("Syntax OK") : syntaxError;
@@ -3673,7 +4416,34 @@ JsEngine::~JsEngine() = default;
 
 bool JsEngine::load(const std::string& source, const std::string& path) {
     m->dir = script_dir_of(path);
-    return m->eval(source, path.empty() ? std::string("<sample>") : path);
+    if (!path.empty()) m->files.push_back(path);
+    const ScriptHeader header = parse_header(source);
+    if (!header.name.empty()) m->scriptName = header.name;
+    if (!header.author.empty()) m->scriptAuthor = header.author;
+    if (!header.version.empty()) m->scriptVersion = header.version;
+    if (is_jsp3_script(source, header)) {
+        if (!m->eval(kJsp3Prelude, "<jsp3>")) return false;
+        const std::string component = m->host.jsp3_path(), profile = m->host.profile_path();
+        for (const std::string& spec : header.imports) {
+            const std::string bundled = m->host.bundled_import(spec);
+            const std::string file = bundled.empty() ? fix_path(resolve_import(spec, m->dir, component, profile)) : "<" + spec + ">";
+            std::string text = bundled;
+            if (bundled.empty() && !m->host.read_text_file(file, text)) {
+                m->fail("@import \"" + spec + "\": can't read " + file +
+                        (spec.find("%fb2k_component_path%") != std::string::npos
+                             ? " (copy JScript Panel 3's helpers.txt and samples folder into " + component + ")"
+                             : std::string()));
+                return false;
+            }
+            if (bundled.empty()) m->files.push_back(file);
+            m->includeDirs.push_back(script_dir_of(file));
+            const bool ok = m->eval(text, file);
+            m->includeDirs.pop_back();
+            if (!ok) return false;
+            if (spec == "lodash" && !m->eval(kLodashMixins, "<lodash mixins>")) return false;
+        }
+    }
+    return m->eval(patch_theme_source(path, source), path.empty() ? std::string("<sample>") : path);
 }
 
 bool JsEngine::failed() const { return !m->error.empty(); }
@@ -3694,6 +4464,7 @@ void JsEngine::paint(Canvas& canvas) {
     g->canvas = &canvas;
     JS_SetOpaque(gr, g);
     m->call("on_paint", 1, &gr);
+    for (; g->clips > 0; --g->clips) canvas.pop_clip();
     g->canvas = nullptr;
     JS_FreeValue(m->ctx, gr);
     if (failed()) paint(canvas);
@@ -3720,6 +4491,40 @@ bool JsEngine::mouse(Mouse kind, int x, int y, unsigned mask) {
     JSValue args[3] = { JS_NewInt32(m->ctx, x), JS_NewInt32(m->ctx, y), JS_NewInt32(m->ctx, (int)mask) };
     m->call(names[(int)kind], 3, args, &truthy);
     return truthy;
+}
+
+void JsEngine::drag(Drag kind, int x, int y, unsigned mask, DropAction& a) {
+    static const char* const names[] = { "on_drag_enter", "on_drag_over", "on_drag_leave", "on_drag_drop" };
+    if (kind == Drag::Leave) {
+        m->call(names[(int)kind], 0, nullptr);
+        return;
+    }
+    JSContext* ctx = m->ctx;
+    JSValue action = JS_NewObject(ctx);
+    set_int(ctx, action, "Effect", a.effect);
+    set_int(ctx, action, "Playlist", a.playlist);
+    set_int(ctx, action, "Base", a.base);
+    JS_SetPropertyStr(ctx, action, "ToSelect", JS_NewBool(ctx, a.toSelect));
+    set_str(ctx, action, "Text", a.text);
+    JSValue args[4] = { JS_DupValue(ctx, action), JS_NewInt32(ctx, x), JS_NewInt32(ctx, y), JS_NewInt32(ctx, (int)mask) };
+    m->call(names[(int)kind], 4, args);
+    JS_FreeValue(ctx, args[0]);
+    auto get_int = [&](const char* k, int& out) {
+        JSValue v = JS_GetPropertyStr(ctx, action, k);
+        int32_t n = 0;
+        if (JS_ToInt32(ctx, &n, v) == 0) out = n;
+        JS_FreeValue(ctx, v);
+    };
+    get_int("Effect", a.effect);
+    get_int("Playlist", a.playlist);
+    get_int("Base", a.base);
+    JSValue sel = JS_GetPropertyStr(ctx, action, "ToSelect");
+    a.toSelect = JS_ToBool(ctx, sel) > 0;
+    JS_FreeValue(ctx, sel);
+    JSValue text = JS_GetPropertyStr(ctx, action, "Text");
+    a.text = to_string(ctx, text);
+    JS_FreeValue(ctx, text);
+    JS_FreeValue(ctx, action);
 }
 
 void JsEngine::wheel(int step) {
@@ -3809,6 +4614,8 @@ bool JsEngine::invoke(const char* name, const std::vector<Arg>& args) {
 }
 
 bool JsEngine::in_modal() const { return m->modalDepth > 0; }
+
+const std::vector<std::string>& JsEngine::source_files() const { return m->files; }
 
 void JsEngine::notify_data(const std::string& name, const std::string& json, const std::vector<JsHost::NotifyItem>& items) {
     JSValue info = from_json(m->ctx, json);

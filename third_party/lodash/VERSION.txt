@@ -1,0 +1,1 @@
+lodash 3.10.1 (npm lodash-3.10.1.tgz, sha1 5bf45e8e49ba4189e17d482789dfd15bd140b7b6), its index.js as lodash.js and LICENSE, unmodified. 3.x because JScript Panel 3 scripts use its API (thisArg callbacks, sortByOrder).

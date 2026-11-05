@@ -94,10 +94,16 @@ anything repo-specific stays in the repo's own sections.
   (`export-subst`). No version is kept by hand. CI checks out with `fetch-depth: 0`. Run
   `git fetch --tags` after each release.
 - **Release:** semantic-release with Conventional Commits (`feat` = minor;
-  `fix`/`perf`/`refactor` = patch; `chore`/`docs`/`ci`/`style`/`test` = no release). `main`
-  is protected (PRs only) and nothing is committed back. `CHANGELOG.md` is kept by hand in the
-  release PR. `notify-n8n` publishes to foobar2000.org. If the head commit is non-releasing,
-  dispatch the workflow by hand.
+  `fix`/`perf`/`refactor` = patch; `chore`/`docs`/`ci`/`style`/`test` = no release). Releases
+  are pushed straight to `main` (the owner bypasses the PR rule) and nothing is committed back.
+  `notify-n8n` publishes to foobar2000.org. If the head commit is non-releasing, dispatch the
+  workflow by hand.
+- **Changelog = release notes:** `CHANGELOG.md` is kept by hand: the release commit adds
+  `## [X.Y.Z](compare link) (date)` with `### Highlights`/`Added`/`Fixed`/`Changed`, written for
+  users. `scripts/release-notes.sh X.Y.Z` (same file in every repo) prints that section with
+  wrapped lines joined; it is the GitHub release body (`generateNotesCmd`) and therefore what
+  foobar2000.org gets. `verifyReleaseCmd` runs it first, so a release whose version has no
+  section fails before tagging: predict the next version from the commits and write it.
 - **Release asset:** one `<component>_<version>.fb2k-component` per release, labelled
   `<component> <version> (macOS + Windows x86/x64/ARM64)`. Every place that uploads it
   (`.releaserc.json`, any `gh release upload --clobber` re-upload) uses that same label.
@@ -245,12 +251,12 @@ anything repo-specific stays in the repo's own sections.
   Windows client rect, so without the frame and Panels UI's menu bar): Eole computes them from
   its own panel heights and saves the mini playlist height back, so a frame counted in would
   shrink it on every round trip.
-- **Eole skin layout:** `tools/eole_skin.py` writes `main.txt` from the FCL's Panel Stack Splitter
-  scripts (one `$puts` per PSS global, panels per Eole state through the `eole.*` pvars the
-  adapter mirrors), with the original panel names (`BottomPlaylist`, `NowPlayingPlaylist`,
-  `TrackInfos`, …): Eole branches on `window.Name`. ESLyric and Shpeck become Panels UI's `Lyric
-  Show` and `Spectrum`. The mini playlist is 1 px shorter than its area, as CUI's splitter, or
-  Eole's saved mini height grows by 1 px per round trip.
+- **Eole without tools:** Panels UI's *Import Columns UI layout…* (`SKIN:IMPORT_FCL`) builds the
+  skin and copies `themes/` + `wsh-data/` into the profile; JS Panel adapts Eole's files as it
+  evaluates them (`patch_theme_source` in `theme_patches.cpp`: only paths under `/eole/`, each
+  patch only when its anchor is found exactly once and its text isn't there yet, nothing written to
+  disk). Eole branches on `window.Name`, so panels keep their FCL names. `UIHacks.FrameStyle` ≥ 2
+  runs `WINDOWSTYLE:hidetitlebar` through `panelsui`.
 - **`window.IsVisible`** is the host window's visibility: Panels UI hides panels outside the
   current view without destroying them, and Eole only lets the visible one answer notifications.
 - **Theme checks run third-party code:** `make theme-check` executes a theme's scripts, so
@@ -271,9 +277,63 @@ anything repo-specific stays in the repo's own sections.
   a detached thread with the panel's `abort_callback` and hands the result back with
   `fb2k::inMainThread`; the engine resolves the Promise only while it's alive (`Impl::alive`).
   Artists are derived from the albums (`library_artists`). v3 adds `list_tracks` (merged into
-  `fb.GetLibraryItems()`) and `artist_info` (`GetArtistInfoAsync`; `tools/eole_patches.py` makes
+  `fb.GetLibraryItems()`) and `artist_info` (`GetArtistInfoAsync`; `theme_patches.cpp` makes
   Eole's Biography fetch artist photos from it, since last.fm's photo pages now answer non-browser
   clients with a JS challenge).
+- **SDK exceptions vs. hosts:** an SDK call that throws (e.g. `config_object::g_get_data_bool_simple`
+  throws `exception_service_not_found` for an object that doesn't exist, like
+  `bool_ui_always_on_top` on macOS) must not escape `Panel`'s constructor: Panels UI swallows the
+  exception from `instantiate()` and the half-built `Panel` stays in `live()`, so the next
+  broadcast crashes. Host methods look services up with `g_find`/`tryGet`, and `Panel::reload`
+  catches what still gets through and logs it as an ERROR.
+- **State callbacks:** config flags (`config_object_notify`), DSP (`dsp_config_callback`),
+  ReplayGain (`replaygain_manager_v2::add_notify`) and output (`output_manager_v2::addCallback`)
+  are global services that `Panel::broadcast` to every live panel through `later`.
+  `fb.AlwaysOnTop` falls back to `Surface::set_always_on_top` (NSWindow level) where foobar2000
+  has no such setting, and broadcasts the callback itself. `on_main_menu(n)` comes from the
+  *View › JS Panel › Script commands* group (10 commands, as SMP).
+- **Playlist locks:** `SetPlaylistLockedActions` installs our own `playlist_lock` (one per
+  playlist, kept in `js_locks()`, index tracked by `on_playlist_index_change`); a playlist locked
+  by another component is refused. Locks aren't persisted: scripts reapply them on load, as in SMP.
+- **Drag and drop:** the engine passes `DropTargetAction` as a plain JS object and reads its fields
+  back; the platform asks the panel at enter/over/drop and inserts on a drop with an effect and a
+  playlist through `Panel::drop_notify` (abort-guarded). Windows: `IDropTarget` per HWND +
+  `ole_interaction` data objects for `DoDragDrop` and the clipboard (`win_dragdrop.cpp`). macOS
+  has no SDK pasteboard format, so the view writes our own type (`subsong\tpath` lines, any scheme,
+  so `navidrome://` survives) plus file URLs, and reads ours back with `metadb::handle_create`
+  (the SDK's synchronous `process_locations` crashes on macOS); Finder files go through
+  `process_locations_async`. `NSDraggingSession` is asynchronous, so `DoDragDrop` returns 0 there.
+  `make win11-arm-dragdrop` drives a real drag (`win11-arm.sh tap drag,…`); `make mac-dragdrop`
+  does the same with `mac-click.sh … drag` and moves this Mac's pointer.
+- **UI colours and fonts:** the engine maps DUI and CUI kinds to `UiColour` (CUI kinds go to their DUI
+  equivalents: there's no Columns UI SDK here) and keeps a dark table as the fallback. Windows asks
+  the element's `ui_element_instance_callback` (`query_std_color`, `getSysColor`, `query_font_ex`);
+  macOS resolves semantic `NSColor`s under the view's effective appearance and answers "Segoe UI"
+  (the canvas maps it to the system font). `ui_config_callback_impl` sends
+  `on_colours_changed`/`on_font_changed`; macOS also sends the first on an appearance change.
+- **JScript Panel 3 layer:** `is_jsp3_script` (a `==PREPROCESSOR==` import of `lodash` or
+  `%fb2k_component_path%`, or a JSP3-only call) makes `JsEngine::load` eval `kJsp3Prelude`, then the
+  `@import`s, then the script. The prelude adds names to the class prototypes (`__jsp.proto`) and
+  replaces the few that clash with SMP (`FillEllipse`/`DrawEllipse` take centre + radii,
+  `GetFontDUI/CUI` return JSON strings, `InputBox`/`ColourPicker` have no window id), so SMP scripts
+  never see it. lodash is vendored and embedded at configure time (`cmake/embed_lodash.cmake` →
+  `lodash_js()`, handed out by `JsHost::bundled_import`). `%fb2k_component_path%` is
+  `<profile>/foo_js_panel/jsp3/`; JSP3's own helpers and samples (marc2003's) are never shipped.
+  lodash is **3.10.1**, not 4: JSP3 scripts rely on 3.x (`forEach(list, fn, thisArg)`,
+  `sortByOrder`); `kLodashMixins` adds JSP3's `nest`. `PushLayer`/`PopLayer` are
+  `Canvas::push_clip`/`pop_clip` (shared canvas, both backends; GDI's `RestoreDC` also drops the
+  selected font, so `pop_clip` re-selects it), and clips left open are popped after `on_paint`.
+  `make jsp3-check JSP3=<unzipped component>` runs every JSP3 sample in `render_script --sandbox`
+  (37/37 for 3.8.5).
+- **Columns UI layout converter:** lives in Panels UI (`src/core/fcl_import.cpp`, its CLAUDE.md
+  has the `.fcl` and Panel Stack Splitter formats). JS Panel's side is what the converted scripts
+  call: `RefreshPSS()` / the "Panel Stack Splitter" main-menu command toggle the `pss.refresh`
+  pvar through `panelsui`. Panels UI defers `SKIN:`/`WIZARD:`/`MENU` actions asked through the
+  contract, so a script that switches skin is never destroyed inside its own callback.
+- **Hot reload:** the engine records every file it evaluates (`source_files()`: the script, its
+  `include()`s, its `@import`s); `Panel::watch_files` stamps their mtimes after each load and polls them
+  on a `Surface` timer with an id no JS timer reaches (`kWatchTimer`), reloading on a change unless a
+  modal call is running. Off with the *Reload scripts when their files change* toggle.
 - **Hardening:** 5 s budget per call (interrupt handler), 512 MB runtime memory, 1 MB stack. A
   script error stops the script (timers killed) and the panel paints the error + stack, like SMP.
 - Panels UI bridge (variables/actions/notify) and drawing onto the Panels UI canvas are planned
@@ -341,6 +401,7 @@ anything repo-specific stays in the repo's own sections.
   the panel's abort and the engine's `alive` token. The library tree starts from
   `fb.GetLibraryItems()` and rebuilds on the library callbacks (the library is still loading
   when a panel starts with foobar2000).
+- `src/core/theme_patches.{h,cpp}` — Eole's in-memory patches, applied by `include()` and `JsEngine::load`.
 - `tools/fcl_extract.py` + `scripts/theme-check.sh` (`make theme-check`) — pull every Spider
   Monkey Panel panel (SMP 1.x binary config: version, GUID, edge style, properties, window
   placement, script) out of a Columns UI `.fcl` export and run each with `render_script`

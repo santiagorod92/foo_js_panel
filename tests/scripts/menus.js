@@ -1,7 +1,19 @@
 function on_paint(gr) { gr.FillSolidRect(0, 0, window.Width, window.Height, 0xff203040); }
 function on_focus(f) { console.log('menus: focus ' + f); }
 function on_char(c) { console.log('menus: char ' + String.fromCodePoint(c)); }
-function on_key_up(vk) { console.log('menus: key_up ' + vk); }
+let picking = false;
+function on_key_up(vk) {
+    console.log('menus: key_up ' + vk);
+    if (vk !== 65 || picking) return;
+    picking = true;
+    window.SetTimeout(() => {
+        console.log('picker: showing');
+        console.log('picker: colour=' + (utils.ColourPicker(window.ID, 0xff123456) >>> 0).toString(16));
+        window.SetProperty('menus.colour', 'ff123456');
+        window.ShowProperties();
+        console.log('properties: showing');
+    }, 200);
+}
 if (window.ID === 1) {
     window.SetTimeout(() => {
         const m = window.CreatePopupMenu(), sub = window.CreatePopupMenu(), ctx = window.CreatePopupMenu();

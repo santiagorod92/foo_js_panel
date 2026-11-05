@@ -1,4 +1,5 @@
 #include "win_sdk.h"
+#include <commctrl.h>
 #include <commdlg.h>
 #include <windowsx.h>
 #include "platform/win/gdi_canvas.h"
@@ -6,6 +7,7 @@
 #include "../../core/log.h"
 #include "../../core/panel.h"
 #include "../../core/settings.h"
+#include "win_dragdrop.h"
 #include "win_editor.h"
 #include "win_input.h"
 #include <memory>
@@ -34,6 +36,11 @@ public:
 
     bool key_pressed(int vk) override { return GetKeyState(vk) < 0; }
     void open_editor(const std::string& title, const std::string& text, EditorHooks hooks) override {
+        if (editor && IsWindow(editor)) {
+            wchar_t current[512] = {};
+            GetWindowTextW(editor, current, (int)std::size(current));
+            if (widen(title) != current) close_editor();
+        }
         editor = win::open_editor(editor, title, text, std::move(hooks));
     }
     void close_editor() {
@@ -116,6 +123,78 @@ public:
     void set_window_state(int state) override {
         if (HWND r = root()) ShowWindow(r, state == 1 ? SW_MINIMIZE : state == 2 ? SW_MAXIMIZE : SW_RESTORE);
     }
+    bool always_on_top() override {
+        HWND r = root();
+        return r && (GetWindowLongPtrW(r, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+    }
+    void set_always_on_top(bool on) override {
+        if (HWND r = root()) SetWindowPos(r, on ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    int drag_tracks(metadb_handle_list_cref tracks, int effects) override { return win::drag_tracks(tracks, effects); }
+    HWND tip = nullptr;
+    std::wstring tipText;
+    void set_tooltip(const std::string& text, bool active, int maxWidth) override {
+        if (!hwnd || (!tip && !active)) return;
+        TOOLINFOW ti{};
+        ti.cbSize = sizeof ti;
+        ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+        ti.hwnd = hwnd;
+        ti.uId = (UINT_PTR)hwnd;
+        tipText = widen(text);
+        ti.lpszText = tipText.data();
+        if (!tip) {
+            tip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT,
+                                  CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, hwnd, nullptr, core_api::get_my_instance(), nullptr);
+            if (!tip) return;
+            SendMessageW(tip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+        }
+        SendMessageW(tip, TTM_SETMAXTIPWIDTH, 0, maxWidth > 0 ? maxWidth : -1);
+        SendMessageW(tip, TTM_UPDATETIPTEXTW, 0, (LPARAM)&ti);
+        SendMessageW(tip, TTM_ACTIVATE, active && !text.empty(), 0);
+    }
+    ui_element_instance_callback_ptr callback;
+    static uint32_t argb_of(COLORREF c) { return 0xff000000u | ((uint32_t)GetRValue(c) << 16) | ((uint32_t)GetGValue(c) << 8) | GetBValue(c); }
+    COLORREF sys(int index) { return callback.is_valid() ? callback->getSysColor(index) : GetSysColor(index); }
+    bool ui_colour(UiColour kind, uint32_t& argb) override {
+        static const GUID* const ids[] = { &ui_color_text, &ui_color_background, &ui_color_highlight, &ui_color_selection };
+        if (kind == UiColour::SelectionText) argb = argb_of(sys(COLOR_HIGHLIGHTTEXT));
+        else if (kind == UiColour::InactiveSelection) argb = argb_of(sys(COLOR_BTNFACE));
+        else if (callback.is_valid()) argb = argb_of(callback->query_std_color(*ids[(int)kind]));
+        else return false;
+        return true;
+    }
+    bool ui_font(int kind, UiFont& font) override {
+        static const GUID* const ids[] = { &ui_font_default, &ui_font_tabs, &ui_font_lists, &ui_font_playlists, &ui_font_statusbar, &ui_font_console };
+        if (callback.is_empty() || kind < 0 || kind > 5) return false;
+        LOGFONTW lf{};
+        HFONT f = callback->query_font_ex(*ids[kind]);
+        if (!f || !GetObjectW(f, sizeof lf, &lf)) return false;
+        font.face = narrow(lf.lfFaceName);
+        font.px = (float)(lf.lfHeight < 0 ? -lf.lfHeight : lf.lfHeight);
+        font.style = (lf.lfWeight >= FW_SEMIBOLD ? 1 : 0) | (lf.lfItalic ? 2 : 0) | (lf.lfUnderline ? 4 : 0);
+        return true;
+    }
+    bool sys_colour(int index, uint32_t& argb) override {
+        if (index < 0 || index > COLOR_MENUBAR) return false;
+        argb = argb_of(sys(index));
+        return true;
+    }
+    bool pick_colour(uint32_t& argb) override {
+        static COLORREF custom[16] = {};
+        CHOOSECOLORW cc{};
+        cc.lStructSize = sizeof cc;
+        cc.hwndOwner = root();
+        cc.rgbResult = RGB((argb >> 16) & 0xff, (argb >> 8) & 0xff, argb & 0xff);
+        cc.lpCustColors = custom;
+        cc.Flags = CC_RGBINIT | CC_FULLOPEN;
+        if (!ChooseColorW(&cc)) return false;
+        argb = argb_of(cc.rgbResult);
+        return true;
+    }
+    void destroy_tooltip() {
+        if (tip) DestroyWindow(tip);
+        tip = nullptr;
+    }
     bool full = false;
     WINDOWPLACEMENT saved{};
     LONG_PTR savedStyle = 0;
@@ -178,6 +257,7 @@ class JsElementInstance : public ui_element_instance {
 public:
     JsElementInstance(HWND parent, ui_element_config::ptr cfg, ui_element_instance_callback_ptr callback)
         : m_callback(callback), m_path(config_path(cfg)) {
+        m_surface.callback = callback;
         register_class();
         CreateWindowExW(0, kClassName, L"JS Panel", WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0, 0, 0, 0,
                         parent, nullptr, core_api::get_my_instance(), this);
@@ -230,10 +310,18 @@ private:
         case WM_CREATE:
             m_panel = std::make_unique<Panel>(m_surface, m_path.empty() ? default_script() : m_path,
                                               [this](const std::string& p) { m_path = p; });
+            m_drop = win::create_drop_target(hwnd, [this] { return m_panel.get(); });
+            if (FAILED(RegisterDragDrop(hwnd, m_drop))) log::warn("js", "drag and drop isn't available in this panel");
             return 0;
         case WM_DESTROY:
+            if (m_drop) {
+                RevokeDragDrop(hwnd);
+                m_drop->Release();
+                m_drop = nullptr;
+            }
             m_surface.close_editor();
             m_panel.reset();
+            m_surface.destroy_tooltip();
             return 0;
         case WM_NCDESTROY:
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
@@ -370,6 +458,7 @@ private:
     std::unique_ptr<Panel> m_panel;
     bool m_tracking = false;
     wchar_t m_highSurrogate = 0;
+    IDropTarget* m_drop = nullptr;
 };
 
 class JsElement : public ui_element {

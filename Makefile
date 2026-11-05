@@ -1,5 +1,5 @@
 .PHONY: help build build-arm64ec build-x86 build-all deploy launch run kill clean check-portable test win-test \
-	mac-build mac-local mac-smoke mac-demo mac-restore render theme-check mac-shot mac-click ui-smoke win11-arm win11-arm-deploy win11-arm-test win11-arm-smoke win11-arm-menus win11-arm-images
+	mac-build mac-local mac-smoke mac-demo mac-restore render theme-check jsp3-check mac-shot mac-click ui-smoke win11-arm win11-arm-deploy win11-arm-test win11-arm-smoke win11-arm-menus win11-arm-images win11-arm-dragdrop mac-dragdrop win11-arm-jsp3 mac-jsp3 win11-arm-reload mac-reload win11-arm-editor mac-import win11-arm-import
 
 help:
 	@echo "foo_js_panel — make targets"
@@ -107,20 +107,26 @@ mac-restore:
 
 RENDER_BIN = build/tools/render_script
 QJS_C = third_party/quickjs/dtoa.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/quickjs.c
-$(RENDER_BIN): tools/render_script.mm src/core/js_engine.cpp src/core/js_engine.h src/core/image_ops.cpp $(PANELS_UI_SRC)/platform/mac/mac_canvas.mm
+$(RENDER_BIN): tools/render_script.mm third_party/lodash/lodash.js src/core/js_engine.cpp src/core/theme_patches.cpp src/core/js_engine.h src/core/image_ops.cpp $(PANELS_UI_SRC)/platform/mac/mac_canvas.mm
 	@mkdir -p build/tools/qjs
 	@for f in $(QJS_C); do $(CC_HOST) -std=gnu11 -O2 -w -D_GNU_SOURCE -c $$f -o build/tools/qjs/$$(basename $$f .c).o; done
-	$(CXX_HOST) -std=c++20 -O1 -fobjc-arc -Isrc -I$(PANELS_UI_SRC) -Ithird_party/quickjs tools/render_script.mm src/core/js_engine.cpp src/core/image_ops.cpp \
+	$(CXX_HOST) -std=c++20 -O1 -fobjc-arc -DJSP_LODASH_PATH='"$(CURDIR)/third_party/lodash/lodash.js"' -Isrc -I$(PANELS_UI_SRC) -Ithird_party/quickjs tools/render_script.mm src/core/js_engine.cpp src/core/image_ops.cpp src/core/theme_patches.cpp \
 	  $(PANELS_UI_SRC)/platform/mac/mac_canvas.mm build/tools/qjs/*.o -framework CoreGraphics -framework CoreText -framework ImageIO \
 	  -framework CoreFoundation -framework Foundation -o $(RENDER_BIN)
 mac-shot:
 	./scripts/mac-shot.sh $(OUT)
+
+mac-dragdrop: mac-build
+	./scripts/ui-test.sh mac dragdrop
 
 mac-click:
 	./scripts/mac-click.sh $(X) $(Y) $(KIND)
 
 theme-check:
 	./scripts/theme-check.sh $(LAYOUT) $(PROFILE) $(OUT)
+
+jsp3-check:
+	./scripts/jsp3-check.sh $(JSP3) $(OUT)
 
 render: $(RENDER_BIN)
 	@if [ -n "$(SCRIPT)" ]; then ./$(RENDER_BIN) $(SCRIPT) $(OUT) $(ARGS); fi
@@ -153,6 +159,35 @@ win11-arm-menus:
 win11-arm-images:
 	WIN_ARCH=$(ARCH) ./build.sh
 	WIN11_ARM=$(WIN11_ARM) ARCH=$(ARCH) ./scripts/ui-test.sh win11-arm images
+
+win11-arm-editor:
+	WIN_ARCH=$(ARCH) ./build.sh
+	WIN11_ARM=$(WIN11_ARM) ARCH=$(ARCH) ./scripts/ui-test.sh win11-arm editor
+
+mac-import: mac-build
+	./scripts/ui-test.sh mac import
+
+win11-arm-import:
+	WIN_ARCH=$(ARCH) ./build.sh
+	WIN11_ARM=$(WIN11_ARM) ARCH=$(ARCH) ./scripts/ui-test.sh win11-arm import
+
+win11-arm-reload:
+	WIN_ARCH=$(ARCH) ./build.sh
+	WIN11_ARM=$(WIN11_ARM) ARCH=$(ARCH) ./scripts/ui-test.sh win11-arm reload
+
+mac-reload: mac-build
+	./scripts/ui-test.sh mac reload
+
+win11-arm-jsp3:
+	WIN_ARCH=$(ARCH) ./build.sh
+	WIN11_ARM=$(WIN11_ARM) ARCH=$(ARCH) ./scripts/ui-test.sh win11-arm jsp3
+
+mac-jsp3: mac-build
+	./scripts/ui-test.sh mac jsp3
+
+win11-arm-dragdrop:
+	WIN_ARCH=$(ARCH) ./build.sh
+	WIN11_ARM=$(WIN11_ARM) ARCH=$(ARCH) ./scripts/ui-test.sh win11-arm dragdrop
 
 win11-arm-test:
 	WIN11_ARM=$(WIN11_ARM) ./scripts/run-unit-tests.sh win11-arm

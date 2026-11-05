@@ -3,6 +3,7 @@
 #include "recording_canvas.h"
 #include "core/js_api_util.h"
 #include "core/sample_script.h"
+#include "core/theme_patches.h"
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
@@ -1479,6 +1480,16 @@ TEST("UIHacks drives the main window: state, fullscreen, size limits and the pse
     CHECK(host.windowCalls == want);
 }
 
+TEST("UIHacks.FrameStyle hides Panels UI's title bar, shared by every UIHacks object") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("const a = new ActiveXObject('UIHacks'); a.FrameStyle = 3;"
+                 "console.log(new ActiveXObject('UIHacks').FrameStyle); a.FrameStyle = 0;", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("3"));
+    const std::vector<std::string> want = { "WINDOWSTYLE:hidetitlebar", "WINDOWSTYLE:showtitlebar" };
+    CHECK(host.puiActions == want);
+}
+
 TEST("notify: handles and handle lists inside NotifyOthers' info arrive as real objects") {
     t::FakeHost host;
     host.libraryTracks = { t::track("/a"), t::track("/b") };
@@ -1495,4 +1506,434 @@ TEST("notify: handles and handle lists inside NotifyOthers' info arrive as real 
     CHECK_EQ(host.console_lines.back(), std::string("rating_updated /b true"));
     receiver.notify_data(host.notes[1].first, host.notes[1].second, host.noteItems[1]);
     CHECK_EQ(host.console_lines.back(), std::string("mixed 2 /a 3 x"));
+}
+
+TEST("engine: output devices, DSP presets, ReplayGain and always on top") {
+    t::FakeHost host;
+    host.outputs = { { "Primary", "{A}", "{1}", true }, { "USB DAC", "{A}", "{2}", false } };
+    host.dsp = { "Flat", "Loud" };
+    host.dspSelected = 0;
+    JsEngine e(host);
+    CHECK(e.load("const d = JSON.parse(fb.GetOutputDevices());"
+                 "fb.SetOutputDevice(d[1].output_id, d[1].device_id);"
+                 "const p = JSON.parse(fb.GetDSPPresets()); fb.SetDSPPreset(1);"
+                 "fb.ReplaygainMode = 2; fb.AlwaysOnTop = true; fb.ShowLibrarySearchUI('artist IS x');"
+                 "console.log(d.length, d[0].name, d[0].active, JSON.parse(fb.GetOutputDevices())[1].active,"
+                 " p[0].name, p[0].active, JSON.parse(fb.GetDSPPresets())[1].active, fb.ReplaygainMode, fb.AlwaysOnTop);"
+                 "try { fb.ReplaygainMode = 7; } catch (e) { console.log(e.name); }"
+                 "try { fb.SetDSPPreset(5); } catch (e) { console.log(e.name); }", ""));
+    CHECK(!e.failed());
+    CHECK_EQ(host.console_lines[0], std::string("2 Primary true true Flat true true 2 true"));
+    CHECK_EQ(host.console_lines[1], std::string("RangeError"));
+    CHECK_EQ(host.console_lines[2], std::string("RangeError"));
+    CHECK(host.searches == std::vector<std::string>{ "artist IS x" });
+}
+
+TEST("engine: playlist locked actions") {
+    t::FakeHost host;
+    host.playlists = { "A", "B" };
+    host.foreignLocks[1] = "foo_other";
+    JsEngine e(host);
+    CHECK(e.load("plman.SetPlaylistLockedActions(0, ['AddItems', 'RemovePlaylist']);"
+                 "console.log(plman.GetPlaylistLockedActions(0).join(','), plman.GetPlaylistLockName(0),"
+                 " plman.GetPlaylistLockedActions(1).length, plman.GetPlaylistLockName(1));"
+                 "plman.SetPlaylistLockedActions(0, []); console.log(plman.GetPlaylistLockedActions(0).length);"
+                 "for (const f of [() => plman.SetPlaylistLockedActions(0, ['Nope']), () => plman.SetPlaylistLockedActions(1, ['AddItems']),"
+                 "                 () => plman.GetPlaylistLockedActions(9)])"
+                 "  try { f(); } catch (e) { console.log(e.name); }", ""));
+    CHECK(!e.failed());
+    const std::vector<std::string> want = { "AddItems,RemovePlaylist JS Panel 7 foo_other", "0", "RangeError", "InternalError", "RangeError" };
+    CHECK(host.console_lines == want);
+}
+
+TEST("engine: state callbacks reach the script") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("function on_always_on_top_changed(s) { console.log('top', s); }"
+                 "function on_replaygain_mode_changed(m) { console.log('rg', m); }"
+                 "function on_main_menu(i) { console.log('menu', i); }"
+                 "function on_selection_changed() { console.log('sel'); }"
+                 "function on_output_device_changed() { console.log('out'); }"
+                 "function on_dsp_preset_changed() { console.log('dsp'); }", ""));
+    e.invoke("on_always_on_top_changed", { true });
+    e.invoke("on_replaygain_mode_changed", { 1 });
+    e.invoke("on_main_menu", { 3 });
+    e.invoke("on_selection_changed");
+    e.invoke("on_output_device_changed");
+    e.invoke("on_dsp_preset_changed");
+    const std::vector<std::string> want = { "top true", "rg 1", "menu 3", "sel", "out", "dsp" };
+    CHECK(host.console_lines == want);
+}
+
+TEST("api util: DetectCharset code pages") {
+    CHECK_EQ(detect_codepage("plain"), 65001);
+    CHECK_EQ(detect_codepage("caf\xc3\xa9"), 65001);
+    CHECK_EQ(detect_codepage("caf\xe9"), 1252);
+    CHECK_EQ(detect_codepage("\xc3"), 1252);
+    CHECK_EQ(detect_codepage(std::string("\xff\xfe" "a\0", 4)), 1200);
+    CHECK_EQ(detect_codepage("\xef\xbb\xbfx"), 65001);
+}
+
+TEST("engine: utils.MapString and DetectCharset") {
+    t::FakeHost host;
+    const std::string dir = (std::filesystem::temp_directory_path() / "jsp_charset").generic_string();
+    std::filesystem::create_directories(dir);
+    { std::ofstream(dir + "/a.txt", std::ios::binary) << "caf\xe9"; }
+    JsEngine e(host);
+    CHECK(e.load("console.log(utils.MapString('AbC', 0, 0x100), utils.MapString('abc', 0, 0x200),"
+                 " utils.MapString('\u30ab\u30ca', 0, 0x100000) === '\u304b\u306a', utils.MapString('A1', 0, 0x800000) === '\uff21\uff11',"
+                 " utils.DetectCharset('" + dir + "/a.txt'), utils.DetectCharset('" + dir + "/none.txt'));", ""));
+    CHECK(!e.failed());
+    CHECK_EQ(host.console_lines.back(), std::string("abc ABC true true 1252 0"));
+    std::filesystem::remove_all(dir);
+}
+
+TEST("engine: drag callbacks get a DropTargetAction and their changes come back") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("function on_drag_enter(a, x, y, mask) { console.log('enter', a.Effect, a.Playlist, a.Base, a.ToSelect, x, y, mask); }"
+                 "function on_drag_over(a) { a.Effect = 0; }"
+                 "function on_drag_leave() { console.log('leave'); }"
+                 "function on_drag_drop(a, x, y) { a.Effect = 1; a.Playlist = 2; a.Base = y; a.ToSelect = false; a.Text = 'here'; }", ""));
+    DropAction a;
+    a.effect = 3;
+    e.drag(Drag::Enter, 5, 6, 1, a);
+    CHECK_EQ(a.effect, 3);
+    e.drag(Drag::Over, 5, 6, 1, a);
+    CHECK_EQ(a.effect, 0);
+    e.drag(Drag::Leave, 0, 0, 0, a);
+    DropAction d;
+    d.effect = 3;
+    e.drag(Drag::Drop, 1, 7, 0, d);
+    CHECK(!e.failed());
+    CHECK_EQ(d.effect, 1);
+    CHECK_EQ(d.playlist, 2);
+    CHECK_EQ(d.base, 7);
+    CHECK(!d.toSelect);
+    CHECK_EQ(d.text, std::string("here"));
+    const std::vector<std::string> want = { "enter 3 -1 0 true 5 6 1", "leave" };
+    CHECK(host.console_lines == want);
+}
+
+TEST("engine: DoDragDrop and the handle clipboard") {
+    t::FakeHost host;
+    host.libraryTracks = { t::track("/a/1"), t::track("/b/2") };
+    host.dragResult = 2;
+    JsEngine e(host);
+    CHECK(e.load("const lib = fb.GetLibraryItems();"
+                 "console.log(fb.DoDragDrop(window.ID, lib, 3, {}), fb.DoDragDrop(window.ID, fb.CreateHandleList(), 1),"
+                 " fb.CheckClipboardContents(), fb.CopyHandleListToClipboard(lib), fb.CheckClipboardContents(),"
+                 " fb.GetClipboardContents(window.ID).Count);", ""));
+    CHECK(!e.failed());
+    CHECK_EQ(host.console_lines.back(), std::string("2 0 false true true 2"));
+    CHECK(host.drags == (std::vector<std::pair<size_t, int>>{ { 2, 3 } }));
+}
+
+TEST("engine: the tooltip shows its text while active") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("const tt = window.CreateTooltip('Segoe UI', 12, 0);"
+                 "tt.Text = 'quiet'; tt.Activate(); tt.SetMaxWidth(200); tt.Text = 'Play';"
+                 "tt.Deactivate(); tt.Text = 'later';"
+                 "console.log(tt.Text, window.CreateTooltip() === tt);", ""));
+    CHECK(!e.failed());
+    const std::vector<std::string> want = { "quiet on 0", "quiet on 200", "Play on 200", "Play off 200" };
+    CHECK(host.tips == want);
+    CHECK_EQ(host.console_lines.back(), std::string("later true"));
+}
+
+TEST("engine: DUI and CUI colours and fonts come from the host, with a dark fallback") {
+    t::FakeHost host;
+    {
+        JsEngine e(host);
+        CHECK(e.load("console.log((window.GetColourDUI(1) >>> 0).toString(16), window.GetFontDUI(5).Name, window.GetFontCUI(0).Size);", ""));
+        CHECK_EQ(host.console_lines.back(), std::string("ff1e1e1e Consolas 12"));
+    }
+    host.themed = true;
+    JsEngine e(host);
+    CHECK(e.load("const d = [0, 1, 2, 3].map(i => window.GetColourDUI(i) & 0xff).join(',');"
+                 "const c = [0, 1, 2, 3, 4, 5, 6].map(i => window.GetColourCUI(i) & 0xff).join(',');"
+                 "const f = window.GetFontDUI(3), cf = window.GetFontCUI(0), cl = window.GetFontCUI(1);"
+                 "console.log(d, c, f.Name, f.Size, f.Style, cf.Name, cl.Name);", ""));
+    CHECK(!e.failed());
+    CHECK_EQ(host.console_lines.back(), std::string("0,1,2,3 0,4,0,1,3,5,2 Face3 13 1 Face2 Face0"));
+}
+
+TEST("engine: utils.GetSysColour and utils.ColourPicker") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("console.log((utils.GetSysColour(5) >>> 0).toString(16), utils.GetSysColour(99), (utils.ColourPicker(window.ID, 0xff112233) >>> 0).toString(16));", ""));
+    host.picked = 0xff445566u;
+    CHECK(e.load("console.log((utils.ColourPicker(window.ID, 0xff112233) >>> 0).toString(16));", ""));
+    CHECK(!e.failed());
+    const std::vector<std::string> want = { "ffabcdef 0 ff112233", "ff445566" };
+    CHECK(host.console_lines == want);
+}
+
+TEST("engine: ShowProperties hands the host the properties as indented JSON") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("window.SetProperty('a', 1); window.SetProperty('b', 'x'); window.ShowProperties();", ""));
+    CHECK(!e.failed());
+    CHECK_EQ(host.editedProperties, std::string("{\n  \"a\": 1,\n  \"b\": \"x\"\n}"));
+    CHECK_EQ(check_properties("{\"a\": 1}"), std::string());
+    CHECK(!check_properties("{a: 1}").empty());
+    CHECK(!check_properties("[1]").empty());
+}
+
+TEST("api util: layout script paths resolve ~ and the profile folder") {
+    CHECK_EQ(resolve_script_path("~/s/a.js", "/Users/me", "/p"), std::string("/Users/me/s/a.js"));
+    CHECK_EQ(resolve_script_path("themes/x.js", "/Users/me", "/p/"), std::string("/p/themes/x.js"));
+    CHECK_EQ(resolve_script_path("/abs/x.js", "/Users/me", "/p"), std::string("/abs/x.js"));
+    CHECK_EQ(resolve_script_path("C:\\x.js", "/h", "/p"), std::string("C:\\x.js"));
+    CHECK_EQ(resolve_script_path("", "/h", "/p"), std::string());
+}
+
+TEST("samples: every built-in sample loads and paints") {
+    for (const Sample& sample : samples()) {
+        t::FakeHost host;
+        JsEngine e(host);
+        CHECK(e.load(sample.source, sample.file));
+        e.resize(400, 120);
+        t::RecordingCanvas c;
+        e.paint(c);
+        if (e.failed()) printf("sample %s: %s\n", sample.name, e.error().c_str());
+        CHECK(!e.failed());
+    }
+}
+
+const Sample& sample_named(const std::string& file) {
+    for (const Sample& s : samples())
+        if (file == s.file) return s;
+    return samples().front();
+}
+
+TEST("samples: the playlist selects, plays, removes and takes drops") {
+    t::FakeHost host;
+    host.playlistItems[0] = { t::track("/a/1"), t::track("/a/2"), t::track("/a/3") };
+    JsEngine e(host);
+    CHECK(e.load(sample_named("playlist.js").source, "playlist.js"));
+    e.resize(400, 200);
+    t::RecordingCanvas c;
+    e.paint(c);
+    e.mouse(Mouse::LeftDown, 20, 30, 1);
+    e.mouse(Mouse::LeftUp, 20, 30, 0);
+    CHECK(host.selection[0] == (std::vector<bool>{ false, true, false }));
+    CHECK_EQ(host.focus[0], 1);
+    e.mouse(Mouse::LeftDouble, 20, 55, 1);
+    CHECK_EQ(host.actions.back(), std::string("play 0 2"));
+    DropAction a;
+    a.effect = 1;
+    e.drag(Drag::Drop, 10, 26, 1, a);
+    CHECK_EQ(a.playlist, 0);
+    CHECK_EQ(a.base, 1);
+    CHECK_EQ(a.effect, 1);
+    CHECK(!e.failed());
+}
+
+TEST("samples: the seekbar seeks and sets the volume") {
+    t::FakeHost host;
+    host.playing = true;
+    host.length = 200;
+    JsEngine e(host);
+    CHECK(e.load(sample_named("seekbar.js").source, "seekbar.js"));
+    e.resize(400, 30);
+    t::RecordingCanvas c;
+    e.paint(c);
+    const int seekW = 400 - 120 - 120;
+    e.mouse(Mouse::LeftDown, 52 + seekW / 2, 15, 1);
+    e.mouse(Mouse::LeftUp, 52 + seekW / 2, 15, 0);
+    CHECK(host.seeks.size() == 1 && host.seeks[0] > 99 && host.seeks[0] < 101);
+    e.mouse(Mouse::LeftDown, 400 - 12, 15, 1);
+    CHECK(host.vol > -1);
+    CHECK(!e.failed());
+}
+
+TEST("engine: utils.CheckFont asks the canvas whether the face exists") {
+    t::FakeHost host;
+    host.missingFonts = { "Nope Sans" };
+    JsEngine e(host);
+    CHECK(e.load("console.log(utils.CheckFont('Segoe UI'), utils.CheckFont('Nope Sans'), utils.CheckFont(''));", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("true false false"));
+}
+
+TEST("jsp3: the preprocessor header lists the imports and marks JScript Panel 3 scripts") {
+    const std::string src = "// ==PREPROCESSOR==\n// @name \"x\"\n// @import \"lodash\"\n// @import \"%fb2k_component_path%samples\\js\\panel.js\"\n// ==/PREPROCESSOR==\nvar a = 1;";
+    const ScriptHeader h = parse_header(src);
+    CHECK(h.present);
+    CHECK(h.imports == (std::vector<std::string>{ "lodash", "%fb2k_component_path%samples\\js\\panel.js" }));
+    CHECK(is_jsp3_script(src, h));
+    CHECK(!is_jsp3_script("function on_paint(gr) { gr.FillSolidRect(0, 0, 1, 1, 0); }", parse_header("")));
+    CHECK(is_jsp3_script("function on_paint(gr) { gr.WriteText('a', '', 0, 0, 0, 9, 9); }", parse_header("")));
+    CHECK_EQ(resolve_import("%fb2k_component_path%helpers.txt", "/s/", "/jsp3/", "/p/"), std::string("/jsp3/helpers.txt"));
+    CHECK_EQ(resolve_import("lib/x.js", "/s/", "/jsp3/", "/p/"), std::string("/s/lib/x.js"));
+    CHECK_EQ(resolve_import("%fb2k_profile_path%y.js", "/s/", "/jsp3/", "/p/"), std::string("/p/y.js"));
+}
+
+TEST("jsp3: imports load first and the JScript Panel 3 drawing calls map onto the canvas") {
+    t::FakeHost host;
+    host.files["/jsp3/helpers.txt"] = "function RGB(r, g, b) { return 0xff000000 | (r << 16) | (g << 8) | b; }";
+    host.files["/s/lib.js"] = "var shared = 'from lib';";
+    JsEngine e(host);
+    CHECK(e.load("// ==PREPROCESSOR==\n// @import \"%fb2k_component_path%helpers.txt\"\n// @import \"lib.js\"\n// ==/PREPROCESSOR==\n"
+                 "var font = JSON.stringify({ Name: 'Segoe UI', Size: 20, Weight: 700 });\n"
+                 "function on_paint(gr) {\n"
+                 "  gr.Clear(RGB(1, 2, 3));\n"
+                 "  gr.FillRectangle(1, 2, 3, 4, RGB(255, 0, 0));\n"
+                 "  gr.FillEllipse(20, 20, 5, 4, RGB(0, 255, 0));\n"
+                 "  gr.WriteText('$rgb(255,0,0)Hi ' + shared, font, RGB(0, 0, 255), 0, 0, 100, 30, 2, 2);\n"
+                 "}\n"
+                 "console.log(window.GetFontDUI(0).indexOf('\"Name\"') >= 0, typeof utils.ListFiles('/nope').toArray(), fb.ComponentPath,"
+                 " utils.ReplaceIllegalChars('a:b'), utils.DateStringToTimestamp(utils.TimestampToDateString(1000000000)) === 1000000000);",
+                 "/s/main.js"));
+    if (e.failed()) printf("%s\n", e.error().c_str());
+    CHECK(!e.failed());
+    e.resize(100, 40);
+    t::RecordingCanvas c;
+    e.paint(c);
+    CHECK(has_op(c, "fill_rect 0,0,32767,32767 #010203"));
+    CHECK(has_op(c, "fill_rect 1,2,3,4 #ff0000"));
+    CHECK(has_op(c, "round_rect 15,16,10,8 10,8 #00ff00"));
+    CHECK(has_op(c, "font Segoe UI 20 bold"));
+    CHECK(has_prefix(c, "text \"Hi from lib\""));
+    CHECK_EQ(host.console_lines.back(), std::string("true object /jsp3/ a∶b true"));
+}
+
+TEST("jsp3: a missing component import names the folder to copy JScript Panel 3's files into") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(!e.load("// ==PREPROCESSOR==\n// @import \"%fb2k_component_path%helpers.txt\"\n// ==/PREPROCESSOR==\n", "/s/main.js"));
+    CHECK(e.error().find("/jsp3/") != std::string::npos);
+}
+
+TEST("jsp3: Spider Monkey Panel scripts keep FillEllipse's box arguments") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("function on_paint(gr) { gr.FillEllipse(20, 20, 5, 4, 0xff00ff00); }", "/s/smp.js"));
+    t::RecordingCanvas c;
+    e.paint(c);
+    CHECK(has_op(c, "round_rect 20,20,5,4 5,4 #00ff00"));
+}
+
+TEST("jsp3: playlist, title format, hash and request helpers") {
+    t::FakeHost host;
+    host.playlistItems[0] = { t::track("/a/x"), t::track("/b/y"), t::track("/a/z") };
+    JsEngine e(host);
+    CHECK(e.load("// ==PREPROCESSOR==\n// ==/PREPROCESSOR==\nwindow.IsDark;\n"
+                 "plman.SelectQueryItems(0, '/a/');\n"
+                 "plman.InvertSelection(0);\n"
+                 "console.log(plman.GetPlaylistSelectedIndexes(0).toArray().join(','), plman.FindPlaylist('Default'), plman.GetPlaylistItemCount(0),"
+                 " utils.HashString('abc'), utils.HashString('abc') === utils.HashString('abc'), typeof fb.TitleFormat('%title%').EvalPlaylistItem,"
+                 " typeof utils.HTTPRequestAsync(window.ID, 0, 'http://x'), fb.GetAudioChunk());", "/s/m.js"));
+    if (e.failed()) printf("%s\n", e.error().c_str());
+    CHECK(!e.failed());
+    CHECK_EQ(host.console_lines.back(), std::string("1 0 3 e71fa2190541574b true function number null"));
+}
+
+TEST("jsp3: lodash 3 names, CreateImage, Dispose and GetOtherInfo") {
+    t::FakeHost host;
+    host.bundledLodash = "var _ = { mixin(o) { Object.assign(_, o); }, orderBy: () => 'ordered', mapValues: (o, f) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, f(v)])),"
+                         " groupBy: (c, k) => c.reduce((m, x) => ((m[x[k]] = m[x[k]] || []).push(x), m), {}) };";
+    host.playlistItems[0] = { t::track("/music/a.mp3") };
+    JsEngine e(host);
+    CHECK(e.load("// ==PREPROCESSOR==\n// @import \"lodash\"\n// ==/PREPROCESSOR==\n"
+                 "const items = plman.GetPlaylistItems(0); const info = JSON.parse(items.GetOtherInfo()); items.Dispose();"
+                 "console.log(_.sortByOrder(), Object.keys(_.nest([{ a: 1, b: 2 }, { a: 1, b: 3 }], ['a', 'b'])['1']).join(','),"
+                 " utils.CreateImage(3, 2).Width, info.Location['File name'], info.Location['Folder name']);", "/s/m.js"));
+    if (e.failed()) printf("%s\n", e.error().c_str());
+    CHECK(!e.failed());
+    CHECK_EQ(host.console_lines.back(), std::string("ordered 2,3 3 a.mp3 /music"));
+}
+
+TEST("engine: the preprocessor header names the script") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("// ==PREPROCESSOR==\n// @name \"Header name\"\n// @author \"me\"\n// ==/PREPROCESSOR==\nconsole.log(window.Name, window.ScriptInfo.Author);", "/s/x.js"));
+    CHECK_EQ(host.console_lines.back(), std::string("Header name me"));
+}
+
+TEST("jsp3: PushLayer clips until PopLayer, and an open layer is closed after on_paint") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("function on_paint(gr) { gr.PushLayer(1, 2, 30, 40); gr.FillRectangle(0, 0, 99, 99, 0xff000000); gr.PopLayer();"
+                 " gr.PushLayer(5, 5, 5, 5); gr.WriteText('x', '', 0xff000000, 0, 0, 9, 9); }", "/s/x.js"));
+    t::RecordingCanvas c;
+    e.paint(c);
+    CHECK(!e.failed());
+    const auto at = [&](const std::string& op) { return std::find(c.ops.begin(), c.ops.end(), op) - c.ops.begin(); };
+    CHECK(at("clip 1,2,30,40") < at("fill_rect 0,0,99,99 #000000"));
+    CHECK(at("fill_rect 0,0,99,99 #000000") < at("unclip"));
+    CHECK_EQ(std::count(c.ops.begin(), c.ops.end(), std::string("unclip")), 2);
+}
+
+TEST("jsp3: FillRectangle draws a linear brush as gradient bands between its stops") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("function on_paint(gr) {"
+                 " gr.FillRectangle(0, 0, 10, 100, JSON.stringify({ Start: [0, 0], End: [0, 100], Stops: [[0, 0xff000000], [0.5, 0xffff0000], [1, 0xffffffff]] }));"
+                 " gr.FillEllipse(50, 50, 5, 5, JSON.stringify({ Centre: [0, 0], Stops: [[0, 0xff000000], [1, 0xffffffff]] })); }", "/s/x.js"));
+    t::RecordingCanvas c;
+    e.paint(c);
+    CHECK(!e.failed());
+    CHECK(has_op(c, "gradient 0,0,10,50 #000000>#ff0000"));
+    CHECK(has_op(c, "gradient 0,50,10,50 #ff0000>#ffffff"));
+    CHECK(has_op(c, "round_rect 45,45,10,10 10,10 #808080"));
+}
+
+TEST("jsp3: $rgb codes and colour ranges colour their runs of single-line text") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("function on_paint(gr) {"
+                 " gr.WriteText('A$rgb(255,0,0)B$rgb()C', '', 0xff00ff00, 0, 0, 300, 20);"
+                 " gr.WriteText('\\x03FF0000\\x03D', '', 0xff00ff00, 0, 30, 300, 20);"
+                 " gr.WriteText('EFG', '', JSON.stringify([{ Start: 1, Length: 1, Colour: 0xff0000ff }]), 0, 60, 300, 20); }", "/s/x.js"));
+    t::RecordingCanvas c;
+    e.paint(c);
+    CHECK(!e.failed());
+    CHECK(has_prefix(c, "text \"A\" 0,0,"));
+    CHECK(std::any_of(c.ops.begin(), c.ops.end(), [](const std::string& o) { return o.rfind("text \"B\"", 0) == 0 && o.find("#ff0000") != std::string::npos; }));
+    CHECK(std::any_of(c.ops.begin(), c.ops.end(), [](const std::string& o) { return o.rfind("text \"C\"", 0) == 0 && o.find("#00ff00") != std::string::npos; }));
+    CHECK(std::any_of(c.ops.begin(), c.ops.end(), [](const std::string& o) { return o.rfind("text \"D\"", 0) == 0 && o.find("#0000ff") != std::string::npos; }));
+    CHECK(std::any_of(c.ops.begin(), c.ops.end(), [](const std::string& o) { return o.rfind("text \"F\"", 0) == 0 && o.find("#0000ff") != std::string::npos; }));
+}
+
+TEST("engine: source_files lists the script and everything it includes, for the hot reload") {
+    t::FakeHost host;
+    host.files["/s/lib/a.js"] = "include('b.js'); var a = 1;";
+    host.files["/s/lib/b.js"] = "var b = 2;";
+    JsEngine e(host);
+    CHECK(e.load("include('lib/a.js'); console.log(a + b);", "/s/main.js"));
+    CHECK(!e.failed());
+    const std::vector<std::string> want = { "/s/main.js", "/s/lib/a.js", "/s/lib/b.js" };
+    CHECK(e.source_files() == want);
+}
+
+TEST("editor: error_line reads the syntax check's line and a runtime stack's") {
+    CHECK_EQ(error_line(check_syntax("var a = 1;\nvar b = ;\n", "x.js"), ""), 2);
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(!e.load("var ok = 1;\n\nfunction boom() { undefinedThing(); }\nboom();\n", "/s/main.js"));
+    CHECK_EQ(error_line(e.error(), "/s/main.js"), 3);
+    CHECK_EQ(error_line("nothing here", "/s/main.js"), 0);
+    const std::string text = "one\ntwo\nthree";
+    CHECK_EQ(line_start(text, 1), (std::size_t)0);
+    CHECK_EQ(line_start(text, 3), (std::size_t)8);
+    CHECK_EQ(line_start(text, 9), text.size());
+}
+
+TEST("themes: Eole's files are patched in memory, once, and only Eole's") {
+    const std::string common = "switch (x) {\n        case \"fy+h\":\t\t\n        case \"http\":\n        y();\n}";
+    std::vector<std::string> applied;
+    const std::string once = patch_theme_source("C:\\fb\\themes\\eole\\js\\JStheme_common.js", common, &applied);
+    CHECK(once.find("case \"navi\":") != std::string::npos);
+    CHECK(applied == std::vector<std::string>{ "js/JStheme_common.js" });
+    CHECK_EQ(patch_theme_source("/p/themes/eole/js/JStheme_common.js", once), once);
+    CHECK_EQ(patch_theme_source("/p/themes/other/js/JStheme_common.js", common), common);
+    const std::string filter = patch_theme_source("/p/themes/eole/js/WSHfilter.js", "var brw = {};");
+    CHECK(filter.rfind("var brw = {};", 0) == 0 && filter.find("navidrome.GetArtistInfoAsync") != std::string::npos);
+    t::FakeHost host;
+    host.files["/p/themes/eole/js/JStheme_common.js"] = "var kind = 'x';\nswitch (kind) {\n        case \"fy+h\":\t\t\n        case \"http\":\n        kind = 'web';\n}";
+    JsEngine e(host);
+    CHECK(e.load("include('/p/themes/eole/js/JStheme_common.js'); console.log(kind);", "/p/panel.js"));
+    CHECK(!e.failed());
 }

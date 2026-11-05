@@ -28,6 +28,11 @@ struct StillHost : jsp::JsHost {
     std::map<int, int> timers;
     std::string profile, properties;
     std::string profile_path() override { return profile; }
+    std::string bundled_import(const std::string& name) override {
+        std::string text;
+        return name == "lodash" && read_text_file(JSP_LODASH_PATH, text) ? text : std::string();
+    }
+    std::string jsp3_path() override { return profile.empty() ? std::string() : profile + "foo_js_panel/jsp3/"; }
     std::string load_properties() override { return properties; }
     std::vector<std::string> playlists = { "Default" };
     std::map<int, jsp::Tracks> items;

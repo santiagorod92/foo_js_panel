@@ -1,0 +1,5 @@
+file(READ "${LODASH_JS}" hex HEX)
+string(LENGTH "${hex}" len)
+math(EXPR bytes "${len} / 2")
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," body "${hex}")
+file(WRITE "${OUT}" "#include \"core/bundled_js.h\"\nnamespace jsp {\nnamespace {\nconst unsigned char kLodash[] = { ${body} };\n}\nstd::string_view lodash_js() { return { reinterpret_cast<const char*>(kLodash), ${bytes} }; }\n}\n")

@@ -69,3 +69,35 @@ fso.DeleteFolder(fsoDir);
 const shellVersion = new ActiveXObject('WScript.Shell').RegRead('HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\CurrentMajorVersionNumber');
 console.log('smoke: activex fso=' + back + ' files=' + files + ' gone=' + !fso.FolderExists(fsoDir) + ' reg=' + shellVersion +
             ' ui=' + new ActiveXObject('UIHacks').FrameStyle + ' timers=' + (typeof setTimeout));
+const outputs = JSON.parse(fb.GetOutputDevices()), presets = JSON.parse(fb.GetDSPPresets());
+const rg = fb.ReplaygainMode;
+fb.ReplaygainMode = (rg + 1) % 4;
+const rgSet = fb.ReplaygainMode;
+fb.ReplaygainMode = rg;
+const lockP = plman.CreatePlaylist(plman.PlaylistCount, 'smoke-lock-' + window.ID);
+plman.SetPlaylistLockedActions(lockP, ['AddItems', 'RenamePlaylist']);
+const lockInfo = plman.GetPlaylistLockedActions(lockP).join('+') + '/' + plman.GetPlaylistLockName(lockP);
+plman.SetPlaylistLockedActions(lockP, []);
+const unlocked = plman.GetPlaylistLockedActions(lockP).length;
+plman.RemovePlaylist(lockP);
+console.log('smoke: state outputs=' + outputs.length + ' active=' + outputs.filter(o => o.active).length + ' dsp=' + presets.length +
+            ' rg=' + (rgSet === (rg + 1) % 4) + ' lock=' + lockInfo + ' unlocked=' + unlocked + ' charset=' + utils.DetectCharset(fb.ComponentPath + 'nope') +
+            ' map=' + utils.MapString('Ab', 0, 0x200));
+const top = fb.AlwaysOnTop;
+let topSeen = 0;
+function on_always_on_top_changed(state) {
+    if (++topSeen === 1) { console.log('smoke: state-cb top=' + state); fb.AlwaysOnTop = top; }
+}
+fb.AlwaysOnTop = !top;
+let menuSeen = 0;
+function on_main_menu(index) { if (++menuSeen === 1) console.log('smoke: main menu ' + index); }
+console.log('smoke: script command run=' + fb.RunMainMenuCommand('View/JS Panel/Script commands/Script command 2'));
+const tip = window.CreateTooltip('Segoe UI', 14, 0);
+tip.Text = 'smoke tooltip ' + window.ID;
+tip.Activate();
+console.log('smoke: tooltip ' + tip.Text);
+const hex = c => (c >>> 0).toString(16);
+const uiFont = window.GetFontDUI(0);
+console.log('smoke: theme dui=' + hex(window.GetColourDUI(0)) + ',' + hex(window.GetColourDUI(1)) + ' cui=' + hex(window.GetColourCUI(4)) +
+            ' font=' + uiFont.Name + ' ' + uiFont.Size + ' sys=' + hex(utils.GetSysColour(5)));
+console.log('smoke: fonts segoe=' + utils.CheckFont('Segoe UI') + ' semibold=' + utils.CheckFont('Segoe UI Semibold') + ' nope=' + utils.CheckFont('Nope Font Xyz'));

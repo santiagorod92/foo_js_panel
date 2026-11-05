@@ -38,9 +38,32 @@ struct TrackInfo {
     std::vector<std::pair<std::string, std::string>> info;
     double length = 0;
     long long size = -1;
+    unsigned subsong = 0;
+    double modified = 0;
 };
 
-enum class Flag { StopAfterCurrent, CursorFollowPlayback, PlaybackFollowCursor };
+enum class Flag { StopAfterCurrent, CursorFollowPlayback, PlaybackFollowCursor, AlwaysOnTop };
+
+struct OutputDevice {
+    std::string name, output, device;
+    bool active = false;
+};
+
+struct DropAction {
+    int effect = 0, playlist = -1, base = 0;
+    bool toSelect = true;
+    std::string text;
+};
+
+enum class Drag { Enter, Over, Leave, Drop };
+
+enum class UiColour { Text, Background, Highlight, Selection, SelectionText, InactiveSelection };
+
+struct UiFont {
+    std::string face;
+    float px = 12;
+    int style = 0;
+};
 
 struct ItemLocation {
     int playlist = -1, item = -1;
@@ -92,6 +115,7 @@ public:
     virtual double playback_time() = 0;
     virtual double playback_length() = 0;
     virtual void playback(Playback cmd) = 0;
+    virtual void seek(double) {}
     virtual void console(const std::string& text) = 0;
     virtual bool read_text_file(const std::string& path, std::string& out) = 0;
     virtual LibraryState navidrome_state() { return LibraryState::Missing; }
@@ -217,6 +241,31 @@ public:
     enum class SelectionMode { Tracks, PlaylistSelection, Playlist, Released };
     virtual void ui_selection(SelectionMode, const Tracks&) {}
     virtual Tracks get_ui_selection() { return {}; }
+    virtual int replaygain_mode() { return 0; }
+    virtual void set_replaygain_mode(int) {}
+    virtual std::vector<OutputDevice> output_devices() { return {}; }
+    virtual bool set_output_device(const std::string&, const std::string&) { return false; }
+    virtual std::vector<std::string> dsp_presets(int& selected) {
+        selected = -1;
+        return {};
+    }
+    virtual bool set_dsp_preset(int) { return false; }
+    virtual bool library_search(const std::string&) { return false; }
+    virtual unsigned playlist_lock_mask(int) { return 0; }
+    virtual std::string playlist_lock_name(int) { return {}; }
+    virtual bool set_playlist_lock(int, unsigned) { return false; }
+    virtual int drag_tracks(const Tracks&, int) { return 0; }
+    virtual bool copy_tracks(const Tracks&) { return false; }
+    virtual bool clipboard_has_tracks() { return false; }
+    virtual Tracks clipboard_tracks() { return {}; }
+    virtual void tooltip(const std::string&, bool, int) {}
+    virtual bool ui_colour(UiColour, uint32_t&) { return false; }
+    virtual bool ui_font(int, UiFont&) { return false; }
+    virtual bool sys_colour(int, uint32_t&) { return false; }
+    virtual bool pick_colour(uint32_t&) { return false; }
+    virtual void edit_properties(const std::string&) {}
+    virtual std::string jsp3_path() { return {}; }
+    virtual std::string bundled_import(const std::string&) { return {}; }
 };
 
 using Arg = std::variant<int, double, bool, std::string, TrackPtr, Tracks>;
@@ -241,6 +290,7 @@ public:
     void resize(int w, int h);
     bool mouse(Mouse kind, int x, int y, unsigned mask);
     void wheel(int step);
+    void drag(Drag kind, int x, int y, unsigned mask, DropAction& action);
     bool key_down(int vk);
     void timer(int id);
     void playback_new_track(const TrackPtr& track = nullptr);
@@ -252,6 +302,7 @@ public:
     void playback_starting(int cmd, bool paused);
     bool invoke(const char* name, const std::vector<Arg>& args = {});
     bool in_modal() const;
+    const std::vector<std::string>& source_files() const;
     void notify_data(const std::string& name, const std::string& json, const std::vector<JsHost::NotifyItem>& items = {});
 
     struct Impl;
@@ -263,11 +314,14 @@ private:
 std::string script_dir_of(const std::string& path);
 
 std::string check_syntax(const std::string& source, const std::string& name);
+std::string check_properties(const std::string& json);
 
 struct TextPos {
     int line = 1, col = 1;
 };
 TextPos text_pos(const std::string& utf8, std::size_t byteOffset);
 std::string editor_status(const TextPos& pos, const std::string& syntaxError, const std::string& applied);
+int error_line(const std::string& message, const std::string& file);
+std::size_t line_start(const std::string& utf8, int line);
 
 }

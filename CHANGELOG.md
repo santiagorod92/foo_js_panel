@@ -3,6 +3,59 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.3.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.2.0...v1.3.0) (2026-11-05)
+
+### Highlights
+- **Eole without Python**: unzip Eole, then *View › Panels UI › Import Columns UI layout…* and pick
+  `themes/eole/columnsUI_eole.fcl` (Panels UI 1.20). JS Panel adapts Eole's files as it loads
+  them, without changing them on disk: `navidrome://` tracks can be rated, the Biography's and the
+  Artists filter's photos also come from Navidrome, and Enter in the Library Tree plays the
+  selection. `tools/eole_patches.py` and `tools/eole_skin.py` are gone. Any other Columns UI +
+  Spider Monkey Panel theme imports the same way.
+- **JScript Panel 3 scripts run**: a compatibility layer picked from the script's
+  `==PREPROCESSOR==` header (`@import` of `lodash` or a JScript Panel 3 file) or its JScript Panel
+  3-only calls: `gr.WriteText`, `FillRectangle` and the rest of its drawing, JSON font strings,
+  `utils`/`fb`/`plman` additions, `PushLayer`/`PopLayer`, lodash 3.10.1 built in. Every sample
+  of JScript Panel 3.8.5 loads and paints.
+- **Scripts reload when you save them**: a panel reloads by itself within a second when its
+  script, or a file it `include()`s or `@import`s, changes on disk (*View › JS Panel › Reload
+  scripts when their files change*, on by default).
+
+### Added
+- **Editor**: line numbers; a syntax error's line number turns red and **F8** jumps to it; a
+  script that stopped on an error opens on the line that failed.
+- **Samples** in the panel's menu: *Now playing*, *Album art*, *Playlist* (selection, keyboard,
+  drag out and drop in) and *Seekbar and volume*, copied to `<profile>/foo_js_panel/samples/` to
+  edit.
+- **A script per panel on macOS**: `foo_js_panel script="~/Music/scripts/now_playing.js"` in the
+  layout (a relative path starts in the profile folder).
+- **Drag and drop**: `on_drag_enter` / `on_drag_over` / `on_drag_drop` / `on_drag_leave`,
+  `fb.DoDragDrop`, `fb.CopyHandleListToClipboard`, `CheckClipboardContents`,
+  `GetClipboardContents`. Tracks and files dropped on a panel go into the playlist the script
+  picks.
+- **Callbacks**: `on_selection_changed`, `on_always_on_top_changed`,
+  `on_playlist_stop_after_current_changed`, `on_cursor_follow_playback_changed`,
+  `on_playback_follow_cursor_changed`, `on_replaygain_mode_changed`, `on_output_device_changed`,
+  `on_dsp_preset_changed`, `on_main_menu` (*View › JS Panel › Script commands*),
+  `on_colours_changed`, `on_font_changed` (also when macOS switches light/dark).
+- **`fb`**: `PlaybackTime` can be set to seek, `PlaybackFollowCursor`, `AlwaysOnTop` (floats the
+  window on macOS, where foobar2000 has no such setting), `ReplaygainMode`, `GetOutputDevices`,
+  `SetOutputDevice`, `GetDSPPresets`, `SetDSPPreset`, `ShowLibrarySearchUI`.
+- **`plman`**: `GetPlaylistLockedActions`, `SetPlaylistLockedActions`, `GetPlaylistLockName`.
+- **`utils`**: `GetSysColour`, `ColourPicker`, `DetectCharset`, `MapString`; `CheckFont` says
+  whether a face draws as itself.
+- **`window`**: `GetColourDUI/CUI` and `GetFontDUI/CUI` follow the host (Default UI on Windows,
+  the system's colours under light or dark mode on macOS), `CreateTooltip()` is the system
+  tooltip, `ShowProperties()` edits the panel's properties as JSON, and the header's `@name`,
+  `@author` and `@version` fill `window.Name` and `window.ScriptInfo`.
+- **`UIHacks.FrameStyle`** hides (2, 3) or shows (0, 1) the window's title bar under Panels UI.
+- **Windows fonts on macOS**: Segoe UI and its weights, Tahoma, Verdana, Calibri, Bahnschrift,
+  Consolas and Cascadia draw with the system fonts.
+
+### Changed
+- **GitHub release notes are this changelog's section** for the version, in full, instead of the
+  commit titles.
+
 ## [1.2.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.1.0...v1.2.0) (2026-10-31)
 
 ### Highlights

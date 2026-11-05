@@ -12,6 +12,7 @@ namespace jsp {
 struct EditorHooks {
     std::function<std::string(const std::string&)> apply;
     std::function<std::string(const std::string&)> check;
+    int line = 0;
 };
 
 class Surface {
@@ -31,6 +32,14 @@ public:
     virtual void set_window_state(int state) = 0;
     virtual bool fullscreen() = 0;
     virtual void set_fullscreen(bool on) = 0;
+    virtual bool always_on_top() = 0;
+    virtual int drag_tracks(metadb_handle_list_cref tracks, int effects) = 0;
+    virtual void set_tooltip(const std::string& text, bool active, int maxWidth) = 0;
+    virtual bool ui_colour(UiColour kind, uint32_t& argb) = 0;
+    virtual bool ui_font(int kind, UiFont& font) = 0;
+    virtual bool sys_colour(int index, uint32_t& argb) = 0;
+    virtual bool pick_colour(uint32_t& argb) = 0;
+    virtual void set_always_on_top(bool on) = 0;
     virtual void set_window_limits(int minW, int minH, int maxW, int maxH) = 0;
     virtual void set_caption(const pui::gfx::Rect& r) = 0;
     virtual void open_editor(const std::string& title, const std::string& text, EditorHooks hooks) = 0;
@@ -47,6 +56,9 @@ public:
     void set_script(const std::string& path);
     void reload();
     void edit_script() override;
+    void edit_properties(const std::string& json) override;
+    std::string jsp3_path() override;
+    std::string bundled_import(const std::string& name) override;
     std::string apply_source(const std::string& source);
 
     void paint(pui::gfx::Canvas& canvas);
@@ -58,8 +70,13 @@ public:
     void char_input(unsigned codepoint);
     void focus(bool focused);
     void timer(int id);
+    void drag(Drag kind, int x, int y, unsigned mask, DropAction& action);
+    process_locations_notify::ptr drop_notify(const DropAction& action);
+    void drop_locations(const std::vector<std::string>& paths, const DropAction& action);
 
     static std::vector<Panel*>& live();
+    static void broadcast(const char* name, const std::vector<Arg>& args = {});
+    void post(const char* name, std::vector<Arg> args = {});
 
     void repaint() override;
     void repaint_rect(const pui::gfx::Rect& r) override;
@@ -71,6 +88,7 @@ public:
     double playback_time() override;
     double playback_length() override;
     void playback(Playback cmd) override;
+    void seek(double t) override;
     void console(const std::string& text) override;
     bool read_text_file(const std::string& path, std::string& out) override;
     LibraryState navidrome_state() override;
@@ -180,6 +198,25 @@ public:
     void set_window_limits(int minW, int minH, int maxW, int maxH) override { m_surface.set_window_limits(minW, minH, maxW, maxH); }
     void set_caption(const pui::gfx::Rect& r) override { m_surface.set_caption(r); }
     Tracks get_ui_selection() override;
+    int replaygain_mode() override;
+    void set_replaygain_mode(int mode) override;
+    std::vector<OutputDevice> output_devices() override;
+    bool set_output_device(const std::string& output, const std::string& device) override;
+    std::vector<std::string> dsp_presets(int& selected) override;
+    bool set_dsp_preset(int index) override;
+    bool library_search(const std::string& query) override;
+    unsigned playlist_lock_mask(int p) override;
+    std::string playlist_lock_name(int p) override;
+    bool set_playlist_lock(int p, unsigned mask) override;
+    int drag_tracks(const Tracks& tracks, int effects) override;
+    bool copy_tracks(const Tracks& tracks) override;
+    bool clipboard_has_tracks() override;
+    Tracks clipboard_tracks() override;
+    void tooltip(const std::string& text, bool active, int maxWidth) override { m_surface.set_tooltip(text, active, maxWidth); }
+    bool ui_colour(UiColour kind, uint32_t& argb) override { return m_surface.ui_colour(kind, argb); }
+    bool ui_font(int kind, UiFont& font) override { return m_surface.ui_font(kind, font); }
+    bool sys_colour(int index, uint32_t& argb) override { return m_surface.sys_colour(index, argb); }
+    bool pick_colour(uint32_t& argb) override { return m_surface.pick_colour(argb); }
 
 private:
     struct Callbacks;
@@ -223,6 +260,9 @@ private:
     std::vector<ArtWait> m_artWaiting;
     std::unique_ptr<Callbacks> m_callbacks;
     ui_selection_holder::ptr m_selection;
+    std::vector<std::pair<std::string, long long>> m_watched;
+    void watch_files();
+    bool files_changed();
 };
 
 }

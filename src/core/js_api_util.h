@@ -176,6 +176,115 @@ inline std::string with_fallback_rating(const std::string& expr) {
     return out;
 }
 
+struct ScriptHeader {
+    bool present = false;
+    std::vector<std::string> imports;
+    std::string name, author, version;
+};
+
+inline ScriptHeader parse_header(const std::string& src) {
+    ScriptHeader h;
+    const size_t begin = src.find("==PREPROCESSOR==");
+    if (begin == std::string::npos) return h;
+    const size_t end = src.find("==/PREPROCESSOR==", begin);
+    if (end == std::string::npos) return h;
+    h.present = true;
+    size_t pos = src.find('\n', begin);
+    while (pos != std::string::npos && pos < end) {
+        const size_t next = src.find('\n', pos + 1);
+        const std::string line = src.substr(pos + 1, (next == std::string::npos ? src.size() : next) - pos - 1);
+        for (auto [key, field] : { std::pair{ "@import", (std::string*)nullptr }, std::pair{ "@name", &h.name },
+                                   std::pair{ "@author", &h.author }, std::pair{ "@version", &h.version } }) {
+            const size_t at = line.find(key);
+            if (at == std::string::npos) continue;
+            const size_t q1 = line.find('"', at), q2 = q1 == std::string::npos ? q1 : line.find('"', q1 + 1);
+            if (q2 == std::string::npos) continue;
+            const std::string value = line.substr(q1 + 1, q2 - q1 - 1);
+            if (field) *field = value;
+            else h.imports.push_back(value);
+        }
+        pos = next;
+    }
+    return h;
+}
+
+inline std::string replace_all(std::string s, const std::string& from, const std::string& to) {
+    for (size_t at = s.find(from); at != std::string::npos; at = s.find(from, at + to.size())) s.replace(at, from.size(), to);
+    return s;
+}
+
+inline std::string resolve_import(const std::string& spec, const std::string& scriptDir, const std::string& componentDir,
+                                  const std::string& profileDir) {
+    std::string p = replace_all(replace_all(spec, "%fb2k_component_path%", componentDir), "%fb2k_profile_path%", profileDir);
+    const bool absolute = !p.empty() && (p[0] == '/' || p[0] == '\\' || (p.size() > 1 && p[1] == ':'));
+    return absolute ? p : scriptDir + p;
+}
+
+inline bool is_jsp3_script(const std::string& src, const ScriptHeader& h) {
+    for (const auto& i : h.imports)
+        if (i == "lodash" || i.find("%fb2k_component_path%") != std::string::npos) return true;
+    static const char* const only[] = { ".WriteText(", ".WriteText2(", ".WriteTextSimple(", ".FillRectangle(", ".DrawRectangle(",
+                                        ".FillRoundedRectangle(", "utils.ReadUTF8(", "utils.ListFiles(", "window.IsDark" };
+    for (const char* n : only)
+        if (src.find(n) != std::string::npos) return true;
+    return false;
+}
+
+inline std::string resolve_script_path(const std::string& p, const std::string& home, const std::string& profile) {
+    auto join = [](std::string dir, const std::string& rest) {
+        if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') dir += '/';
+        return dir + rest;
+    };
+    if (p.empty()) return p;
+    if (p == "~") return home;
+    if (p.rfind("~/", 0) == 0) return join(home, p.substr(2));
+    const bool absolute = p[0] == '/' || p[0] == '\\' || (p.size() > 1 && p[1] == ':');
+    return absolute || profile.empty() ? p : join(profile, p);
+}
+
+inline int detect_codepage(const std::string& b) {
+    if (b.size() >= 2 && (unsigned char)b[0] == 0xFF && (unsigned char)b[1] == 0xFE) return 1200;
+    if (b.size() >= 2 && (unsigned char)b[0] == 0xFE && (unsigned char)b[1] == 0xFF) return 1201;
+    if (b.size() >= 3 && (unsigned char)b[0] == 0xEF && (unsigned char)b[1] == 0xBB && (unsigned char)b[2] == 0xBF) return 65001;
+    for (size_t i = 0; i < b.size();) {
+        const unsigned char c = (unsigned char)b[i];
+        const int n = c < 0x80 ? 0 : (c & 0xE0) == 0xC0 && c >= 0xC2 ? 1 : (c & 0xF0) == 0xE0 ? 2 : (c & 0xF8) == 0xF0 && c <= 0xF4 ? 3 : -1;
+        if (n < 0 || (n > 0 && i + n >= b.size())) return 1252;
+        for (int k = 1; k <= n; ++k)
+            if (((unsigned char)b[i + k] & 0xC0) != 0x80) return 1252;
+        i += n + 1;
+    }
+    return 65001;
+}
+
+inline const std::vector<std::string>& playlist_lock_actions() {
+    static const std::vector<std::string> names = { "AddItems", "RemoveItems", "ReorderItems", "ReplaceItems",
+                                                    "RenamePlaylist", "RemovePlaylist", "ExecuteDefaultAction" };
+    return names;
+}
+
+inline unsigned lock_mask_of(const std::vector<std::string>& actions, std::string& unknown) {
+    const auto& names = playlist_lock_actions();
+    unsigned mask = 0;
+    for (const auto& a : actions) {
+        const auto it = std::find(names.begin(), names.end(), a);
+        if (it == names.end()) {
+            unknown = a;
+            return 0;
+        }
+        mask |= 1u << (it - names.begin());
+    }
+    return mask;
+}
+
+inline std::vector<std::string> lock_actions_of(unsigned mask) {
+    std::vector<std::string> out;
+    const auto& names = playlist_lock_actions();
+    for (size_t i = 0; i < names.size(); ++i)
+        if (mask & (1u << i)) out.push_back(names[i]);
+    return out;
+}
+
 enum FontStyle : int { kFontBold = 1, kFontItalic = 2, kFontUnderline = 4 };
 
 inline pui::gfx::FontSpec font_spec(const std::string& name, float px, int style) {

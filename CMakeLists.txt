@@ -102,6 +102,12 @@ file(GLOB COMP_SRC CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/src/core/*.cpp"
   "${CMAKE_SOURCE_DIR}/src/platform/${PLATFORM_DIR}/*.cpp"
   "${CMAKE_SOURCE_DIR}/src/platform/${PLATFORM_DIR}/*.mm")
+set(LODASH_JS "${CMAKE_SOURCE_DIR}/third_party/lodash/lodash.js")
+set(LODASH_CPP "${CMAKE_BINARY_DIR}/generated/lodash_js.cpp")
+add_custom_command(OUTPUT "${LODASH_CPP}"
+  COMMAND "${CMAKE_COMMAND}" -DLODASH_JS=${LODASH_JS} -DOUT=${LODASH_CPP} -P "${CMAKE_SOURCE_DIR}/cmake/embed_lodash.cmake"
+  DEPENDS "${LODASH_JS}" "${CMAKE_SOURCE_DIR}/cmake/embed_lodash.cmake")
+list(APPEND COMP_SRC "${LODASH_CPP}")
 if(WIN32)
   list(APPEND COMP_SRC "${PUI_SRC}/platform/win/gdi_canvas.cpp")
 else()

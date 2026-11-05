@@ -118,6 +118,22 @@ struct FakeHost : jsp::JsHost {
     std::vector<std::pair<std::string, std::string>> notes;
     double vol = 0;
     std::map<jsp::Flag, bool> flags;
+    int rgMode = 0;
+    std::vector<jsp::OutputDevice> outputs;
+    std::vector<std::string> dsp;
+    int dspSelected = -1;
+    std::vector<std::string> searches;
+    std::map<int, unsigned> locks;
+    std::map<int, std::string> foreignLocks;
+    std::vector<std::pair<size_t, int>> drags;
+    int dragResult = 0;
+    jsp::Tracks clipTracks;
+    std::vector<std::string> tips;
+    bool themed = false;
+    uint32_t picked = 0;
+    std::string editedProperties;
+    std::vector<double> seeks;
+    std::set<std::string> missingFonts;
     std::vector<std::string> commands_run;
     std::map<int, std::vector<bool>> selection;
     std::map<int, int> focus;
@@ -336,7 +352,9 @@ struct FakeHost : jsp::JsHost {
         ~LoggingSoftCanvas() override { sink.insert(sink.end(), ops.begin(), ops.end()); }
     };
     std::unique_ptr<pui::gfx::Canvas> pixels_canvas(pui::gfx::Pixels& px, double) override {
-        return std::make_unique<LoggingSoftCanvas>(px, canvasOps);
+        auto c = std::make_unique<LoggingSoftCanvas>(px, canvasOps);
+        c->missingFonts = missingFonts;
+        return c;
     }
     bool save_png(const pui::gfx::Image& img, const std::string& path) override {
         saved.push_back(path + " " + std::to_string(img.width()) + "x" + std::to_string(img.height()));
@@ -422,6 +440,71 @@ struct FakeHost : jsp::JsHost {
         boxes.push_back(caption + ": " + text + " (" + std::to_string(type) + ")");
         return boxAnswer;
     }
+    int replaygain_mode() override { return rgMode; }
+    void set_replaygain_mode(int m) override { rgMode = m; }
+    std::vector<jsp::OutputDevice> output_devices() override { return outputs; }
+    bool set_output_device(const std::string& o, const std::string& d) override {
+        for (auto& x : outputs) x.active = x.output == o && x.device == d;
+        return true;
+    }
+    std::vector<std::string> dsp_presets(int& selected) override {
+        selected = dspSelected;
+        return dsp;
+    }
+    bool set_dsp_preset(int i) override {
+        if (i < 0 || i >= (int)dsp.size()) return false;
+        dspSelected = i;
+        return true;
+    }
+    bool library_search(const std::string& q) override {
+        searches.push_back(q);
+        return true;
+    }
+    unsigned playlist_lock_mask(int p) override { return foreignLocks.count(p) ? 0x7fu : locks[p]; }
+    std::string playlist_lock_name(int p) override { return foreignLocks.count(p) ? foreignLocks[p] : locks[p] ? "JS Panel" : ""; }
+    bool set_playlist_lock(int p, unsigned mask) override {
+        if (foreignLocks.count(p)) return false;
+        locks[p] = mask;
+        return true;
+    }
+    int drag_tracks(const jsp::Tracks& t, int effects) override {
+        drags.push_back({ t.size(), effects });
+        return dragResult;
+    }
+    bool copy_tracks(const jsp::Tracks& t) override {
+        clipTracks = t;
+        return true;
+    }
+    bool clipboard_has_tracks() override { return !clipTracks.empty(); }
+    bool ui_colour(jsp::UiColour kind, uint32_t& argb) override {
+        if (!themed) return false;
+        argb = 0xff000000u + (uint32_t)kind;
+        return true;
+    }
+    bool ui_font(int kind, jsp::UiFont& font) override {
+        if (!themed) return false;
+        font = { "Face" + std::to_string(kind), 10.0f + kind, kind == 3 ? 1 : 0 };
+        return true;
+    }
+    bool sys_colour(int index, uint32_t& argb) override {
+        if (index != 5) return false;
+        argb = 0xffabcdefu;
+        return true;
+    }
+    void edit_properties(const std::string& json) override { editedProperties = json; }
+    void seek(double t) override { seeks.push_back(t); }
+    std::string jsp3_path() override { return "/jsp3/"; }
+    std::string bundledLodash;
+    std::string bundled_import(const std::string& name) override { return name == "lodash" ? bundledLodash : std::string(); }
+    bool pick_colour(uint32_t& argb) override {
+        if (!picked) return false;
+        argb = picked;
+        return true;
+    }
+    void tooltip(const std::string& text, bool active, int maxWidth) override {
+        tips.push_back(text + (active ? " on " : " off ") + std::to_string(maxWidth));
+    }
+    jsp::Tracks clipboard_tracks() override { return clipTracks; }
     bool read_text_file(const std::string& path, std::string& out) override {
         std::string key = path;
         std::replace(key.begin(), key.end(), '\\', '/');

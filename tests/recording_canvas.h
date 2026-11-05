@@ -2,6 +2,7 @@
 #include "gfx/canvas.h"
 #include <cstdio>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,7 @@ public:
     std::vector<std::string> ops;
     int charWidth = 7;
     bool fontAvailable = true;
+    std::set<std::string> missingFonts;
 
     int width() const override { return 800; }
     int height() const override { return 600; }
@@ -39,7 +41,7 @@ public:
     bool set_font(const pui::gfx::FontSpec& s) override {
         ops.push_back("font " + s.face + " " + std::to_string((int)s.size) + (s.bold ? " bold" : "") +
                       (s.italic ? " italic" : "") + (s.underline ? " underline" : ""));
-        return fontAvailable;
+        return fontAvailable && !missingFonts.count(s.face);
     }
     void draw_text(std::string_view text, const pui::gfx::Rect& r, unsigned flags, pui::gfx::Color c) override {
         ops.push_back("text \"" + std::string(text) + "\" " + rect(r) + " f" + std::to_string(flags) + " " + col(c));
@@ -53,6 +55,8 @@ public:
             if (r.contains(area.x + x, area.y + y)) mask[(size_t)y * area.w + x] = 255;
         return true;
     }
+    void push_clip(const pui::gfx::Rect& r) override { ops.push_back("clip " + rect(r)); }
+    void pop_clip() override { ops.push_back("unclip"); }
     void blend_argb(const pui::gfx::Rect& r, const uint32_t*, int) override { ops.push_back("glow " + rect(r)); }
     void draw_image(const pui::gfx::Image&, const pui::gfx::RectF&, const pui::gfx::RectF&, int, bool,
                     pui::gfx::Interp) override { ops.push_back("image"); }

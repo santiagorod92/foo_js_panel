@@ -6,6 +6,7 @@
 #include "../../core/log.h"
 #include "../../core/panel.h"
 #include "../../core/platform.h"
+#include "../../core/platform_tracks.h"
 #include "../../core/settings.h"
 #include <map>
 #include <memory>
@@ -13,6 +14,79 @@
 namespace {
 
 NSString* ns(const std::string& s) { return [NSString stringWithUTF8String:s.c_str()] ?: @""; }
+
+NSString* const kTracksType = @"com.santiagorod92.foo-js-panel.tracks";
+
+NSArray<NSPasteboardType>* track_types() { return @[ kTracksType, NSPasteboardTypeFileURL ]; }
+
+NSArray<NSPasteboardItem*>* pasteboard_items(metadb_handle_list_cref tracks) {
+    NSMutableArray<NSString*>* lines = [NSMutableArray array];
+    for (size_t i = 0; i < tracks.get_count(); ++i)
+        [lines addObject:[NSString stringWithFormat:@"%u\t%@", tracks[i]->get_subsong_index(), ns(tracks[i]->get_path())]];
+    NSMutableArray<NSPasteboardItem*>* items = [NSMutableArray array];
+    for (size_t i = 0; i < tracks.get_count(); ++i) {
+        NSPasteboardItem* item = [NSPasteboardItem new];
+        if (i == 0) [item setString:[lines componentsJoinedByString:@"\n"] forType:kTracksType];
+        const char* path = tracks[i]->get_path();
+        if (strncmp(path, "file://", 7) == 0) {
+            NSURL* url = [NSURL fileURLWithPath:ns(filesystem::g_get_native_path(path).c_str())];
+            [item setString:url.absoluteString forType:NSPasteboardTypeFileURL];
+        }
+        if (item.types.count) [items addObject:item];
+    }
+    return items;
+}
+
+struct PasteboardTracks {
+    metadb_handle_list tracks;
+    std::vector<std::string> files;
+};
+
+PasteboardTracks pasteboard_tracks(NSPasteboard* pb) {
+    PasteboardTracks out;
+    if (NSString* joined = [pb stringForType:kTracksType]) {
+        auto api = metadb::get();
+        for (NSString* line in [joined componentsSeparatedByString:@"\n"]) {
+            const NSRange tab = [line rangeOfString:@"\t"];
+            if (tab.location == NSNotFound) continue;
+            const char* path = [line substringFromIndex:tab.location + 1].UTF8String;
+            if (path && *path) out.tracks.add_item(api->handle_create(path, (uint32_t)[line substringToIndex:tab.location].integerValue));
+        }
+        return out;
+    }
+    NSArray<NSURL*>* urls = [pb readObjectsForClasses:@[ NSURL.class ] options:@{ NSPasteboardURLReadingFileURLsOnlyKey: @YES }];
+    for (NSURL* u in urls)
+        if (const char* p = u.fileSystemRepresentation) out.files.emplace_back(p);
+    return out;
+}
+
+NSImage* drag_image(size_t count) {
+    NSString* text = count == 1 ? @"1 track" : [NSString stringWithFormat:@"%zu tracks", count];
+    NSDictionary* attrs = @{ NSFontAttributeName: [NSFont boldSystemFontOfSize:12], NSForegroundColorAttributeName: NSColor.whiteColor };
+    const NSSize ts = [text sizeWithAttributes:attrs];
+    return [NSImage imageWithSize:NSMakeSize(std::ceil(ts.width) + 16, std::ceil(ts.height) + 8)
+                          flipped:NO
+                   drawingHandler:^BOOL(NSRect r) {
+                       [[NSColor colorWithCalibratedWhite:0.15 alpha:0.85] setFill];
+                       [[NSBezierPath bezierPathWithRoundedRect:r xRadius:6 yRadius:6] fill];
+                       [text drawAtPoint:NSMakePoint(8, 4) withAttributes:attrs];
+                       return YES;
+                   }];
+}
+
+int drop_effects(NSDragOperation ops) {
+    return ((ops & NSDragOperationCopy) ? 1 : 0) | ((ops & (NSDragOperationMove | NSDragOperationGeneric)) ? 2 : 0) |
+           ((ops & NSDragOperationLink) ? 4 : 0);
+}
+
+NSDragOperation drag_operation(int effect) {
+    return (effect & 2) ? NSDragOperationMove : (effect & 1) ? NSDragOperationCopy : (effect & 4) ? NSDragOperationLink : NSDragOperationNone;
+}
+
+unsigned key_mask(NSEventModifierFlags f) {
+    return 0x1 | ((f & NSEventModifierFlagShift) ? 0x4 : 0) | ((f & (NSEventModifierFlagControl | NSEventModifierFlagCommand)) ? 0x8 : 0) |
+           ((f & NSEventModifierFlagOption) ? 0x20 : 0);
+}
 
 }
 
@@ -25,8 +99,56 @@ NSString* ns(const std::string& s) { return [NSString stringWithUTF8String:s.c_s
 - (void)picked:(NSMenuItem*)item { self.chosen = item.tag; }
 @end
 
+@interface FooJsPanelColourDelegate : NSObject <NSWindowDelegate>
+@end
+
+@implementation FooJsPanelColourDelegate
+- (void)windowWillClose:(NSNotification*)n { [NSApp stopModal]; }
+@end
+
+@interface FooJsPanelLineRuler : NSRulerView
+@property (nonatomic, assign) NSInteger errorLine;
+@end
+
+@implementation FooJsPanelLineRuler
+- (CGFloat)requiredThickness { return 46; }
+- (void)drawHashMarksAndLabelsInRect:(NSRect)rect {
+    NSTextView* tv = (NSTextView*)self.clientView;
+    if (![tv isKindOfClass:[NSTextView class]]) return;
+    [NSColor.windowBackgroundColor setFill];
+    NSRectFill(self.bounds);
+    NSLayoutManager* lm = tv.layoutManager;
+    NSString* text = tv.string;
+    const NSRect visible = tv.visibleRect;
+    const NSRange glyphs = [lm glyphRangeForBoundingRect:visible inTextContainer:tv.textContainer];
+    const NSRange chars = [lm characterRangeForGlyphRange:glyphs actualGlyphRange:nil];
+    NSInteger line = 1;
+    for (NSUInteger i = 0; i < chars.location && i < text.length; ++i)
+        if ([text characterAtIndex:i] == '\n') ++line;
+    NSFont* font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
+    NSUInteger at = chars.location;
+    while (at <= NSMaxRange(chars) && at <= text.length) {
+        const NSUInteger glyph = at < text.length ? [lm glyphIndexForCharacterAtIndex:at] : lm.numberOfGlyphs;
+        NSRect r = at < text.length || text.length == 0 ? [lm lineFragmentRectForGlyphAtIndex:MIN(glyph, MAX(lm.numberOfGlyphs, 1) - 1) effectiveRange:nil]
+                                                     : lm.extraLineFragmentRect;
+        r.origin.y += tv.textContainerOrigin.y;
+        const NSPoint p = [self convertPoint:r.origin fromView:tv];
+        NSDictionary* attrs = @{ NSFontAttributeName: font,
+                                 NSForegroundColorAttributeName: line == self.errorLine ? NSColor.systemRedColor : NSColor.secondaryLabelColor };
+        NSString* label = [NSString stringWithFormat:@"%ld", (long)line];
+        const NSSize size = [label sizeWithAttributes:attrs];
+        [label drawAtPoint:NSMakePoint(self.ruleThickness - size.width - 6, p.y + (NSHeight(r) - size.height) / 2) withAttributes:attrs];
+        const NSRange next = [text rangeOfString:@"\n" options:0 range:NSMakeRange(at, text.length - at)];
+        if (next.location == NSNotFound) break;
+        at = next.location + 1;
+        ++line;
+    }
+}
+@end
+
 @interface FooJsPanelEditorWindow : NSWindow
 @property (nonatomic, copy) void (^onApply)(BOOL close);
+@property (nonatomic, copy) void (^onGotoError)(void);
 @end
 
 @implementation FooJsPanelEditorWindow
@@ -40,6 +162,11 @@ NSString* ns(const std::string& s) { return [NSString stringWithUTF8String:s.c_s
         if (self.onApply) self.onApply(YES);
         return YES;
     }
+    if (e.type == NSEventTypeKeyDown && e.charactersIgnoringModifiers.length &&
+        [e.charactersIgnoringModifiers characterAtIndex:0] == NSF8FunctionKey) {
+        if (self.onGotoError) self.onGotoError();
+        return YES;
+    }
     return [super performKeyEquivalent:e];
 }
 - (void)cancelOperation:(id)sender { [self close]; }
@@ -50,6 +177,7 @@ NSString* ns(const std::string& s) { return [NSString stringWithUTF8String:s.c_s
 - (void)show;
 - (BOOL)isOpen;
 - (void)close;
+- (NSString*)title;
 @end
 
 @implementation FooJsPanelEditor {
@@ -58,6 +186,7 @@ NSString* ns(const std::string& s) { return [NSString stringWithUTF8String:s.c_s
     FooJsPanelEditorWindow* _window;
     NSTextView* _text;
     NSTextField* _status;
+    FooJsPanelLineRuler* _ruler;
     std::string _syntax;
     std::string _applied;
     NSTimer* _check;
@@ -83,6 +212,7 @@ NSString* ns(const std::string& s) { return [NSString stringWithUTF8String:s.c_s
     _window.delegate = self;
     __weak FooJsPanelEditor* weakSelf = self;
     _window.onApply = ^(BOOL close) { [weakSelf apply:close]; };
+    _window.onGotoError = ^{ [weakSelf gotoError]; };
 
     NSScrollView* scroll = [NSTextView scrollableTextView];
     scroll.translatesAutoresizingMaskIntoConstraints = NO;
@@ -101,6 +231,15 @@ NSString* ns(const std::string& s) { return [NSString stringWithUTF8String:s.c_s
     _text.horizontallyResizable = YES;
     _text.string = text;
     _text.delegate = self;
+    _ruler = [[FooJsPanelLineRuler alloc] initWithScrollView:scroll orientation:NSVerticalRuler];
+    _ruler.clientView = _text;
+    scroll.verticalRulerView = _ruler;
+    scroll.hasVerticalRuler = YES;
+    scroll.rulersVisible = YES;
+    scroll.contentView.postsBoundsChangedNotifications = YES;
+    __weak FooJsPanelLineRuler* weakRuler = _ruler;
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSViewBoundsDidChangeNotification object:scroll.contentView queue:nil
+                                                  usingBlock:^(NSNotification*) { weakRuler.needsDisplay = YES; }];
 
     _status = [NSTextField labelWithString:@""];
     _status.translatesAutoresizingMaskIntoConstraints = NO;
@@ -141,6 +280,23 @@ NSString* ns(const std::string& s) { return [NSString stringWithUTF8String:s.c_s
     [_window center];
     [_window makeKeyAndOrderFront:nil];
     [_window makeFirstResponder:_text];
+    if (_hooks.line > 0) [self gotoLine:_hooks.line];
+}
+
+- (void)gotoLine:(NSInteger)line {
+    const std::string all = [self source];
+    const std::size_t byte = jsp::line_start(all, (int)line);
+    NSString* before = [[NSString alloc] initWithBytes:all.data() length:byte encoding:NSUTF8StringEncoding] ?: @"";
+    const NSRange at = NSMakeRange(MIN(before.length, _text.string.length), 0);
+    _text.selectedRange = at;
+    [_text scrollRangeToVisible:at];
+    [_window makeFirstResponder:_text];
+    [self updateStatus];
+}
+
+- (void)gotoError {
+    const int line = _syntax.empty() ? _hooks.line : jsp::error_line(_syntax, "");
+    if (line > 0) [self gotoLine:line];
 }
 
 - (void)close {
@@ -152,6 +308,8 @@ NSString* ns(const std::string& s) { return [NSString stringWithUTF8String:s.c_s
 
 - (BOOL)isOpen { return _window.isVisible; }
 
+- (NSString*)title { return _window.title; }
+
 - (std::string)source { return _text.string.UTF8String ?: ""; }
 
 - (void)updateStatus {
@@ -160,12 +318,14 @@ NSString* ns(const std::string& s) { return [NSString stringWithUTF8String:s.c_s
     const char* before = [all substringToIndex:loc].UTF8String ?: "";
     const std::string b(before);
     const std::string s = jsp::editor_status(jsp::text_pos(b, b.size()), _syntax, _applied) +
-                          "   \u00b7   \u2318S: apply   \u2318\u21a9: apply and close   Esc: close";
+                          "   \u00b7   \u2318S: apply   \u2318\u21a9: apply and close   F8: go to the error   Esc: close";
     _status.stringValue = ns(s);
 }
 
 - (void)recheck {
     if (_hooks.check) _syntax = _hooks.check([self source]);
+    _ruler.errorLine = _syntax.empty() ? 0 : jsp::error_line(_syntax, "");
+    _ruler.needsDisplay = YES;
     [self updateStatus];
 }
 
@@ -187,6 +347,7 @@ NSString* ns(const std::string& s) { return [NSString stringWithUTF8String:s.c_s
 }
 
 - (void)textDidChange:(NSNotification*)n {
+    _ruler.needsDisplay = YES;
     [_check invalidate];
     __weak FooJsPanelEditor* weakSelf = self;
     _check = [NSTimer scheduledTimerWithTimeInterval:0.4 repeats:NO block:^(NSTimer*) { [weakSelf recheck]; }];
@@ -216,7 +377,7 @@ public:
         [editor close];
     }
     void open_editor(const std::string& title, const std::string& text, jsp::EditorHooks hooks) override {
-        if (editor && [editor isOpen]) {
+        if (editor && [editor isOpen] && [[editor title] isEqualToString:ns(title)]) {
             [editor show];
             return;
         }
@@ -252,6 +413,14 @@ public:
     bool visible() override;
     bool fullscreen() override;
     void set_fullscreen(bool on) override;
+    bool always_on_top() override;
+    void set_always_on_top(bool on) override;
+    int drag_tracks(metadb_handle_list_cref tracks, int effects) override;
+    void set_tooltip(const std::string& text, bool active, int maxWidth) override;
+    bool ui_colour(jsp::UiColour kind, uint32_t& argb) override;
+    bool ui_font(int kind, jsp::UiFont& font) override;
+    bool sys_colour(int index, uint32_t& argb) override;
+    bool pick_colour(uint32_t& argb) override;
     void set_window_limits(int minW, int minH, int maxW, int maxH) override;
     pui::gfx::Rect caption{};
     void set_caption(const pui::gfx::Rect& r) override { caption = r; }
@@ -269,7 +438,8 @@ public:
 
 }
 
-@interface FooJsPanelView : NSView
+@interface FooJsPanelView : NSView <NSDraggingSource>
+- (int)dragTracks:(metadb_handle_list_cref)tracks effects:(int)effects;
 @end
 
 @implementation FooJsPanelView {
@@ -277,6 +447,8 @@ public:
     std::unique_ptr<jsp::Panel> _panel;
     NSTrackingArea* _tracking;
     BOOL _fixedScript;
+    NSDragOperation _sourceOps;
+    int _dropAllowed;
 }
 
 - (instancetype)initWithScript:(NSString*)script {
@@ -288,8 +460,75 @@ public:
         _panel = std::make_unique<jsp::Panel>(_surface, path, [fixed](const std::string& p) {
             if (!fixed) jsp::set_default_script(p);
         });
+        [self registerForDraggedTypes:track_types()];
     }
     return self;
+}
+
+- (int)dragTracks:(metadb_handle_list_cref)tracks effects:(int)effects {
+    NSEvent* e = NSApp.currentEvent;
+    if (!e || (e.type != NSEventTypeLeftMouseDragged && e.type != NSEventTypeLeftMouseDown)) return 0;
+    NSArray<NSPasteboardItem*>* items = pasteboard_items(tracks);
+    if (!items.count) return 0;
+    _sourceOps = drag_operation(effects & 2) | drag_operation(effects & 1) | drag_operation(effects & 4);
+    NSImage* image = drag_image(tracks.get_count());
+    const NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+    const NSRect frame = NSMakeRect(p.x - 8, p.y - 8, image.size.width, image.size.height);
+    NSMutableArray<NSDraggingItem*>* drag = [NSMutableArray array];
+    for (NSPasteboardItem* item in items) {
+        NSDraggingItem* d = [[NSDraggingItem alloc] initWithPasteboardWriter:item];
+        [d setDraggingFrame:frame contents:drag.count ? nil : image];
+        [drag addObject:d];
+    }
+    @try {
+        [self beginDraggingSessionWithItems:drag event:e source:self];
+    } @catch (NSException* ex) {
+        jsp::log::warn("js", std::string("DoDragDrop: ") + (ex.reason.UTF8String ?: "can't start the drag"));
+    }
+    return 0;
+}
+
+- (NSDragOperation)draggingSession:(NSDraggingSession*)s sourceOperationMaskForDraggingContext:(NSDraggingContext)c {
+    return _sourceOps;
+}
+
+- (NSDragOperation)drag:(jsp::Drag)kind info:(id<NSDraggingInfo>)s action:(jsp::DropAction&)a {
+    a.effect = _dropAllowed;
+    const NSPoint p = [self convertPoint:s.draggingLocation fromView:nil];
+    const unsigned mask = key_mask(NSEvent.modifierFlags);
+    if (_panel) jsp::log::guarded("js", "drag", [&] { _panel->drag(kind, (int)p.x, (int)p.y, mask, a); });
+    else a.effect = 0;
+    a.effect &= _dropAllowed;
+    return drag_operation(a.effect);
+}
+
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)s {
+    _dropAllowed = [s.draggingPasteboard availableTypeFromArray:track_types()] ? drop_effects(s.draggingSourceOperationMask) : 0;
+    jsp::DropAction a;
+    return [self drag:jsp::Drag::Enter info:s action:a];
+}
+
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)s {
+    jsp::DropAction a;
+    return [self drag:jsp::Drag::Over info:s action:a];
+}
+
+- (void)draggingExited:(id<NSDraggingInfo>)s {
+    jsp::DropAction a;
+    if (_panel) jsp::log::guarded("js", "drag", [&] { _panel->drag(jsp::Drag::Leave, 0, 0, 0, a); });
+}
+
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)s {
+    jsp::DropAction a;
+    if ([self drag:jsp::Drag::Drop info:s action:a] == NSDragOperationNone) return NO;
+    if (_panel && a.playlist >= 0) {
+        jsp::log::guarded("js", "drop", [&] {
+            PasteboardTracks dropped = pasteboard_tracks(s.draggingPasteboard);
+            if (dropped.tracks.get_count()) _panel->drop_notify(a)->on_completion(dropped.tracks);
+            else _panel->drop_locations(dropped.files, a);
+        });
+    }
+    return YES;
 }
 
 - (void)dealloc {
@@ -366,6 +605,12 @@ public:
     CGImageRelease(img);
 }
 
+- (void)viewDidChangeEffectiveAppearance {
+    [super viewDidChangeEffectiveAppearance];
+    if (_panel) _panel->post("on_colours_changed");
+    [self setNeedsDisplay:YES];
+}
+
 - (void)viewDidChangeBackingProperties {
     [super viewDidChangeBackingProperties];
     [self setNeedsDisplay:YES];
@@ -387,7 +632,7 @@ public:
 - (unsigned)mask:(NSEvent*)e {
     const NSUInteger pressed = NSEvent.pressedMouseButtons;
     unsigned m = 0;
-    if (pressed & 1) m |= 0x1;
+    if ((pressed & 1) || e.type == NSEventTypeLeftMouseDragged) m |= 0x1;
     if (pressed & 2) m |= 0x2;
     if (pressed & 4) m |= 0x10;
     if (e.modifierFlags & NSEventModifierFlagShift) m |= 0x4;
@@ -448,6 +693,64 @@ public:
 namespace {
 
 void MacSurface::invalidate() { [view setNeedsDisplay:YES]; }
+
+int MacSurface::drag_tracks(metadb_handle_list_cref tracks, int effects) { return [view dragTracks:tracks effects:effects]; }
+
+void MacSurface::set_tooltip(const std::string& text, bool active, int) { view.toolTip = active && !text.empty() ? ns(text) : nil; }
+
+static bool argb_of(NSView* v, NSColor* c, uint32_t& out) {
+    __block NSColor* rgb = nil;
+    NSAppearance* a = v ? v.effectiveAppearance : NSApp.effectiveAppearance;
+    [a performAsCurrentDrawingAppearance:^{ rgb = [c colorUsingColorSpace:NSColorSpace.sRGBColorSpace]; }];
+    if (!rgb) return false;
+    auto byte = [](CGFloat x) { return (uint32_t)std::lround(std::clamp<CGFloat>(x, 0, 1) * 255); };
+    out = 0xff000000u | (byte(rgb.redComponent) << 16) | (byte(rgb.greenComponent) << 8) | byte(rgb.blueComponent);
+    return true;
+}
+
+bool MacSurface::ui_colour(jsp::UiColour kind, uint32_t& argb) {
+    NSColor* const colours[] = { NSColor.textColor, NSColor.textBackgroundColor, NSColor.controlAccentColor,
+                                 NSColor.selectedContentBackgroundColor, NSColor.alternateSelectedControlTextColor,
+                                 NSColor.unemphasizedSelectedContentBackgroundColor };
+    return argb_of(view, colours[(int)kind], argb);
+}
+
+bool MacSurface::ui_font(int kind, jsp::UiFont& font) {
+    if (kind == 5) {
+        font = { "Menlo", 12, 0 };
+        return true;
+    }
+    font = { "Segoe UI", (float)(kind == 1 || kind == 4 ? NSFont.smallSystemFontSize : NSFont.systemFontSize), 0 };
+    return true;
+}
+
+bool MacSurface::sys_colour(int index, uint32_t& argb) {
+    NSColor* const colours[] = {
+        NSColor.controlColor, NSColor.windowBackgroundColor, NSColor.controlAccentColor, NSColor.windowBackgroundColor,
+        NSColor.windowBackgroundColor, NSColor.textBackgroundColor, NSColor.separatorColor, NSColor.textColor,
+        NSColor.textColor, NSColor.textColor, NSColor.separatorColor, NSColor.separatorColor,
+        NSColor.windowBackgroundColor, NSColor.selectedContentBackgroundColor, NSColor.alternateSelectedControlTextColor,
+        NSColor.controlColor, NSColor.separatorColor, NSColor.disabledControlTextColor, NSColor.controlTextColor,
+        NSColor.secondaryLabelColor, NSColor.controlBackgroundColor, NSColor.shadowColor, NSColor.highlightColor,
+        NSColor.textColor, NSColor.controlBackgroundColor, nil, NSColor.linkColor, NSColor.windowBackgroundColor,
+        NSColor.windowBackgroundColor, NSColor.selectedContentBackgroundColor, NSColor.windowBackgroundColor,
+    };
+    if (index < 0 || index >= (int)std::size(colours) || !colours[index]) return false;
+    return argb_of(view, colours[index], argb);
+}
+
+bool MacSurface::pick_colour(uint32_t& argb) {
+    NSColorPanel* p = NSColorPanel.sharedColorPanel;
+    p.showsAlpha = NO;
+    p.color = [NSColor colorWithSRGBRed:((argb >> 16) & 0xff) / 255.0 green:((argb >> 8) & 0xff) / 255.0 blue:(argb & 0xff) / 255.0 alpha:1];
+    FooJsPanelColourDelegate* d = [FooJsPanelColourDelegate new];
+    id<NSWindowDelegate> old = p.delegate;
+    p.delegate = d;
+    [p makeKeyAndOrderFront:nil];
+    [NSApp runModalForWindow:p];
+    p.delegate = old;
+    return argb_of(nil, p.color, argb);
+}
 
 void MacSurface::invalidate_rect(const pui::gfx::Rect& r) {
     [view setNeedsDisplayInRect:NSMakeRect(r.x, r.y, r.w, r.h)];
@@ -550,6 +853,15 @@ void MacSurface::set_fullscreen(bool on) {
     if (w && on != fullscreen()) [w toggleFullScreen:nil];
 }
 
+bool MacSurface::always_on_top() {
+    NSWindow* w = view.window;
+    return w && w.level >= NSFloatingWindowLevel;
+}
+
+void MacSurface::set_always_on_top(bool on) {
+    if (NSWindow* w = view.window) w.level = on ? NSFloatingWindowLevel : NSNormalWindowLevel;
+}
+
 void MacSurface::set_window_limits(int minW, int minH, int maxW, int maxH) {
     NSWindow* w = view.window;
     if (!w) return;
@@ -623,7 +935,9 @@ public:
         id dict = arg.is_valid() ? fb2k::unwrapNSObject(arg) : nil;
         if ([dict isKindOfClass:[NSDictionary class]]) {
             id s = ((NSDictionary*)dict)[@(js_panel::script_key)];
-            if ([s isKindOfClass:[NSString class]]) c.script = s;
+            if ([s isKindOfClass:[NSString class]] && [s length])
+                c.script = ns(jsp::resolve_script_path([s UTF8String], jsp::ui::home_dir(),
+                                                       filesystem::g_get_native_path(core_api::get_profile_path()).c_str()));
         }
         return fb2k::wrapNSObject(c);
     }
@@ -682,6 +996,28 @@ bool shell_run(const std::string& command) {
     NSString* path = ns(cmd);
     if (![[NSFileManager defaultManager] fileExistsAtPath:path]) return false;
     return [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:path]];
+}
+
+bool copy_tracks(metadb_handle_list_cref tracks) {
+    NSArray<NSPasteboardItem*>* items = pasteboard_items(tracks);
+    if (!items.count) return false;
+    NSPasteboard* pb = [NSPasteboard generalPasteboard];
+    [pb clearContents];
+    return [pb writeObjects:items];
+}
+
+bool clipboard_has_tracks() { return [[NSPasteboard generalPasteboard] availableTypeFromArray:track_types()] != nil; }
+
+bool clipboard_tracks(metadb_handle_list_ref out) {
+    PasteboardTracks pasted = pasteboard_tracks([NSPasteboard generalPasteboard]);
+    auto api = metadb::get();
+    for (const std::string& f : pasted.files) {
+        pfc::string8 path;
+        filesystem::g_get_canonical_path(f.c_str(), path);
+        pasted.tracks.add_item(api->handle_create(path, 0));
+    }
+    out = pasted.tracks;
+    return out.get_count() > 0;
 }
 
 bool copy_to_clipboard(const std::string& text) {

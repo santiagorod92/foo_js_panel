@@ -1,4 +1,5 @@
 #include "panel.h"
+#include "bundled_js.h"
 #include "fs_util.h"
 #include "js_api_util.h"
 #include "log.h"
@@ -6,6 +7,7 @@
 #include "navidrome_rating_api.h"
 #include "panels_ui_api.h"
 #include "platform.h"
+#include "platform_tracks.h"
 #include "sample_script.h"
 #include "settings.h"
 #include <algorithm>
@@ -17,7 +19,15 @@ namespace jsp {
 
 namespace {
 
-enum PanelCommand { kEdit = 1, kChoose, kReload, kSample };
+enum PanelCommand { kEdit = 1, kChoose, kReload, kSample, kSamples = 100 };
+constexpr int kWatchTimer = 0x7FFF0001;
+constexpr int kWatchMs = 1000;
+
+long long modified(const std::string& path) {
+    std::error_code ec;
+    const auto t = std::filesystem::last_write_time(fs_path(path), ec);
+    return ec ? -1 : (long long)t.time_since_epoch().count();
+}
 
 std::string label(const std::string& path) { return path.empty() ? std::string("built-in sample") : path; }
 
@@ -311,6 +321,21 @@ HttpResponse run_http(const HttpRequest& r, abort_callback& abort) {
     return out;
 }
 
+std::string sample_path(const Sample& sample) {
+    const std::string dir = std::string(filesystem::g_get_native_path(core_api::pathInProfile("foo_js_panel")).c_str()) + kPathSep + "samples";
+    const std::string path = dir + kPathSep + sample.file;
+    std::error_code ec;
+    std::filesystem::create_directories(fs_path(dir), ec);
+    if (std::filesystem::exists(fs_path(path), ec)) return path;
+    std::string source = sample.source;
+    if (!source.empty() && source[0] == '\n') source.erase(0, 1);
+    if (!write_file(path, source)) {
+        log::warn("js", "can't write the sample " + path);
+        return {};
+    }
+    return path;
+}
+
 std::string new_script_path() {
     const pfc::string8 dir = filesystem::g_get_native_path(core_api::pathInProfile("foo_js_panel"));
     std::error_code ec;
@@ -324,7 +349,8 @@ std::string new_script_path() {
 
 }
 
-struct Panel::Callbacks : playlist_callback_impl_base, metadb_io_callback_dynamic_impl_base {
+struct Panel::Callbacks : playlist_callback_impl_base, metadb_io_callback_dynamic_impl_base, ui_selection_callback_impl_base,
+                          ui_config_callback_impl {
     Panel& p;
     explicit Callbacks(Panel& panel)
         : playlist_callback_impl_base(flag_on_items_added | flag_on_items_reordered | flag_on_items_removed |
@@ -333,10 +359,10 @@ struct Panel::Callbacks : playlist_callback_impl_base, metadb_io_callback_dynami
                                       flag_on_playlists_removed | flag_on_playlist_renamed | flag_on_playback_order_changed |
                                       flag_on_playlist_locked),
           p(panel) {}
-    void send(const char* name, std::vector<Arg> args = {}) {
-        Panel* panel = &p;
-        p.later([panel, name, args = std::move(args)]() { panel->invoke(name, args); });
-    }
+    void send(const char* name, std::vector<Arg> args = {}) { p.post(name, std::move(args)); }
+    void on_selection_changed(metadb_handle_list_cref) override { send("on_selection_changed"); }
+    void ui_colors_changed() override { send("on_colours_changed"); }
+    void ui_fonts_changed() override { send("on_font_changed"); }
     void on_items_added(t_size pl, t_size, metadb_handle_list_cref, const bit_array&) override { send("on_playlist_items_added", { (int)pl }); }
     void on_items_reordered(t_size pl, const t_size*, t_size) override { send("on_playlist_items_reordered", { (int)pl }); }
     void on_items_removed(t_size pl, const bit_array&, t_size, t_size count) override { send("on_playlist_items_removed", { (int)pl, (int)count }); }
@@ -358,6 +384,114 @@ struct Panel::Callbacks : playlist_callback_impl_base, metadb_io_callback_dynami
 std::vector<Panel*>& Panel::live() {
     static std::vector<Panel*> panels;
     return panels;
+}
+
+void Panel::broadcast(const char* name, const std::vector<Arg>& args) {
+    for (Panel* p : live()) p->post(name, args);
+}
+
+void Panel::post(const char* name, std::vector<Arg> args) {
+    later([this, name, args = std::move(args)]() { invoke(name, args); });
+}
+
+namespace {
+
+class FlagNotify : public config_object_notify {
+    struct Watch {
+        const GUID* id;
+        const char* callback;
+    };
+    static const Watch* watches() {
+        static const Watch w[] = {
+            { &standard_config_objects::bool_ui_always_on_top, "on_always_on_top_changed" },
+            { &standard_config_objects::bool_playlist_stop_after_current, "on_playlist_stop_after_current_changed" },
+            { &standard_config_objects::bool_cursor_follows_playback, "on_cursor_follow_playback_changed" },
+            { &standard_config_objects::bool_playback_follows_cursor, "on_playback_follow_cursor_changed" },
+        };
+        return w;
+    }
+
+public:
+    t_size get_watched_object_count() override { return 4; }
+    GUID get_watched_object(t_size i) override { return *watches()[i].id; }
+    void on_watched_object_changed(const service_ptr_t<config_object>& o) override {
+        const GUID id = o->get_guid();
+        for (t_size i = 0; i < get_watched_object_count(); ++i)
+            if (*watches()[i].id == id) Panel::broadcast(watches()[i].callback, { o->get_data_bool_simple(false) });
+    }
+};
+FB2K_SERVICE_FACTORY(FlagNotify);
+
+class DspNotify : public dsp_config_callback {
+public:
+    void on_core_settings_change(const dsp_chain_config&) override { Panel::broadcast("on_dsp_preset_changed"); }
+};
+FB2K_SERVICE_FACTORY(DspNotify);
+
+class StateNotify : public initquit, private replaygain_core_settings_notify {
+    service_ptr m_output;
+
+    void on_changed(const t_replaygain_config& cfg) override { Panel::broadcast("on_replaygain_mode_changed", { (int)cfg.m_source_mode }); }
+
+public:
+    void on_init() override {
+        if (auto rg = replaygain_manager_v2::tryGet(); rg.is_valid()) rg->add_notify(this);
+        if (auto out = output_manager_v2::tryGet(); out.is_valid())
+            m_output = out->addCallback([]() { Panel::broadcast("on_output_device_changed"); });
+    }
+    void on_quit() override {
+        if (auto rg = replaygain_manager_v2::tryGet(); rg.is_valid()) rg->remove_notify(this);
+        m_output.release();
+    }
+};
+FB2K_SERVICE_FACTORY(StateNotify);
+
+class JsLock : public playlist_lock {
+public:
+    explicit JsLock(t_uint32 mask) : m_mask(mask) {}
+    size_t index = SIZE_MAX;
+
+    bool query_items_add(t_size, const pfc::list_base_const_t<metadb_handle_ptr>&, const bit_array&) override { return !(m_mask & filter_add); }
+    bool query_items_reorder(const t_size*, t_size) override { return !(m_mask & filter_reorder); }
+    bool query_items_remove(const bit_array&, bool) override { return !(m_mask & filter_remove); }
+    bool query_item_replace(t_size, const metadb_handle_ptr&, const metadb_handle_ptr&) override { return !(m_mask & filter_replace); }
+    bool query_playlist_rename(const char*, t_size) override { return !(m_mask & filter_rename); }
+    bool query_playlist_remove() override { return !(m_mask & filter_remove_playlist); }
+    bool execute_default_action(t_size) override { return false; }
+    void on_playlist_index_change(t_size i) override { index = i; }
+    void on_playlist_remove() override;
+    void get_lock_name(pfc::string_base& out) override { out = "JS Panel"; }
+    void show_ui() override {}
+    t_uint32 get_filter_mask() override { return m_mask; }
+
+private:
+    t_uint32 m_mask;
+};
+
+std::vector<service_ptr_t<JsLock>>& js_locks() {
+    static std::vector<service_ptr_t<JsLock>> locks;
+    return locks;
+}
+
+void JsLock::on_playlist_remove() {
+    auto& l = js_locks();
+    l.erase(std::remove_if(l.begin(), l.end(), [this](const service_ptr_t<JsLock>& k) { return k.get_ptr() == this; }), l.end());
+}
+
+bool config_bool(const GUID& id) {
+    service_ptr_t<config_object> o;
+    return config_object::g_find(o, id) && o->get_data_bool_simple(false);
+}
+
+void set_config_bool(const GUID& id, bool on) {
+    service_ptr_t<config_object> o;
+    if (config_object::g_find(o, id)) o->set_data_bool(on);
+}
+
+GUID guid_of(const std::string& s) { return pfc::GUID_from_text(s.c_str()); }
+
+std::string text_of(const GUID& g) { return "{" + std::string(pfc::print_guid(g).c_str()) + "}"; }
+
 }
 
 Panel::Panel(Surface& surface, std::string scriptPath, std::function<void(const std::string&)> onScriptChanged)
@@ -404,6 +538,7 @@ void Panel::reload() {
     }
     m_selection.release();
     m_engine.reset();
+    m_surface.set_tooltip({}, false, 0);
     m_tf.clear();
     m_engine = std::make_unique<JsEngine>(*this);
     std::string source;
@@ -413,9 +548,16 @@ void Panel::reload() {
         source = sample_script();
     }
     const unsigned long long t0 = tick_ms();
-    const bool ok = m_engine->load(source, m_path);
+    bool ok = false;
+    try {
+        ok = m_engine->load(source, m_path);
+    } catch (const std::exception& e) {
+        log::console(log::Level::Error, "js", label(m_path) + " stopped: " + e.what());
+        m_engine.reset();
+    }
     log::info("js", "loaded " + label(m_path) + " in " + std::to_string(tick_ms() - t0) + " ms" +
                         (ok ? "" : " (failed)"));
+    watch_files();
     if (m_w > 0 && m_h > 0) {
         const int w = m_w, h = m_h;
         m_w = m_h = 0;
@@ -457,7 +599,29 @@ void Panel::focus(bool focused) { invoke("on_focus", { focused }); }
 
 bool Panel::key_pressed(int vk) { return m_surface.key_pressed(vk); }
 
+void Panel::watch_files() {
+    m_watched.clear();
+    m_surface.stop_timer(kWatchTimer);
+    if (!m_engine || m_path.empty() || !hot_reload()) return;
+    for (const std::string& f : m_engine->source_files()) m_watched.emplace_back(f, modified(f));
+    m_surface.start_timer(kWatchTimer, kWatchMs);
+}
+
+bool Panel::files_changed() {
+    for (const auto& [file, stamp] : m_watched)
+        if (modified(file) != stamp) {
+            log::info("js", "reloading " + label(m_path) + ": " + file + " changed");
+            return true;
+        }
+    return false;
+}
+
 void Panel::timer(int id) {
+    if (id == kWatchTimer) {
+        if (!hot_reload()) m_surface.stop_timer(kWatchTimer);
+        else if (m_engine && !m_engine->in_modal() && files_changed()) reload();
+        return;
+    }
     if (m_engine) m_engine->timer(id);
     else m_surface.stop_timer(id);
 }
@@ -474,7 +638,24 @@ void Panel::context_menu(int x, int y) {
     add(kChoose, "Choose script file…");
     add(kReload, "Reload script");
     if (!m_path.empty()) add(kSample, "Use the built-in sample");
-    switch (popup_menu(x, y, items)) {
+    MenuItem gallery;
+    gallery.text = "Samples";
+    gallery.submenu = true;
+    const auto& list = samples();
+    for (size_t i = 0; i < list.size(); ++i) {
+        MenuItem m;
+        m.id = kSamples + (int)i;
+        m.text = list[i].name;
+        gallery.children.push_back(m);
+    }
+    items.push_back(gallery);
+    const int picked = popup_menu(x, y, items);
+    if (picked >= kSamples && picked < kSamples + (int)list.size()) {
+        const std::string path = sample_path(list[picked - kSamples]);
+        if (!path.empty()) set_script(path);
+        return;
+    }
+    switch (picked) {
     case kChoose: {
         const std::string path = m_surface.choose_script_file();
         if (!path.empty()) set_script(path);
@@ -496,9 +677,27 @@ std::string Panel::current_source() {
 
 void Panel::edit_script() {
     const std::string title = "JS Panel — " + (m_path.empty() ? std::string("built-in sample (saved as a new file on apply)") : m_path);
+    const int line = m_engine && m_engine->failed() ? error_line(m_engine->error(), m_path.empty() ? "<sample>" : m_path) : 0;
     m_surface.open_editor(title, current_source(),
                           { [this](const std::string& src) { return apply_source(src); },
-                            [this](const std::string& src) { return check_syntax(src, m_path.empty() ? "script.js" : m_path); } });
+                            [this](const std::string& src) { return check_syntax(src, m_path.empty() ? "script.js" : m_path); }, line });
+}
+
+std::string Panel::bundled_import(const std::string& name) { return name == "lodash" ? std::string(lodash_js()) : std::string(); }
+
+std::string Panel::jsp3_path() { return native_dir(core_api::pathInProfile("foo_js_panel")) + "jsp3" + kPathSep; }
+
+void Panel::edit_properties(const std::string& json) {
+    m_surface.open_editor("JS Panel properties — " + label(m_path), json,
+                          { [this](const std::string& text) {
+                               const std::string err = check_properties(text);
+                               if (!err.empty()) return "Not applied: " + err;
+                               m_engine.reset();
+                               save_properties(text);
+                               reload();
+                               return std::string("Applied");
+                           },
+                            [](const std::string& text) { return check_properties(text); } });
 }
 
 std::string Panel::apply_source(const std::string& source) {
@@ -545,6 +744,8 @@ bool Panel::is_playing() { return playback_control::get()->is_playing(); }
 bool Panel::is_paused() { return playback_control::get()->is_paused(); }
 double Panel::playback_time() { return playback_control::get()->playback_get_position(); }
 double Panel::playback_length() { return playback_control::get()->playback_get_length(); }
+
+void Panel::seek(double t) { playback_control::get()->playback_seek(t); }
 
 void Panel::playback(Playback cmd) {
     auto pc = playback_control::get();
@@ -1078,8 +1279,12 @@ void Panel::set_volume(double db) { playback_control::get()->set_volume((float)d
 bool Panel::flag(Flag f) {
     switch (f) {
     case Flag::StopAfterCurrent: return playback_control::get()->get_stop_after_current();
-    case Flag::CursorFollowPlayback: return config_object::g_get_data_bool_simple(standard_config_objects::bool_cursor_follows_playback, false);
-    case Flag::PlaybackFollowCursor: return config_object::g_get_data_bool_simple(standard_config_objects::bool_playback_follows_cursor, false);
+    case Flag::CursorFollowPlayback: return config_bool(standard_config_objects::bool_cursor_follows_playback);
+    case Flag::PlaybackFollowCursor: return config_bool(standard_config_objects::bool_playback_follows_cursor);
+    case Flag::AlwaysOnTop: {
+        service_ptr_t<config_object> o;
+        return config_object::g_find(o, standard_config_objects::bool_ui_always_on_top) ? o->get_data_bool_simple(false) : m_surface.always_on_top();
+    }
     }
     return false;
 }
@@ -1087,8 +1292,17 @@ bool Panel::flag(Flag f) {
 void Panel::set_flag(Flag f, bool on) {
     switch (f) {
     case Flag::StopAfterCurrent: playback_control::get()->set_stop_after_current(on); break;
-    case Flag::CursorFollowPlayback: config_object::g_set_data_bool(standard_config_objects::bool_cursor_follows_playback, on); break;
-    case Flag::PlaybackFollowCursor: config_object::g_set_data_bool(standard_config_objects::bool_playback_follows_cursor, on); break;
+    case Flag::CursorFollowPlayback: set_config_bool(standard_config_objects::bool_cursor_follows_playback, on); break;
+    case Flag::PlaybackFollowCursor: set_config_bool(standard_config_objects::bool_playback_follows_cursor, on); break;
+    case Flag::AlwaysOnTop: {
+        service_ptr_t<config_object> o;
+        if (config_object::g_find(o, standard_config_objects::bool_ui_always_on_top)) o->set_data_bool(on);
+        else if (on != m_surface.always_on_top()) {
+            m_surface.set_always_on_top(on);
+            broadcast("on_always_on_top_changed", { on });
+        }
+        break;
+    }
     }
 }
 
@@ -1193,6 +1407,9 @@ TrackInfo Panel::track_info(const TrackPtr& t) {
     auto h = handle_of(t);
     if (!h.is_valid()) return out;
     out.size = (long long)h->get_filesize();
+    out.subsong = h->get_subsong_index();
+    const t_filetimestamp ts = h->get_filetimestamp();
+    if (ts != filetimestamp_invalid && ts > 116444736000000000ull) out.modified = (double)((ts - 116444736000000000ull) / 10000000ull);
     metadb_info_container::ptr info;
     if (!h->get_info_ref(info)) return out;
     const file_info& fi = info->info();
@@ -1398,6 +1615,125 @@ Tracks Panel::queue_items() {
     Tracks out;
     for (size_t i = 0; i < items.get_count(); ++i) out.push_back(wrap(items[i].m_handle));
     return out;
+}
+
+int Panel::replaygain_mode() { return (int)replaygain_manager::get()->get_core_settings().m_source_mode; }
+
+void Panel::set_replaygain_mode(int mode) {
+    auto rg = replaygain_manager::get();
+    t_replaygain_config cfg = rg->get_core_settings();
+    cfg.m_source_mode = (t_uint32)mode;
+    rg->set_core_settings(cfg);
+}
+
+std::vector<OutputDevice> Panel::output_devices() {
+    std::vector<OutputDevice> out;
+    auto api = output_manager_v2::tryGet();
+    if (!api.is_valid()) return out;
+    const outputCoreConfig_t cur = api->getCoreConfig();
+    api->listDevices([&](const char* name, const GUID& output, const GUID& device) {
+        out.push_back({ name, text_of(output), text_of(device), output == cur.m_output && device == cur.m_device });
+    });
+    return out;
+}
+
+bool Panel::set_output_device(const std::string& output, const std::string& device) {
+    auto api = output_manager_v2::tryGet();
+    if (!api.is_valid()) return false;
+    api->setCoreConfigDevice(guid_of(output), guid_of(device));
+    return true;
+}
+
+std::vector<std::string> Panel::dsp_presets(int& selected) {
+    std::vector<std::string> out;
+    selected = -1;
+    auto api = dsp_config_manager_v2::tryGet();
+    if (!api.is_valid()) return out;
+    for (size_t i = 0, n = api->get_preset_count(); i < n; ++i) {
+        pfc::string8 name;
+        api->get_preset_name(i, name);
+        out.push_back(name.c_str());
+    }
+    selected = index_or_none(api->get_selected_preset());
+    return out;
+}
+
+bool Panel::set_dsp_preset(int index) {
+    auto api = dsp_config_manager_v2::tryGet();
+    if (!api.is_valid() || index < 0 || (size_t)index >= api->get_preset_count()) return false;
+    api->select_preset((size_t)index);
+    return true;
+}
+
+bool Panel::library_search(const std::string& query) {
+    auto api = library_search_ui::tryGet();
+    if (!api.is_valid()) return false;
+    api->show(query.c_str());
+    return true;
+}
+
+unsigned Panel::playlist_lock_mask(int p) { return valid(p) ? playlist_manager::get()->playlist_lock_get_filter_mask((size_t)p) : 0; }
+
+std::string Panel::playlist_lock_name(int p) {
+    pfc::string8 name;
+    if (!valid(p) || !playlist_manager::get()->playlist_lock_query_name((size_t)p, name)) return {};
+    return name.c_str();
+}
+
+bool Panel::set_playlist_lock(int p, unsigned mask) {
+    if (!valid(p)) return false;
+    auto pm = playlist_manager::get();
+    auto& locks = js_locks();
+    auto it = std::find_if(locks.begin(), locks.end(), [p](const service_ptr_t<JsLock>& l) { return l->index == (size_t)p; });
+    if (it == locks.end() && pm->playlist_lock_is_present((size_t)p)) return false;
+    if (it != locks.end()) {
+        service_ptr_t<JsLock> old = *it;
+        locks.erase(it);
+        pm->playlist_lock_uninstall((size_t)p, old);
+    }
+    if (!mask) return true;
+    auto lock = fb2k::service_new<JsLock>((t_uint32)mask);
+    lock->index = (size_t)p;
+    if (!pm->playlist_lock_install((size_t)p, lock)) return false;
+    locks.push_back(lock);
+    return true;
+}
+
+void Panel::drag(Drag kind, int x, int y, unsigned mask, DropAction& action) {
+    if (m_engine) m_engine->drag(kind, x, y, mask, action);
+    else action.effect = 0;
+}
+
+process_locations_notify::ptr Panel::drop_notify(const DropAction& action) {
+    auto abort = m_abort;
+    return process_locations_notify::create([this, abort, action](metadb_handle_list_cref items) {
+        if (!abort->is_aborting() && items.get_count()) insert_playlist_items(action.playlist, action.base, wrap_all(items), action.toSelect);
+    });
+}
+
+void Panel::drop_locations(const std::vector<std::string>& paths, const DropAction& action) {
+    if (paths.empty()) return;
+    pfc::list_t<const char*> urls;
+    for (const auto& p : paths) urls.add_item(p.c_str());
+    playlist_incoming_item_filter_v2::get()->process_locations_async(urls, playlist_incoming_item_filter_v2::op_flag_delay_ui, nullptr,
+                                                                     nullptr, nullptr, drop_notify(action));
+}
+
+int Panel::drag_tracks(const Tracks& tracks, int effects) {
+    auto handles = handles_of(tracks);
+    return handles.get_count() ? m_surface.drag_tracks(handles, effects) : 0;
+}
+
+bool Panel::copy_tracks(const Tracks& tracks) {
+    auto handles = handles_of(tracks);
+    return handles.get_count() && ui::copy_tracks(handles);
+}
+
+bool Panel::clipboard_has_tracks() { return ui::clipboard_has_tracks(); }
+
+Tracks Panel::clipboard_tracks() {
+    metadb_handle_list out;
+    return ui::clipboard_tracks(out) ? wrap_all(out) : Tracks();
 }
 
 }
