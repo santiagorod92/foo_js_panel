@@ -34,6 +34,16 @@ TEST("diagnostics: report has versions, panels and the log") {
     CHECK(r.find("ana") == std::string::npos);
 }
 
+TEST("diagnostics: panels show their memory and slowest callbacks, at most five") {
+    jsp::DiagnosticsInfo d;
+    jsp::PanelInfo p{ "/s/main.js", "running", 3 * 1048576 / 2 };
+    for (int i = 0; i < 6; ++i) p.calls.push_back({ "cb" + std::to_string(i), 4, 10.0 - i, 5.0 });
+    d.panels = { p };
+    const std::string r = jsp::build_diagnostics(d);
+    CHECK(r.find("- /s/main.js: running, 1.5 MB\n  - cb0: 4 calls, 10.0 ms total, 2.50 ms avg, 5.0 ms max\n") != std::string::npos);
+    CHECK(r.find("cb4") != std::string::npos && r.find("cb5") == std::string::npos);
+}
+
 TEST("diagnostics: no panels, Wine") {
     DiagnosticsInfo d;
     d.platform = "Windows";

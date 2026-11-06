@@ -922,6 +922,171 @@ TEST("plman: items, selection, focus, order, playing location, sort, queue") {
     CHECK_EQ(out.back(), std::string("0"));
 }
 
+TEST("plman: playback queue contents, find, remove and on_playback_queue_changed") {
+    t::FakeHost host;
+    auto a = t::track("/a"), b = t::track("/b"), c = t::track("/c");
+    host.playlistItems[0] = { a, b, c };
+    JsEngine e(host);
+    CHECK(e.load("function on_playback_queue_changed(origin) { console.log('queue', origin); }"
+                 "plman.AddPlaylistItemToPlaybackQueue(0, 1); plman.AddPlaylistItemToPlaybackQueue(0, 2);"
+                 "plman.AddItemToPlaybackQueue(plman.GetPlaylistItems(0).Item(0));"
+                 "const q = plman.GetPlaybackQueueContents(), b = plman.GetPlaylistItems(0).Item(1);"
+                 "console.log(q.length, q[0].Handle.Path, q[0].PlaylistIndex, q[0].PlaylistItemIndex, q[2].PlaylistIndex,"
+                 " plman.FindPlaybackQueueItemIndex(b, 0, 1), plman.FindPlaybackQueueItemIndex(b, 0, 2));"
+                 "plman.RemoveItemFromPlaybackQueue(0); plman.RemoveItemsFromPlaybackQueue([1, 7]);"
+                 "console.log(plman.GetPlaybackQueueContents().map(x => x.Handle.Path).join(','));", ""));
+    CHECK_EQ(host.console_lines[host.console_lines.size() - 2], std::string("3 /b 0 1 -1 0 -1"));
+    CHECK_EQ(host.console_lines.back(), std::string("/c"));
+    e.invoke("on_playback_queue_changed", { 1 });
+    CHECK_EQ(host.console_lines.back(), std::string("queue 1"));
+}
+
+TEST("plman.AddLocations hands the paths to the host, Windows separators fixed off Windows") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("plman.AddLocations(1, ['C:\\\\m\\\\a.flac', 'http://x/s.mp3'], true); plman.AddLocations(0, ['/b.flac']);", ""));
+#ifdef _WIN32
+    CHECK_EQ(host.actions[host.actions.size() - 2], std::string("locations 1 C:\\m\\a.flac http://x/s.mp3 select"));
+#else
+    CHECK_EQ(host.actions[host.actions.size() - 2], std::string("locations 1 C:/m/a.flac http://x/s.mp3 select"));
+#endif
+    CHECK_EQ(host.actions.back(), std::string("locations 0 /b.flac"));
+}
+
+TEST("utils: ReadINI / WriteINI keep sections, case-insensitive keys and the file's line endings") {
+    t::FakeHost host;
+    host.files["/p/a.ini"] = "; c\r\n[Main]\r\nName = \"Eole\"\r\nsize=3\r\n\r\n[Other]\r\nx=1\r\n";
+    JsEngine e(host);
+    CHECK(e.load("console.log(utils.ReadINI('/p/a.ini', 'main', 'NAME'), utils.ReadINI('/p/a.ini', 'Main', 'nope', 'def'), utils.ReadINI('/p/none.ini', 'a', 'b'),"
+                 " utils.WriteINI('/p/a.ini', 'Main', 'SIZE', '4'), utils.WriteINI('/p/a.ini', 'Main', 'new', 'n'),"
+                 " utils.WriteINI('/p/a.ini', 'Third', 'k', 'v'), utils.WriteINI('/p/a.ini', '', 'k', 'v'));", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("Eole def  true true true false"));
+    CHECK_EQ(host.files["/p/a.ini"], std::string("; c\r\n[Main]\r\nName = \"Eole\"\r\nsize=4\r\nnew=n\r\n\r\n[Other]\r\nx=1\r\n\r\n[Third]\r\nk=v\r\n"));
+}
+
+TEST("packages: GetPackageInfo / GetPackagePath find SMP 1.6 packages, ScriptInfo.PackageId names the running one") {
+    namespace fs = std::filesystem;
+    const fs::path profile = fs::temp_directory_path() / "jsp_pkg_test";
+    fs::remove_all(profile);
+    const fs::path pkg = profile / "foo_spider_monkey_panel" / "packages" / "{ABC}";
+    fs::create_directories(pkg);
+    std::ofstream(pkg / "package.json") << "{\"id\":\"{ABC}\",\"version\":\"1.2.0\"}";
+    t::FakeHost host;
+    host.profilePath = profile.generic_string() + "/";
+    host.files[(pkg / "package.json").generic_string()] = "{\"id\":\"{ABC}\",\"version\":\"1.2.0\"}";
+    JsEngine e(host);
+    CHECK(e.load("const i = utils.GetPackageInfo('{ABC}'), p = fb.ProfilePath;"
+                 "console.log(i.Version, i.Directories.Root.slice(p.length), i.Directories.Storage.slice(p.length), utils.GetPackageInfo('nope'),"
+                 " utils.GetPackageInfo('../x'), utils.GetPackagePath('{ABC}') === i.Directories.Root, window.ScriptInfo.PackageId);"
+                 "try { utils.GetPackagePath('nope'); } catch (e) { console.log('threw'); }", (pkg / "main.js").string()));
+    CHECK_EQ(host.console_lines[host.console_lines.size() - 2],
+             std::string("1.2.0 foo_spider_monkey_panel/packages/{ABC}/ foo_spider_monkey_panel/package_data/{ABC}/ null null true {ABC}"));
+    CHECK_EQ(host.console_lines.back(), std::string("threw"));
+    fs::remove_all(profile);
+}
+
+TEST("fetch: Response text/json, headers sent, HTTP errors resolve, network errors reject") {
+    t::FakeHost host;
+    host.web["https://api.example/j"] = { 200, "{\"a\":1}", {} };
+    host.web["https://api.example/down"] = { 0, "", "host not found" };
+    JsEngine e(host);
+    CHECK(e.load("fetch('https://api.example/j', { headers: { 'X-Key': 'k' } }).then(r => r.json().then(j => console.log('json', r.ok, r.status, j.a, r.bodyUsed)));"
+                 "fetch('https://api.example/nope', { method: 'post', body: 'b' }).then(r => console.log('miss', r.ok, r.status));"
+                 "fetch('https://api.example/down').catch(e => console.log('down', e.name, e.message));"
+                 "const h = new Headers({ A: '1' }); h.append('a', '2'); console.log('headers', h.get('A'), h.has('b'));", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("headers 1, 2 false"));
+    host.finish_http();
+    const auto& out = host.console_lines;
+    CHECK(std::find(out.begin(), out.end(), "json true 200 1 true") != out.end());
+    CHECK(std::find(out.begin(), out.end(), "miss false 404") != out.end());
+    CHECK(std::find(out.begin(), out.end(), "down TypeError fetch failed: host not found") != out.end());
+    CHECK_EQ(host.requests[0], std::string("GET https://api.example/j [x-key: k]"));
+    CHECK_EQ(host.requests[1], std::string("POST https://api.example/nope body=b"));
+    CHECK(!e.failed());
+}
+
+TEST("modules: a module script imports relative files, exports its callbacks, records the files for hot reload") {
+    t::FakeHost host;
+    host.files["/s/lib/a.js"] = "import { b } from '../b.js'; export const a = 'A' + b;";
+    host.files["/s/b.js"] = "export const b = 'B';";
+    JsEngine e(host);
+    CHECK(e.load("import { a } from './lib/a.js';\nconsole.log('top', a);\nexport function on_size(w, h) { console.log('size', a, w, h); }\nfunction hidden() {}", "/s/main.js"));
+    CHECK_EQ(host.console_lines.back(), std::string("top AB"));
+    e.resize(3, 4);
+    CHECK_EQ(host.console_lines.back(), std::string("size AB 3 4"));
+    const auto& files = e.source_files();
+    CHECK(std::find(files.begin(), files.end(), "/s/lib/a.js") != files.end() && std::find(files.begin(), files.end(), "/s/b.js") != files.end());
+    t::FakeHost h2;
+    JsEngine broken(h2);
+    CHECK(!broken.load("import { x } from './missing.js';", "/s/main.js"));
+    CHECK(broken.error().find("can't read /s/missing.js") != std::string::npos);
+    t::FakeHost h3;
+    h3.files["/s/b.js"] = "export const b = 'B';";
+    JsEngine classic(h3);
+    CHECK(classic.load("import('./b.js').then(m => console.log('dynamic', m.b));", "/s/main.js"));
+    CHECK_EQ(h3.console_lines.back(), std::string("dynamic B"));
+    CHECK(check_syntax("import { a } from './a.js'; export const b = a;", "m.js").empty());
+    CHECK(!check_syntax("import { a } from './a.js'; export const = a;", "m.js").empty());
+}
+
+TEST("profile: every callback and timer is counted, slowest first, with the engine's memory") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("function on_size() { const t = Date.now(); while (Date.now() - t < 12) {} } function on_mouse_move() {}"
+                 "window.SetTimeout(() => {}, 1);", ""));
+    e.resize(1, 1);
+    e.mouse(Mouse::Move, 0, 0, 0);
+    e.mouse(Mouse::Move, 1, 0, 0);
+    const auto pending = host.timers;
+    for (const auto& [id, ms] : pending) e.timer(id);
+    const auto p = e.profile();
+    CHECK(p.size() == 3 && p[0].name == "on_size" && p[0].calls == 1 && p[0].maxMs >= 10);
+    const auto move = std::find_if(p.begin(), p.end(), [](const CallTiming& c) { return c.name == "on_mouse_move"; });
+    CHECK(move != p.end() && move->calls == 2);
+    CHECK(std::find_if(p.begin(), p.end(), [](const CallTiming& c) { return c.name == "timers" && c.calls == 1; }) != p.end());
+    CHECK(e.memory_used() > 0);
+}
+
+TEST("skin messages reach on_notify_data: JSON info parsed, anything else as a string") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("function on_notify_data(name, info) { console.log(name, typeof info, JSON.stringify(info)); }", ""));
+    e.skin_message("view", "{\"page\":2}");
+    CHECK_EQ(host.console_lines.back(), std::string("view object {\"page\":2}"));
+    e.skin_message("mode", "compact");
+    CHECK_EQ(host.console_lines.back(), std::string("mode string \"compact\""));
+    e.skin_message("ping", "");
+    CHECK_EQ(host.console_lines.back(), std::string("ping string \"\""));
+}
+
+TEST("navidrome: SearchAsync resolves with artists, albums and a track list, rejects on an error") {
+    t::FakeHost host;
+    jsp::SearchResult r;
+    r.artists = { { "ar1", "Anberlin", "cov-ar1", 7, 0 } };
+    r.albums = { { "al1", "Cities", "Anberlin", "ar1", "cov-al1", "2007-02-20", 2007, 13 } };
+    r.tracks = { t::track("navidrome://s1"), t::track("navidrome://s2") };
+    host.navidromeResults["anb"] = r;
+    JsEngine e(host);
+    CHECK(e.load("navidrome.SearchAsync('anb').then(r => console.log(r.Artists[0].Name, r.Artists[0].CoverArtId, r.Artists[0].AlbumCount,"
+                 " r.Albums[0].Name, r.Albums[0].Year, r.Tracks.Count, r.Tracks.Item(1).Path));"
+                 "navidrome.SearchAsync('x').then(() => console.log('no'), err => console.log('rejected', err.message));", ""));
+    CHECK_EQ(host.console_lines[host.console_lines.size() - 2], std::string("Anberlin cov-ar1 7 Cities 2007 2 navidrome://s2"));
+    CHECK_EQ(host.console_lines.back(), std::string("rejected search failed for \"x\""));
+}
+
+TEST("mouse: horizontal wheel and right double-click reach their own callbacks") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("function on_mouse_wheel(s) { console.log('v', s); } function on_mouse_wheel_h(s) { console.log('h', s); }"
+                 "function on_mouse_rbtn_dblclk(x, y, m) { console.log('rdbl', x, y, m); }", ""));
+    e.wheel(2, true);
+    CHECK_EQ(host.console_lines.back(), std::string("h 2"));
+    e.wheel(-1);
+    CHECK_EQ(host.console_lines.back(), std::string("v -1"));
+    e.mouse(Mouse::RightDouble, 3, 4, 2);
+    CHECK_EQ(host.console_lines.back(), std::string("rdbl 3 4 2"));
+}
+
 TEST("utils: files, Glob, split paths, durations and sizes; backslashes work as separators off Windows") {
     namespace fs = std::filesystem;
     const fs::path dir = fs::temp_directory_path() / "jsp_utils_test";
@@ -1277,6 +1442,21 @@ TEST("ActiveX: htmlfile parses HTML for scrapers: tags, classes, attributes, inn
                  "console.log(w.tagName, JSON.stringify(w.innerText.trim()), w.getElementsByTagName('img')[0].src, w.innerHTML.slice(0, 9), li[0].parentNode.tagName);", ""));
     CHECK_EQ(host.console_lines[0], std::string("2 tag Rock & Roll Pop about:/tag/rock"));
     CHECK_EQ(host.console_lines[1], std::string("DIV \"One\\ntwo\" https://x/a.jpg <p>One<br UL"));
+}
+
+TEST("ActiveX: htmlfile innerHTML serialises character references like a browser, keeping &, <, > and quotes escaped") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("const div = new ActiveXObject('htmlfile').createElement('div');"
+                 "div.innerHTML = '<p title=\"a&#x22;b\">Creed&#x27;s &#39;hit&#39; &#x26; &lt;b&gt; &#9733; &#xD800; &#x110000;</p>';"
+                 "const p = div.getElementsByTagName('p')[0];"
+                 "console.log(p.innerHTML); console.log(p.innerText); console.log(div.innerHTML === p.outerHTML ? 'same' : p.outerHTML);", ""));
+    const auto& out = host.console_lines;
+    CHECK_EQ(e.error(), std::string());
+    if (out.size() < 3) return;
+    CHECK_EQ(out[out.size() - 3], std::string("Creed's 'hit' &#x26; &lt;b&gt; ★ &#xD800; &#x110000;"));
+    CHECK_EQ(out[out.size() - 2], std::string("Creed's 'hit' & <b> ★ &#xD800; &#x110000;"));
+    CHECK_EQ(out.back(), std::string("same"));
 }
 
 TEST("ActiveX: WScript.Shell.Run of a cscript download VBS fetches the URL into the file") {

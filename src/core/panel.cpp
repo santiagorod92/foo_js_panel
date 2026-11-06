@@ -2,6 +2,7 @@
 #include "bundled_js.h"
 #include "fs_util.h"
 #include "js_api_util.h"
+#include "js_panel_api.h"
 #include "log.h"
 #include "navidrome_library_api.h"
 #include "navidrome_rating_api.h"
@@ -390,6 +391,13 @@ void Panel::broadcast(const char* name, const std::vector<Arg>& args) {
     for (Panel* p : live()) p->post(name, args);
 }
 
+void Panel::skin_message(const std::string& name, const std::string& text) {
+    for (Panel* p : live())
+        p->later([p, name, text]() {
+            if (p->m_engine) p->m_engine->skin_message(name, text);
+        });
+}
+
 void Panel::post(const char* name, std::vector<Arg> args) {
     later([this, name, args = std::move(args)]() { invoke(name, args); });
 }
@@ -427,6 +435,21 @@ public:
     void on_core_settings_change(const dsp_chain_config&) override { Panel::broadcast("on_dsp_preset_changed"); }
 };
 FB2K_SERVICE_FACTORY(DspNotify);
+
+class QueueNotify : public playback_queue_callback {
+public:
+    void on_changed(t_change_origin origin) override { Panel::broadcast("on_playback_queue_changed", { (int)origin }); }
+};
+FB2K_SERVICE_FACTORY(QueueNotify);
+
+class SkinNotify : public js_panel::js_panel_notify_api {
+public:
+    void notify(const char* name, const char* info) override { Panel::skin_message(name ? name : "", info ? info : ""); }
+    void variable_changed(const char* name, const char* value) override {
+        Panel::broadcast("on_panelsui_variable_changed", { std::string(name ? name : ""), std::string(value ? value : "") });
+    }
+};
+FB2K_SERVICE_FACTORY(SkinNotify);
 
 class StateNotify : public initquit, private replaygain_core_settings_notify {
     service_ptr m_output;
@@ -525,6 +548,15 @@ std::string Panel::status() const {
     return "running";
 }
 
+PanelInfo Panel::info() const {
+    PanelInfo out{ script_path(), status() };
+    if (m_engine) {
+        out.memoryBytes = m_engine->memory_used();
+        out.calls = m_engine->profile();
+    }
+    return out;
+}
+
 void Panel::set_script(const std::string& path) {
     m_path = path;
     if (m_onScriptChanged) m_onScriptChanged(m_path);
@@ -583,8 +615,8 @@ void Panel::mouse(Mouse kind, int x, int y, unsigned mask) {
     if (kind == Mouse::RightUp && !handled) context_menu(x, y);
 }
 
-void Panel::wheel(int step) {
-    if (m_engine) m_engine->wheel(step);
+void Panel::wheel(int step, bool horizontal) {
+    if (m_engine) m_engine->wheel(step, horizontal);
 }
 
 bool Panel::key_down(int vk) { return m_engine && m_engine->key_down(vk); }
@@ -858,6 +890,53 @@ void Panel::navidrome_artist_info(const std::string& name, ArtistInfoDone done) 
         auto info = std::make_shared<ArtistInfo>(std::move(sink.info));
         fb2k::inMainThread([abort, info, error, done = std::move(done)]() {
             if (!abort->is_aborting()) done(std::move(*info), error);
+        });
+    }).detach();
+}
+
+void Panel::navidrome_search(const std::string& query, SearchDone done) {
+    auto api = navidrome_api();
+    navidrome::navidrome_library_api_v4::ptr v4;
+    if (api.is_empty() || !api->service_query_t(v4)) {
+        done({}, api.is_empty() ? "foo_navidrome isn't installed" : "this foo_navidrome has no search; update it");
+        return;
+    }
+    auto abort = m_abort;
+    const std::string who = label(m_path);
+    std::thread([v4, abort, who, query, done = std::move(done)]() mutable {
+        struct Sink : navidrome::library_search_sink {
+            SearchResult result;
+            metadb_handle_list tracks;
+            void on_artist(const char* id, const char* name, const char* cover, int albums) override {
+                result.artists.push_back({ id ? id : "", name ? name : "", cover ? cover : "", albums, 0 });
+            }
+            void on_album(const char* id, const char* name, const char* artist, const char* artistId, const char* cover, int year,
+                          int songs, const char* created) override {
+                result.albums.push_back({ id ? id : "", name ? name : "", artist ? artist : "", artistId ? artistId : "", cover ? cover : "",
+                                          created ? created : "", year, songs });
+            }
+            void on_track(const metadb_handle_ptr& track) override { tracks.add_item(track); }
+        };
+        auto sink = std::make_shared<Sink>();
+        pfc::string8 err;
+        bool ok = false;
+        try {
+            ok = v4->search(query.c_str(), *sink, *abort, err);
+        } catch (const std::exception& e) {
+            err = e.what();
+        } catch (...) {
+            err = "the Navidrome search failed";
+        }
+        if (abort->is_aborting()) return;
+        const std::string error = ok ? std::string() : std::string(err.is_empty() ? "the Navidrome search failed" : err.c_str());
+        log::info("navidrome", "[" + who + "] search \"" + query + "\": " +
+                                   (ok ? std::to_string(sink->result.artists.size()) + " artists, " + std::to_string(sink->result.albums.size()) +
+                                             " albums, " + std::to_string(sink->tracks.get_count()) + " tracks"
+                                       : error));
+        fb2k::inMainThread([abort, sink, error, done = std::move(done)]() {
+            if (abort->is_aborting()) return;
+            sink->result.tracks = wrap_all(sink->tracks);
+            done(std::move(sink->result), error);
         });
     }).detach();
 }
@@ -1576,6 +1655,16 @@ void Panel::queue_add_playlist_item(int p, int item) {
 
 void Panel::queue_flush() { playlist_manager::get()->queue_flush(); }
 
+void Panel::queue_remove(const std::vector<int>& indices) {
+    auto pm = playlist_manager::get();
+    const size_t n = pm->queue_get_count();
+    pfc::bit_array_bittable mask(n);
+    bool any = false;
+    for (int i : indices)
+        if (i >= 0 && (size_t)i < n) mask.set((size_t)i, any = true);
+    if (any) pm->queue_remove_mask(mask);
+}
+
 int Panel::popup_menu(int x, int y, const Menu& menu) { return m_surface.popup_menu(x, y, menu); }
 
 MenuSourcePtr Panel::context_menu(ContextKind kind, const Tracks& tracks) {
@@ -1609,11 +1698,15 @@ bool Panel::input_box(const std::string& prompt, const std::string& caption, std
     return m_surface.input_box(prompt, caption, value);
 }
 
-Tracks Panel::queue_items() {
+std::vector<QueueItem> Panel::queue_items() {
     pfc::list_t<t_playback_queue_item> items;
     playlist_manager::get()->queue_get_contents(items);
-    Tracks out;
-    for (size_t i = 0; i < items.get_count(); ++i) out.push_back(wrap(items[i].m_handle));
+    std::vector<QueueItem> out;
+    for (size_t i = 0; i < items.get_count(); ++i) {
+        const auto& q = items[i];
+        const bool in_playlist = q.m_playlist != SIZE_MAX && q.m_item != SIZE_MAX;
+        out.push_back({ wrap(q.m_handle), in_playlist ? (int)q.m_playlist : -1, in_playlist ? (int)q.m_item : -1 });
+    }
     return out;
 }
 
@@ -1717,6 +1810,15 @@ void Panel::drop_locations(const std::vector<std::string>& paths, const DropActi
     for (const auto& p : paths) urls.add_item(p.c_str());
     playlist_incoming_item_filter_v2::get()->process_locations_async(urls, playlist_incoming_item_filter_v2::op_flag_delay_ui, nullptr,
                                                                      nullptr, nullptr, drop_notify(action));
+}
+
+void Panel::add_locations(int p, const std::vector<std::string>& paths, bool select) {
+    if (!valid(p)) return;
+    DropAction action;
+    action.playlist = p;
+    action.base = playlist_item_count(p);
+    action.toSelect = select;
+    drop_locations(paths, action);
 }
 
 int Panel::drag_tracks(const Tracks& tracks, int effects) {

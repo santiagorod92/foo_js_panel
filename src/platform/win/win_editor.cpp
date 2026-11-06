@@ -1,6 +1,11 @@
 #include "win_editor.h"
 #include "../../core/js_engine.h"
+#include "../../core/js_highlight.h"
+#include <richedit.h>
+#include <richole.h>
+#include <tom.h>
 #include <algorithm>
+#include <cstring>
 #include <memory>
 
 namespace jsp::win {
@@ -8,7 +13,7 @@ namespace jsp::win {
 namespace {
 
 enum { IDC_CODE = 100, IDC_STATUS, IDC_REVERT, IDC_APPLY, IDC_OK, IDC_CANCEL, IDC_GUTTER };
-enum { kTimerCheck = 1 };
+enum { kTimerCheck = 1, kTimerHighlight };
 constexpr wchar_t kClass[] = L"foo_js_panel_editor";
 constexpr char kKeys[] = "   ·   Ctrl+S: apply   Ctrl+Enter: apply and close   F8: go to the error   Esc: close";
 
@@ -25,13 +30,12 @@ std::wstring to_crlf(const std::wstring& s) {
     return out;
 }
 
-std::string from_crlf(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (char c : s)
-        if (c != '\r') out += c;
-    return out;
+std::string from_cr(std::string s) {
+    std::replace(s.begin(), s.end(), '\r', '\n');
+    return s;
 }
+
+constexpr COLORREF kTokenColours[] = { RGB(0, 0, 255), RGB(128, 0, 160), RGB(163, 21, 21), RGB(9, 134, 88), RGB(0, 128, 0), RGB(170, 85, 0) };
 
 struct State {
     EditorHooks hooks;
@@ -42,19 +46,72 @@ struct State {
     HFONT ui = nullptr;
     WNDPROC editProc = nullptr;
     int lineHeight = 16;
+    ITextDocument* doc = nullptr;
+    std::vector<Token> tokens;
 };
 
 State* state(HWND wnd) { return reinterpret_cast<State*>(GetWindowLongPtrW(wnd, GWLP_USERDATA)); }
 
 std::wstring edit_text(HWND ed) {
-    const int n = GetWindowTextLengthW(ed);
-    std::wstring w((size_t)n + 1, L'\0');
-    GetWindowTextW(ed, &w[0], n + 1);
-    w.resize((size_t)n);
+    GETTEXTLENGTHEX len{ GTL_NUMCHARS | GTL_PRECISE, 1200 };
+    const LRESULT n = SendMessageW(ed, EM_GETTEXTLENGTHEX, (WPARAM)&len, 0);
+    std::wstring w((size_t)std::max<LRESULT>(n, 0) + 1, L'\0');
+    GETTEXTEX get{ (DWORD)(w.size() * sizeof(wchar_t)), GT_DEFAULT, 1200, nullptr, nullptr };
+    w.resize((size_t)SendMessageW(ed, EM_GETTEXTEX, (WPARAM)&get, (LPARAM)w.data()));
     return w;
 }
 
-std::string source(HWND wnd) { return from_crlf(narrow(edit_text(GetDlgItem(wnd, IDC_CODE)))); }
+std::string source(HWND wnd) { return from_cr(narrow(edit_text(GetDlgItem(wnd, IDC_CODE)))); }
+
+int line_top(HWND ed, int line) {
+    POINTL p{};
+    SendMessageW(ed, EM_POSFROMCHAR, (WPARAM)&p, SendMessageW(ed, EM_LINEINDEX, (WPARAM)line, 0));
+    return (int)p.y;
+}
+
+void paint_tokens(HWND wnd) {
+    State* st = state(wnd);
+    if (!st || !st->doc) return;
+    HWND ed = GetDlgItem(wnd, IDC_CODE);
+    RECT client{};
+    GetClientRect(ed, &client);
+    POINTL bottom{ client.right, client.bottom };
+    const int first = std::max(0, (int)SendMessageW(ed, EM_GETFIRSTVISIBLELINE, 0, 0) - 40);
+    const LRESULT lastChar = SendMessageW(ed, EM_CHARFROMPOS, 0, (LPARAM)&bottom);
+    const int last = (int)SendMessageW(ed, EM_EXLINEFROMCHAR, 0, lastChar) + 40;
+    const long from = (long)SendMessageW(ed, EM_LINEINDEX, (WPARAM)first, 0);
+    long to = (long)SendMessageW(ed, EM_LINEINDEX, (WPARAM)last, 0);
+    if (to < 0) to = tomForward;
+    long freeze = 0;
+    st->doc->Undo(tomSuspend, nullptr);
+    st->doc->Freeze(&freeze);
+    ITextRange* range = nullptr;
+    auto colour = [&](long a, long b, COLORREF c) {
+        if (FAILED(st->doc->Range(a, b, &range)) || !range) return;
+        ITextFont* font = nullptr;
+        if (SUCCEEDED(range->GetFont(&font)) && font) {
+            font->SetForeColor((long)c);
+            font->Release();
+        }
+        range->Release();
+        range = nullptr;
+    };
+    colour(from, to, GetSysColor(COLOR_WINDOWTEXT));
+    for (const Token& t : st->tokens) {
+        const long a = (long)t.start, b = (long)(t.start + t.length);
+        if (b < from || (to != tomForward && a > to)) continue;
+        colour(a, b, kTokenColours[(int)t.kind]);
+    }
+    st->doc->Unfreeze(&freeze);
+    st->doc->Undo(tomResume, nullptr);
+}
+
+void highlight(HWND wnd) {
+    State* st = state(wnd);
+    if (!st || !st->doc) return;
+    st->tokens = highlight_js(source(wnd));
+    paint_tokens(wnd);
+}
 
 void update_status(HWND wnd) {
     State* st = state(wnd);
@@ -63,7 +120,7 @@ void update_status(HWND wnd) {
     DWORD selStart = 0;
     SendMessageW(ed, EM_GETSEL, (WPARAM)&selStart, 0);
     const std::wstring w = edit_text(ed);
-    const std::string before = from_crlf(narrow(w.substr(0, std::min<size_t>(selStart, w.size()))));
+    const std::string before = from_cr(narrow(w.substr(0, std::min<size_t>(selStart, w.size()))));
     const std::string text = editor_status(text_pos(before, before.size()), st->syntax, st->applied) + kKeys;
     SetWindowTextW(GetDlgItem(wnd, IDC_STATUS), widen(text).c_str());
 }
@@ -72,7 +129,9 @@ void layout(HWND wnd);
 
 void recheck(HWND wnd) {
     State* st = state(wnd);
-    if (!st || !st->hooks.check) return;
+    if (!st) return;
+    highlight(wnd);
+    if (!st->hooks.check) return;
     st->syntax = st->hooks.check(source(wnd));
     update_status(wnd);
     layout(wnd);
@@ -130,16 +189,12 @@ void draw_gutter(HWND wnd, const DRAWITEMSTRUCT& di) {
     const int first = (int)SendMessageW(ed, EM_GETFIRSTVISIBLELINE, 0, 0);
     const int count = (int)SendMessageW(ed, EM_GETLINECOUNT, 0, 0);
     const int error = st->syntax.empty() ? 0 : error_line(st->syntax, "");
-    RECT client{};
-    GetClientRect(ed, &client);
     POINT origin{ 0, 0 };
-    const LRESULT pos = SendMessageW(ed, EM_POSFROMCHAR, (WPARAM)SendMessageW(ed, EM_LINEINDEX, (WPARAM)first, 0), 0);
-    const int top = pos >= 0 ? (short)HIWORD(pos) : 0;
     MapWindowPoints(ed, di.hwndItem, &origin, 1);
     HGDIOBJ old = SelectObject(di.hDC, st->code);
     SetBkMode(di.hDC, TRANSPARENT);
     for (int line = first; line < count; ++line) {
-        const int y = origin.y + top + (line - first) * st->lineHeight;
+        const int y = origin.y + line_top(ed, line);
         if (y > di.rcItem.bottom) break;
         RECT r{ 0, y, di.rcItem.right - 6, y + st->lineHeight };
         SetTextColor(di.hDC, line + 1 == error ? RGB(200, 30, 30) : GetSysColor(COLOR_GRAYTEXT));
@@ -174,10 +229,19 @@ LRESULT CALLBACK code_proc(HWND ed, UINT msg, WPARAM wp, LPARAM lp) {
         if (ctrl && wp == 'S') { apply(wnd); return 0; }
         if (ctrl && wp == VK_RETURN) { if (apply(wnd)) DestroyWindow(wnd); return 0; }
         if (ctrl && wp == 'A') { SendMessageW(ed, EM_SETSEL, 0, -1); return 0; }
+        if ((ctrl && wp == 'V') || (GetKeyState(VK_SHIFT) < 0 && wp == VK_INSERT)) {
+            SendMessageW(ed, EM_PASTESPECIAL, CF_UNICODETEXT, 0);
+            return 0;
+        }
+        if (ctrl && (std::strchr("BEIJLRU125", (int)wp) || wp == VK_OEM_COMMA || wp == VK_OEM_PERIOD)) return 0;
         if (wp == VK_ESCAPE) { DestroyWindow(wnd); return 0; }
         if (wp == VK_F8) { goto_error(wnd); return 0; }
     }
     if (msg == WM_CHAR && GetKeyState(VK_CONTROL) < 0 && (wp == 0x13 || wp == 0x01 || wp == '\n')) return 0;
+    if (msg == WM_PASTE) {
+        SendMessageW(ed, EM_PASTESPECIAL, CF_UNICODETEXT, 0);
+        return 0;
+    }
     const LRESULT r = CallWindowProcW(st ? st->editProc : DefWindowProcW, ed, msg, wp, lp);
     if (msg == WM_KEYUP || msg == WM_LBUTTONUP) update_status(wnd);
     if (msg == WM_VSCROLL || msg == WM_MOUSEWHEEL || msg == WM_KEYDOWN || msg == WM_CHAR || msg == WM_LBUTTONUP || msg == WM_MOUSEMOVE)
@@ -205,12 +269,19 @@ LRESULT CALLBACK proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         NONCLIENTMETRICSW ncm{ sizeof ncm };
         SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof ncm, &ncm, 0);
         st->ui = CreateFontIndirectW(&ncm.lfMessageFont);
-        HWND ed = child(wnd, L"EDIT", L"", WS_BORDER | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_AUTOVSCROLL |
-                                               ES_AUTOHSCROLL | ES_WANTRETURN | ES_NOHIDESEL, IDC_CODE, st->code);
-        SendMessageW(ed, EM_SETLIMITTEXT, 0x7FFFFFFE, 0);
+        HWND ed = child(wnd, MSFTEDIT_CLASS, L"", WS_BORDER | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_AUTOVSCROLL |
+                                                      ES_AUTOHSCROLL | ES_WANTRETURN | ES_NOHIDESEL, IDC_CODE, st->code);
+        SendMessageW(ed, EM_EXLIMITTEXT, 0, 0x7FFFFFFE);
         const int tabStops = 16;
         SendMessageW(ed, EM_SETTABSTOPS, 1, (LPARAM)&tabStops);
         SetWindowTextW(ed, st->original.c_str());
+        SendMessageW(ed, EM_EMPTYUNDOBUFFER, 0, 0);
+        SendMessageW(ed, EM_SETEVENTMASK, 0, ENM_CHANGE | ENM_SCROLL | ENM_UPDATE);
+        IRichEditOle* ole = nullptr;
+        if (SendMessageW(ed, EM_GETOLEINTERFACE, 0, (LPARAM)&ole) && ole) {
+            ole->QueryInterface(__uuidof(ITextDocument), (void**)&st->doc);
+            ole->Release();
+        }
         st->editProc = (WNDPROC)SetWindowLongPtrW(ed, GWLP_WNDPROC, (LONG_PTR)code_proc);
         child(wnd, L"STATIC", L"", SS_OWNERDRAW, IDC_GUTTER, st->code);
         child(wnd, L"STATIC", L"", SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS, IDC_STATUS, st->ui);
@@ -237,6 +308,9 @@ LRESULT CALLBACK proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == kTimerCheck) {
             KillTimer(wnd, kTimerCheck);
             recheck(wnd);
+        } else if (wp == kTimerHighlight) {
+            KillTimer(wnd, kTimerHighlight);
+            paint_tokens(wnd);
         }
         return 0;
     case WM_COMMAND: {
@@ -248,6 +322,7 @@ LRESULT CALLBACK proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         if (id == IDC_CODE && (HIWORD(wp) == EN_VSCROLL || HIWORD(wp) == EN_UPDATE)) {
             InvalidateRect(GetDlgItem(wnd, IDC_GUTTER), nullptr, FALSE);
+            if (HIWORD(wp) == EN_VSCROLL) SetTimer(wnd, kTimerHighlight, 120, nullptr);
             return 0;
         }
         if (id == IDC_APPLY || id == IDC_OK) {
@@ -270,6 +345,7 @@ LRESULT CALLBACK proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_NCDESTROY:
         if (st) {
+            if (st->doc) st->doc->Release();
             if (st->code) DeleteObject(st->code);
             if (st->ui) DeleteObject(st->ui);
             delete st;
@@ -289,6 +365,8 @@ HWND open_editor(HWND existing, const std::string& title, const std::string& tex
         return existing;
     }
     static bool registered = false;
+    static const HMODULE richedit = LoadLibraryW(L"Msftedit.dll");
+    if (!richedit) return nullptr;
     if (!registered) {
         WNDCLASSW wc{};
         wc.lpfnWndProc = proc;

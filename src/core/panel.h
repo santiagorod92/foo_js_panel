@@ -53,6 +53,7 @@ public:
 
     const std::string& script_path() const { return m_path; }
     std::string status() const;
+    PanelInfo info() const;
     void set_script(const std::string& path);
     void reload();
     void edit_script() override;
@@ -64,7 +65,7 @@ public:
     void paint(pui::gfx::Canvas& canvas);
     void resize(int w, int h);
     void mouse(Mouse kind, int x, int y, unsigned mask);
-    void wheel(int step);
+    void wheel(int step, bool horizontal = false);
     bool key_down(int vk);
     bool key_up(int vk);
     void char_input(unsigned codepoint);
@@ -76,6 +77,7 @@ public:
 
     static std::vector<Panel*>& live();
     static void broadcast(const char* name, const std::vector<Arg>& args = {});
+    static void skin_message(const std::string& name, const std::string& text);
     void post(const char* name, std::vector<Arg> args = {});
 
     void repaint() override;
@@ -95,6 +97,7 @@ public:
     void navidrome_albums(AlbumsDone done) override;
     void navidrome_play(bool artist, const std::string& id, bool replace, bool play) override;
     void navidrome_artist_info(const std::string& name, ArtistInfoDone done) override;
+    void navidrome_search(const std::string& query, SearchDone done) override;
     TrackPtr now_playing() override;
     Tracks library_items() override;
     std::string track_path(const TrackPtr& t) override;
@@ -110,6 +113,7 @@ public:
     int find_or_create_playlist(const std::string& name, bool unlocked) override;
     void clear_playlist(int p) override;
     void insert_playlist_items(int p, int base, const Tracks& tracks, bool select) override;
+    void add_locations(int p, const std::vector<std::string>& paths, bool select) override;
     void execute_default_action(int p, int item) override;
     bool key_pressed(int vk) override;
 
@@ -166,7 +170,8 @@ public:
     void queue_add(const TrackPtr& t) override;
     void queue_add_playlist_item(int p, int item) override;
     void queue_flush() override;
-    Tracks queue_items() override;
+    void queue_remove(const std::vector<int>& indices) override;
+    std::vector<QueueItem> queue_items() override;
     int popup_menu(int x, int y, const Menu& menu) override;
     MenuSourcePtr context_menu(ContextKind kind, const Tracks& tracks) override;
     MenuSourcePtr main_menu(const std::string& root) override;

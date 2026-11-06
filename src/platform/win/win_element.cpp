@@ -389,6 +389,9 @@ private:
             }
             if (m_panel) m_panel->mouse(Mouse::LeftDouble, x, y, mask);
             return 0;
+        case WM_RBUTTONDBLCLK:
+            if (m_panel) m_panel->mouse(Mouse::RightDouble, x, y, mask);
+            return 0;
         case WM_RBUTTONDOWN:
             SetFocus(hwnd);
             if (m_panel) m_panel->mouse(Mouse::RightDown, x, y, mask);
@@ -445,6 +448,9 @@ private:
             break;
         case WM_MOUSEWHEEL:
             if (m_panel) m_panel->wheel(GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA);
+            return 0;
+        case WM_MOUSEHWHEEL:
+            if (m_panel) m_panel->wheel(GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA, true);
             return 0;
         default:
             break;

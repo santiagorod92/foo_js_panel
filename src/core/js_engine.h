@@ -1,4 +1,5 @@
 #pragma once
+#include "diagnostics.h"
 #include "gfx/canvas.h"
 #include <functional>
 #include <memory>
@@ -17,7 +18,7 @@ struct LibraryAlbum {
 };
 
 struct LibraryArtist {
-    std::string id, name;
+    std::string id, name, coverArtId;
     int albumCount = 0, songCount = 0;
 };
 
@@ -31,7 +32,18 @@ struct Track {
 };
 using TrackPtr = std::shared_ptr<Track>;
 using Tracks = std::vector<TrackPtr>;
+struct QueueItem {
+    TrackPtr track;
+    int playlist = -1, item = -1;
+};
 using ArtDone = std::function<void(pui::gfx::ImagePtr image, std::string path)>;
+
+struct SearchResult {
+    std::vector<LibraryArtist> artists;
+    std::vector<LibraryAlbum> albums;
+    Tracks tracks;
+};
+using SearchDone = std::function<void(SearchResult result, std::string error)>;
 
 struct TrackInfo {
     std::vector<std::pair<std::string, std::vector<std::string>>> meta;
@@ -122,6 +134,7 @@ public:
     virtual void navidrome_albums(AlbumsDone done) { done({}, "foo_navidrome isn't installed"); }
     virtual void navidrome_play(bool, const std::string&, bool, bool) {}
     virtual void navidrome_artist_info(const std::string&, ArtistInfoDone done) { done({}, "foo_navidrome isn't installed"); }
+    virtual void navidrome_search(const std::string&, SearchDone done) { done({}, "foo_navidrome isn't installed"); }
     virtual TrackPtr now_playing() { return nullptr; }
     virtual Tracks library_items() { return {}; }
     virtual std::string track_path(const TrackPtr&) { return {}; }
@@ -139,6 +152,7 @@ public:
     virtual int find_or_create_playlist(const std::string&, bool) { return -1; }
     virtual void clear_playlist(int) {}
     virtual void insert_playlist_items(int, int, const Tracks&, bool) {}
+    virtual void add_locations(int, const std::vector<std::string>&, bool) {}
     virtual void execute_default_action(int, int) {}
     virtual bool key_pressed(int) { return false; }
 
@@ -203,7 +217,8 @@ public:
     virtual void queue_add(const TrackPtr&) {}
     virtual void queue_add_playlist_item(int, int) {}
     virtual void queue_flush() {}
-    virtual Tracks queue_items() { return {}; }
+    virtual void queue_remove(const std::vector<int>&) {}
+    virtual std::vector<QueueItem> queue_items() { return {}; }
 
     virtual int popup_menu(int, int, const Menu&) { return 0; }
     virtual MenuSourcePtr context_menu(ContextKind, const Tracks&) { return nullptr; }
@@ -270,7 +285,7 @@ public:
 
 using Arg = std::variant<int, double, bool, std::string, TrackPtr, Tracks>;
 
-enum class Mouse { Move, LeftDown, LeftUp, LeftDouble, RightDown, RightUp, Leave, MiddleDown, MiddleUp, MiddleDouble };
+enum class Mouse { Move, LeftDown, LeftUp, LeftDouble, RightDown, RightUp, Leave, MiddleDown, MiddleUp, MiddleDouble, RightDouble };
 
 class JsEngine {
 public:
@@ -289,7 +304,7 @@ public:
     void paint(pui::gfx::Canvas& canvas);
     void resize(int w, int h);
     bool mouse(Mouse kind, int x, int y, unsigned mask);
-    void wheel(int step);
+    void wheel(int step, bool horizontal = false);
     void drag(Drag kind, int x, int y, unsigned mask, DropAction& action);
     bool key_down(int vk);
     void timer(int id);
@@ -303,7 +318,10 @@ public:
     bool invoke(const char* name, const std::vector<Arg>& args = {});
     bool in_modal() const;
     const std::vector<std::string>& source_files() const;
+    std::vector<CallTiming> profile() const;
+    size_t memory_used() const;
     void notify_data(const std::string& name, const std::string& json, const std::vector<JsHost::NotifyItem>& items = {});
+    void skin_message(const std::string& name, const std::string& text);
 
     struct Impl;
 

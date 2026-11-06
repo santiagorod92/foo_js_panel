@@ -4,9 +4,17 @@
 
 namespace jsp {
 
+struct CallTiming {
+    std::string name;
+    long long calls = 0;
+    double totalMs = 0, maxMs = 0;
+};
+
 struct PanelInfo {
     std::string script;
     std::string status;
+    size_t memoryBytes = 0;
+    std::vector<CallTiming> calls = {};
 };
 
 struct DiagnosticsInfo {

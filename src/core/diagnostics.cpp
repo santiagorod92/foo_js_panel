@@ -1,5 +1,7 @@
 #include "diagnostics.h"
+#include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <string>
 
 namespace jsp {
@@ -19,6 +21,12 @@ const char* build_arch() {
 }
 
 namespace {
+
+std::string fixed(double v, int decimals) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%.*f", decimals, v);
+    return buf;
+}
 
 std::string lower(std::string s) {
     for (char& c : s) c = (char)std::tolower((unsigned char)c);
@@ -79,9 +87,17 @@ std::string build_diagnostics(const DiagnosticsInfo& d) {
 
     if (!d.panels.empty()) {
         out += "\n<details><summary>Panels (" + std::to_string(d.panels.size()) + ")</summary>\n\n";
-        for (const auto& p : d.panels)
-            out += "- " + (p.script.empty() ? std::string("(built-in sample)") : clean(p.script)) + ": " +
-                   clean(p.status) + "\n";
+        for (const auto& p : d.panels) {
+            out += "- " + (p.script.empty() ? std::string("(built-in sample)") : clean(p.script)) + ": " + clean(p.status);
+            if (p.memoryBytes) out += ", " + fixed(p.memoryBytes / 1048576.0, 1) + " MB";
+            out += "\n";
+            const size_t shown = std::min<size_t>(p.calls.size(), 5);
+            for (size_t i = 0; i < shown; ++i) {
+                const auto& c = p.calls[i];
+                out += "  - " + c.name + ": " + std::to_string(c.calls) + " calls, " + fixed(c.totalMs, 1) + " ms total, " +
+                       fixed(c.totalMs / (double)c.calls, 2) + " ms avg, " + fixed(c.maxMs, 1) + " ms max\n";
+            }
+        }
         out += "\n</details>\n";
     }
 

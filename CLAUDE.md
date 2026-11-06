@@ -15,7 +15,8 @@ x86 DLL at the zip root.
   `src/core` without Windows headers.
 - **Every change is verified on both platforms before it ships:** (1) `make test` +
   `make check-portable`, new API covered by a test in `tests/test_js_engine.cpp`; (2) `make
-  build-all`; (3) runtime: `make mac-smoke` (this Mac's foobar2000) and `make win11-arm-smoke
+  build-all`; (3) runtime: `make mac-vm-smoke` (the terminal-mac VM; `make mac-smoke` = this Mac's own
+  foobar2000) and `make win11-arm-smoke
   ARCH=arm64ec|x64|x86` (Windows 11 ARM VM), or Wine (`make run`) on Linux. Exercise the changed
   API from a script, not just "it loads". Anything that couldn't be checked goes in the PR.
 
@@ -52,6 +53,10 @@ anything repo-specific stays in the repo's own sections.
   `js_panel_api.h` contract (foo_js_panel's original, vendored byte-identical in foo_ui_panels):
   Windows = the element's `ui_element_config` data (UTF-8 path), macOS = the `instantiate()`
   dictionary key `script`. The wizard's `albums-js` layout needs it.
+- **Skin → script:** the same header carries `js_panel_notify_api`, published by JS Panel: Panels
+  UI calls `notify(name, info)` for a `JSPANEL:<name>[:<info>]` action and
+  `variable_changed(name, value)` from `save_pvars` for each changed skin variable (not the `_`
+  ones); JS Panel hands them to every panel as `on_notify_data` / `on_panelsui_variable_changed`.
 - **Changing a contract:** a change to a contract header (GUID, vtable order, sink signatures)
   lands in both repos in the same round, and the vendored copy stays byte-identical to the
   original. A new interface also gets a bullet in foo_navidrome's cross-compatibility list.
@@ -149,6 +154,18 @@ anything repo-specific stays in the repo's own sections.
 - **macOS VM:** `../macos-devbox` (`mvm`, dockur/macos, Intel guest). **Windows 11 VM:**
   `../windows-devbox` (`wvm`, dockur/windows), for Dark Mode, DPI and native theming that Wine
   fakes. Never `docker prune`/`rm`/`rmi`.
+- **macOS VM on a Mac (terminal-mac):** foo_navidrome's `scripts/terminal-mac.sh` over
+  github.com/govijr/terminal-mac (VM `default`, latest macOS, user `dev`). Files, config and
+  logs go over ssh (Remote Login on in the guest, key put there by `provision`); screenshots
+  and input go through terminal-mac's guest helper, in screen points. It has `mvm`'s commands, so
+  on a Mac `MVM` and `ui-test.sh mac` (foo_ui_panels, foo_navidrome) and foo_js_panel's
+  `ui-test.sh mac-vm` use it, and this Mac's own foobar2000 and desktop stay untouched.
+  `provision` also makes Panels UI the UI module and puts two silent tracks in the default
+  playlist; `seed` copies foo_navidrome's settings. Its drag is one atomic action, too quick for
+  an `NSDraggingSession`. "No guest display is available" = the guest's display slept, which
+  also locks the session: `provision` sets `pmset displaysleep 0 sleep 0` so it doesn't, and a
+  locked session is unlocked by hand from `terminal-mac open`/`view`. Its menu bar ignores a
+  click right after foobar2000 launches, so the mac drivers wait for `lsappinfo front` and retry.
 - **Windows 11 ARM VM (Apple Silicon Mac):** foo_navidrome's `scripts/win11-arm.sh` (QEMU +
   HVF, launchd jobs). Every repo drives it with the same `make win11-arm*` targets; foo_ui_panels
   and foo_js_panel point at `../foo_navidrome/scripts/win11-arm.sh` (`WIN11_ARM=`). `deploy <dll>` installs into
@@ -163,7 +180,7 @@ anything repo-specific stays in the repo's own sections.
   seeds its profile from the ARM one). `fb2k stop` closes whichever build is running.
 - **UI tests:** every repo drives the real foobar2000 with one script,
   `scripts/ui-test.sh <platform> <scenario>` (foo_ui_panels and foo_navidrome: `wine|win11|mac`;
-  foo_js_panel so far: `mac` = this Mac's foobar2000, `win11-arm`): each scenario is written once over a small
+  foo_js_panel so far: `mac` = this Mac's foobar2000, `mac-vm`, `win11-arm`): each scenario is written once over a small
   per-platform driver and asserts on the component log, the process and crash reports.
   `ui-test.sh compare <scenario> [platforms]` prints a step matrix that marks where platforms
   differ (`PARALLEL=1` runs them at once; one test agent per platform works the same way).
@@ -239,7 +256,9 @@ anything repo-specific stays in the repo's own sections.
   async); `WScript.Shell.Run` is `ui::shell_run` (`ShellExecuteW` / `NSWorkspace`; Windows-only
   commands do nothing on macOS), except `cscript` of a download VBS (XMLHTTP + `SaveToFile`), which
   becomes `__jsp.download`. `htmlfile` is a small DOM: elements keep offsets into the parsed
-  source, so `innerHTML` is the original markup, not a re-serialisation. `SetPseudoCaption` is a
+  source, so `innerHTML` is the original markup, not a re-serialisation, except that numeric character
+  references are decoded as IE's serialiser does (not `&<>"` or NBSP): Eole's Biography reads
+  last.fm's `innerHTML` and only decodes `&#39;`, while last.fm now writes `&#x27;`. `SetPseudoCaption` is a
   rect in main-window client coordinates; a left-down there drags the window
   (`WM_NCLBUTTONDOWN HTCAPTION` / `performWindowDragWithEvent`) instead of reaching the script.
   Unknown ProgIDs throw, as in JScript.
@@ -269,7 +288,7 @@ anything repo-specific stays in the repo's own sections.
 - **Windows paths in scripts:** `fix_path` turns `\` into `/` off Windows for `include`,
   `gdi.Image` and the `utils` file functions (themes build paths as `fb.ProfilePath + 'a\\b.js'`).
 - **Edit script:** `Surface::open_editor` (one editor window per panel, closed with it; Windows
-  `win_editor.cpp` = plain `EDIT` control, macOS `NSTextView` in `mac_element.mm`). Applying writes
+  `win_editor.cpp` = RichEdit (see Editor colours), macOS `NSTextView` in `mac_element.mm`). Applying writes
   the file and reloads; the built-in sample is saved as `<profile>/foo_js_panel/script[-N].js`.
   The syntax check is `check_syntax()` (QuickJS compile-only, own small runtime).
 - **foo_navidrome:** `navidrome` script object over the vendored `navidrome_library_api.h`
@@ -331,13 +350,30 @@ anything repo-specific stays in the repo's own sections.
   pvar through `panelsui`. Panels UI defers `SKIN:`/`WIZARD:`/`MENU` actions asked through the
   contract, so a script that switches skin is never destroyed inside its own callback.
 - **Hot reload:** the engine records every file it evaluates (`source_files()`: the script, its
-  `include()`s, its `@import`s); `Panel::watch_files` stamps their mtimes after each load and polls them
+  `include()`s, its `@import`s, its ES `import`s); `Panel::watch_files` stamps their mtimes after each load and polls them
   on a `Surface` timer with an id no JS timer reaches (`kWatchTimer`), reloading on a change unless a
   modal call is running. Off with the *Reload scripts when their files change* toggle.
+- **ES modules:** a script is a module when a line starts with an `import`/`export` statement
+  (`is_module_source`; QuickJS-ng's `JS_DetectModule` says yes to almost any script that also parses as
+  a module, so it isn't used). `module_normalize` resolves relative to the importing file, `module_load`
+  reads through the host and records the file for hot reload; the module's exports are copied onto the
+  global object so `export function on_*` are callbacks. QuickJS-ng resolves imports already at
+  compile time, so `check_syntax` ignores "could not load module".
+- **`fetch`:** JS in `kPrelude` over `native.httpAsync` (the XMLHTTP stand-in's path); the host gives no
+  response headers, so `Response.headers` is empty.
+- **Profiling:** `Impl::Timed` wraps every `call()` and timer (keyed by callback name, timers as
+  `timers`), minus `modalUs` (time inside `Impl::modal`); `Panel::info()` hands it with the memory to
+  Copy Diagnostics (top five per panel).
+- **Editor colours:** `highlight_js` (`js_highlight.cpp`, SDK-free, tested) returns spans in UTF-16
+  units. macOS paints them as `NSLayoutManager` temporary attributes (not in the undo stack); Windows'
+  editor is RichEdit (`Msftedit.dll`) and paints through TOM `ITextDocument` with `tomSuspend` around
+  it, only the visible lines ±40 (repainted on scroll), so big themes stay fast. RichEdit counts a line
+  break as one character (CR), so the text is read with `EM_GETTEXTEX GT_DEFAULT` and CR → LF;
+  Ctrl+V pastes plain text and its formatting shortcuts are swallowed.
 - **Hardening:** 5 s budget per call (interrupt handler), 512 MB runtime memory, 1 MB stack. A
   script error stops the script (timers killed) and the panel paints the error + stack, like SMP.
-- Panels UI bridge (variables/actions/notify) and drawing onto the Panels UI canvas are planned
-  contracts; they follow the `service_base` contract pattern in Shared conventions.
+- Drawing onto the Panels UI canvas is a planned contract; it follows the `service_base` contract
+  pattern in Shared conventions (the variables/actions/notify bridge is done, see Hosting).
 
 ## Release publishing
 - `release.yml`'s `notify-n8n` posts each release to the n8n workflow
@@ -358,6 +394,10 @@ anything repo-specific stays in the repo's own sections.
 - **This file is for stable rules/decisions only**, no session logs.
 - Never commit build outputs or third-party themes (Eole etc.): test against them locally, never
   redistribute.
+- **README screenshots** live in `docs/screenshots/`, cropped (`sips`) from the UI tests'
+  captures in `build/ui-test/` to the foobar2000 or editor window: never a server name or the
+  guest's desktop widgets, and album art or artist photos only in the Eole demo (the owner's
+  choice; the VM's library is their Navidrome server).
 
 ## Code map
 - `src/core/js_engine.{h,cpp}` — `JsEngine` (pimpl over QuickJS): globals `window`, `fb`, `gdi`,
@@ -401,6 +441,7 @@ anything repo-specific stays in the repo's own sections.
   the panel's abort and the engine's `alive` token. The library tree starts from
   `fb.GetLibraryItems()` and rebuilds on the library callbacks (the library is still loading
   when a panel starts with foobar2000).
+- `src/core/js_highlight.{h,cpp}` — the editors' JS tokenizer (UTF-16 spans), tested in `tests/test_js_highlight.cpp`.
 - `src/core/theme_patches.{h,cpp}` — Eole's in-memory patches, applied by `include()` and `JsEngine::load`.
 - `tools/fcl_extract.py` + `scripts/theme-check.sh` (`make theme-check`) — pull every Spider
   Monkey Panel panel (SMP 1.x binary config: version, GUID, edge style, properties, window
@@ -430,6 +471,10 @@ anything repo-specific stays in the repo's own sections.
   `build/mac-local-backup/` and `--restore` puts it back: the user's own installs (e.g. a
   release Panels UI from the component updater) must survive a test run. Needs Panels UI as the
   mac UI module.
+- `make mac-vm-smoke` / `mac-vm-jsp3` / `mac-vm-reload`: the same scenarios in the terminal-mac VM
+  (`ui-test.sh mac-vm`): `scripts/`, `tests/` and both bundles go to `~/jsp-test` in the guest and
+  `mac-local.sh` runs there over ssh, so the restore logic is the same code. No `dragdrop` (see
+  Test environments) and no `import` (no Eole in the guest).
 - `make win11-arm-smoke ARCH=…`: same in the Windows 11 ARM VM (config via `win11-arm.sh cfg`,
   x86 in `C:\fb2k-x86`), screenshot in `build/ui-test/`.
 - Panels UI only saves a window capture (`foo_ui_panels-previews/`) 60 s after a skin loads when

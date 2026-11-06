@@ -3,6 +3,35 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.4.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.3.0...v1.4.0) (2026-11-06)
+
+### Highlights
+- **Syntax colours in the editor**, on both platforms: keywords, strings, numbers, comments and
+  regular expressions, next to the line numbers and the live syntax check. Pasting always pastes
+  plain text.
+- **Modern JavaScript where you want it**: `fetch()` (with `Response` and `Headers`), and ES
+  modules: a script with `import`/`export` runs as a module, imports resolve next to the file that
+  imports them and reload with it, and `export function on_paint(gr) {…}` is a callback.
+- **Skins talk to scripts**: with Panels UI 1.21, a skin button's `JSPANEL:<name>[:<info>]`
+  action reaches every panel as `on_notify_data(name, info)`, and every skin variable change as
+  `on_panelsui_variable_changed(name, value)`.
+- **Search your Navidrome server**: `navidrome.SearchAsync(query)` → `{ Artists, Albums, Tracks }`
+  (foo_navidrome 1.40 or later).
+
+### Added
+- **More of Spider Monkey Panel 1.6**: the playback queue (`plman.GetPlaybackQueueContents`,
+  `FindPlaybackQueueItemIndex`, `RemoveItemFromPlaybackQueue`, `RemoveItemsFromPlaybackQueue`,
+  `on_playback_queue_changed`), `plman.AddLocations`, `on_mouse_wheel_h` (also a sideways
+  trackpad swipe on macOS), `on_mouse_rbtn_dblclk`, `utils.ReadINI` / `WriteINI`, and packages
+  (`utils.GetPackageInfo`, `GetPackagePath`, `window.ScriptInfo.PackageId`).
+- **Copy diagnostics** lists each panel's memory and its five most expensive callbacks.
+- Screenshots in the README, Eole's views among them.
+
+### Fixed
+- Eole's Biography showed `&#x27;` instead of apostrophes in last.fm biographies: the `htmlfile`
+  stand-in now decodes character references in `innerHTML` as Internet Explorer did, and
+  `outerHTML` includes the closing tag.
+
 ## [1.3.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.2.0...v1.3.0) (2026-11-05)
 
 ### Highlights

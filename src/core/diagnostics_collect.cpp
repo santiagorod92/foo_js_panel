@@ -96,7 +96,7 @@ std::string collect_diagnostics() {
     d.arch = build_arch();
     d.wineVersion = ui::wine_version();
     d.home = ui::home_dir();
-    for (Panel* p : Panel::live()) d.panels.push_back({ p->script_path(), p->status() });
+    for (Panel* p : Panel::live()) d.panels.push_back(p->info());
     d.verboseLogging = verbose_logging();
     d.components = installed_components();
     d.panelsUi = component_installed("foo_ui_panels");

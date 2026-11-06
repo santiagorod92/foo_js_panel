@@ -2,6 +2,7 @@
 #include "../../fb2k.h"
 #include "platform/mac/mac_canvas.h"
 #include "../../core/js_api_util.h"
+#include "../../core/js_highlight.h"
 #include "../../core/js_panel_api.h"
 #include "../../core/log.h"
 #include "../../core/panel.h"
@@ -322,7 +323,19 @@ unsigned key_mask(NSEventModifierFlags f) {
     _status.stringValue = ns(s);
 }
 
+- (void)highlight {
+    NSLayoutManager* lm = _text.layoutManager;
+    const NSUInteger length = _text.string.length;
+    [lm removeTemporaryAttribute:NSForegroundColorAttributeName forCharacterRange:NSMakeRange(0, length)];
+    NSColor* const colours[] = { NSColor.systemPinkColor, NSColor.systemPurpleColor, NSColor.systemRedColor,
+                                 NSColor.systemBlueColor, NSColor.secondaryLabelColor, NSColor.systemOrangeColor };
+    for (const jsp::Token& t : jsp::highlight_js([self source]))
+        if (t.start + t.length <= length)
+            [lm addTemporaryAttribute:NSForegroundColorAttributeName value:colours[(int)t.kind] forCharacterRange:NSMakeRange(t.start, t.length)];
+}
+
 - (void)recheck {
+    [self highlight];
     if (_hooks.check) _syntax = _hooks.check([self source]);
     _ruler.errorLine = _syntax.empty() ? 0 : jsp::error_line(_syntax, "");
     _ruler.needsDisplay = YES;
@@ -663,7 +676,7 @@ public:
 - (void)mouseUp:(NSEvent*)e { [self send:jsp::Mouse::LeftUp event:e]; }
 - (void)rightMouseDown:(NSEvent*)e {
     [self.window makeFirstResponder:self];
-    [self send:jsp::Mouse::RightDown event:e];
+    [self send:e.clickCount == 2 ? jsp::Mouse::RightDouble : jsp::Mouse::RightDown event:e];
 }
 - (void)rightMouseUp:(NSEvent*)e { [self send:jsp::Mouse::RightUp event:e]; }
 - (void)otherMouseDown:(NSEvent*)e {
@@ -679,9 +692,11 @@ public:
 
 - (void)scrollWheel:(NSEvent*)e {
     if (!_panel) return;
-    const CGFloat dy = e.hasPreciseScrollingDeltas ? e.scrollingDeltaY / 10.0 : e.scrollingDeltaY;
-    const int step = dy > 0 ? (int)std::ceil(dy) : (int)std::floor(dy);
-    if (step != 0) jsp::log::guarded("js", "wheel", [&] { _panel->wheel(step); });
+    const CGFloat scale = e.hasPreciseScrollingDeltas ? 10.0 : 1.0;
+    const auto step = [](CGFloat d) { return d > 0 ? (int)std::ceil(d) : (int)std::floor(d); };
+    const int dy = step(e.scrollingDeltaY / scale), dx = step(-e.scrollingDeltaX / scale);
+    if (dy != 0) jsp::log::guarded("js", "wheel", [&] { _panel->wheel(dy); });
+    if (dx != 0 && _panel) jsp::log::guarded("js", "wheel", [&] { _panel->wheel(dx, true); });
 }
 
 - (void)fireTimer:(int)tid {

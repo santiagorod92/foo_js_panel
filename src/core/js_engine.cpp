@@ -29,6 +29,11 @@ long long now_ms() {
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
+long long now_us() {
+    using namespace std::chrono;
+    return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
 JSClassID g_grClass = 0, g_fontClass = 0, g_tfClass = 0, g_handleClass = 0, g_listClass = 0, g_bitmapClass = 0, g_infoClass = 0,
           g_menuClass = 0, g_menuManagerClass = 0;
 int g_nextWindowId = 1;
@@ -94,6 +99,7 @@ struct JsEngine::Impl {
 
     void install_api();
     bool eval(const std::string& source, const std::string& filename);
+    bool eval_module(const std::string& source, const std::string& filename);
     bool call(const char* name, int argc, JSValue* argv, bool* truthy = nullptr);
     void report_exception();
     void fail(const std::string& msg);
@@ -116,6 +122,22 @@ struct JsEngine::Impl {
 
     std::vector<std::string> includeDirs;
     int modalDepth = 0;
+    long long modalUs = 0;
+    std::map<std::string, CallTiming> timings;
+    struct Timed {
+        Impl& e;
+        const char* name;
+        long long start, modalStart;
+        Timed(Impl& impl, const char* n) : e(impl), name(n), start(now_us()), modalStart(impl.modalUs) {}
+        ~Timed() {
+            const double ms = (double)(now_us() - start - (e.modalUs - modalStart)) / 1000.0;
+            CallTiming& t = e.timings[name];
+            t.name = name;
+            ++t.calls;
+            t.totalMs += ms;
+            t.maxMs = std::max(t.maxMs, ms);
+        }
+    };
     struct Budget {
         Impl& e;
         long long saved;
@@ -125,9 +147,10 @@ struct JsEngine::Impl {
     template <typename F>
     auto modal(F&& f) {
         ++modalDepth;
-        const long long t0 = now_ms();
+        const long long t0 = now_ms(), u0 = now_us();
         auto r = f();
         --modalDepth;
+        modalUs += now_us() - u0;
         if (deadline) deadline += now_ms() - t0;
         return r;
     }
@@ -215,10 +238,11 @@ bool writable(JSContext* ctx, int argc, JSValueConst* argv, int i) {
     return false;
 }
 
+bool is_absolute(const std::string& path) { return !path.empty() && (path[0] == '/' || path[0] == '\\' || path.find(':') != std::string::npos); }
+
 std::string script_relative(JsEngine::Impl* e, const std::string& in) {
     std::string path = fix_path(in);
-    const bool absolute = !path.empty() && (path[0] == '/' || path[0] == '\\' || path.find(':') != std::string::npos);
-    return absolute ? path : (e->includeDirs.empty() ? e->dir : e->includeDirs.back()) + path;
+    return is_absolute(path) ? path : (e->includeDirs.empty() ? e->dir : e->includeDirs.back()) + path;
 }
 
 Rect arg_rect(JSContext* ctx, int argc, JSValueConst* argv, int i) {
@@ -1898,6 +1922,7 @@ JSValue artist_object(JSContext* ctx, const LibraryArtist& a) {
     JSValue o = JS_NewObject(ctx);
     set_str(ctx, o, "Id", a.id);
     set_str(ctx, o, "Name", a.name);
+    set_str(ctx, o, "CoverArtId", a.coverArtId);
     set_int(ctx, o, "AlbumCount", a.albumCount);
     set_int(ctx, o, "SongCount", a.songCount);
     return o;
@@ -1914,6 +1939,33 @@ JSValue nd_IsConfigured(JSContext* ctx, JSValueConst) {
 JSValue nd_GetAlbumsAsync(JSContext* ctx, JSValueConst, int, JSValueConst*) { return I(ctx)->request_albums(false); }
 JSValue nd_GetArtistsAsync(JSContext* ctx, JSValueConst, int, JSValueConst*) { return I(ctx)->request_albums(true); }
 
+void reject_with(JsEngine::Impl* e, int id, const std::string& message) {
+    JSValue error = JS_NewError(e->ctx);
+    set_str(e->ctx, error, "message", message);
+    e->settle_promise(id, error, false);
+}
+
+JSValue nd_SearchAsync(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    JsEngine::Impl* e = I(ctx);
+    int id = 0;
+    JSValue promise = e->new_promise(id);
+    if (JS_IsException(promise)) return promise;
+    std::shared_ptr<bool> token = e->alive;
+    e->host.navidrome_search(arg_str(ctx, argc, argv, 0), [token, e, id](SearchResult r, std::string err) {
+        if (!*token) return;
+        if (!err.empty()) return reject_with(e, id, err);
+        JSContext* c = e->ctx;
+        JSValue o = JS_NewObject(c), artists = JS_NewArray(c), albums = JS_NewArray(c);
+        for (uint32_t i = 0; i < r.artists.size(); ++i) JS_SetPropertyUint32(c, artists, i, artist_object(c, r.artists[i]));
+        for (uint32_t i = 0; i < r.albums.size(); ++i) JS_SetPropertyUint32(c, albums, i, album_object(c, r.albums[i]));
+        JS_SetPropertyStr(c, o, "Artists", artists);
+        JS_SetPropertyStr(c, o, "Albums", albums);
+        JS_SetPropertyStr(c, o, "Tracks", new_list(c, std::move(r.tracks)));
+        e->settle_promise(id, o);
+    });
+    return promise;
+}
+
 JSValue nd_GetArtistInfoAsync(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     JsEngine::Impl* e = I(ctx);
     int id = 0;
@@ -1922,13 +1974,8 @@ JSValue nd_GetArtistInfoAsync(JSContext* ctx, JSValueConst, int argc, JSValueCon
     std::shared_ptr<bool> token = e->alive;
     e->host.navidrome_artist_info(arg_str(ctx, argc, argv, 0), [token, e, id](ArtistInfo info, std::string err) {
         if (!*token) return;
+        if (!err.empty()) return reject_with(e, id, err);
         JSContext* c = e->ctx;
-        if (!err.empty()) {
-            JSValue error = JS_NewError(c);
-            set_str(c, error, "message", err);
-            e->settle_promise(id, error, false);
-            return;
-        }
         JSValue o = JS_NewObject(c);
         set_str(c, o, "Id", info.id);
         set_str(c, o, "Biography", info.biography);
@@ -1956,6 +2003,7 @@ const JSCFunctionListEntry kNavidromeFuncs[] = {
     JS_CFUNC_DEF("GetAlbumsAsync", 0, nd_GetAlbumsAsync),
     JS_CFUNC_DEF("GetArtistsAsync", 0, nd_GetArtistsAsync),
     JS_CFUNC_DEF("GetArtistInfoAsync", 1, nd_GetArtistInfoAsync),
+    JS_CFUNC_DEF("SearchAsync", 1, nd_SearchAsync),
     JS_CFUNC_DEF("PlayAlbum", 3, (nd_play<false, false>)),
     JS_CFUNC_DEF("AddAlbum", 1, (nd_play<false, true>)),
     JS_CFUNC_DEF("PlayArtist", 3, (nd_play<true, false>)),
@@ -2089,6 +2137,99 @@ JSValue utils_ReadTextFile(JSContext* ctx, JSValueConst, int argc, JSValueConst*
 JSValue utils_WriteTextFile(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     if (!writable(ctx, argc, argv, 0)) return JS_FALSE;
     return JS_NewBool(ctx, I(ctx)->host.write_text_file(fix_path(arg_str(ctx, argc, argv, 0)), arg_str(ctx, argc, argv, 1)));
+}
+
+std::string trim(const std::string& s) {
+    const size_t b = s.find_first_not_of(" \t\r"), e = s.find_last_not_of(" \t\r");
+    return b == std::string::npos ? std::string() : s.substr(b, e - b + 1);
+}
+
+bool same_ci(const std::string& a, const std::string& b) {
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) { return std::tolower((unsigned char)x) == std::tolower((unsigned char)y); });
+}
+
+struct IniLine {
+    std::string section, key;
+    size_t value = std::string::npos;
+};
+
+std::vector<std::string> split_lines(const std::string& text) {
+    std::vector<std::string> lines;
+    size_t start = 0;
+    while (start < text.size()) {
+        size_t nl = text.find('\n', start);
+        if (nl == std::string::npos) nl = text.size();
+        lines.push_back(text.substr(start, nl - start));
+        start = nl + 1;
+    }
+    return lines;
+}
+
+IniLine parse_ini_line(const std::string& raw, const std::string& section) {
+    const std::string line = trim(raw);
+    IniLine out{ section, {} };
+    if (line.size() >= 2 && line.front() == '[' && line.back() == ']') out.section = trim(line.substr(1, line.size() - 2));
+    else if (!line.empty() && line[0] != ';' && line.find('=') != std::string::npos) {
+        out.key = trim(line.substr(0, line.find('=')));
+        out.value = raw.find('=') + 1;
+    }
+    return out;
+}
+
+std::string ini_read(const std::string& text, const std::string& section, const std::string& key, const std::string& def) {
+    std::string current;
+    for (const auto& raw : split_lines(text)) {
+        const IniLine l = parse_ini_line(raw, current);
+        current = l.section;
+        if (l.value == std::string::npos || !same_ci(current, section) || !same_ci(l.key, key)) continue;
+        std::string v = trim(raw.substr(l.value));
+        if (v.size() >= 2 && (v.front() == '"' || v.front() == '\'') && v.back() == v.front()) v = v.substr(1, v.size() - 2);
+        return v;
+    }
+    return def;
+}
+
+std::string ini_write(const std::string& text, const std::string& section, const std::string& key, const std::string& value) {
+    const std::string eol = text.find("\r\n") != std::string::npos ? "\r\n" : "\n";
+    auto lines = split_lines(text);
+    for (auto& l : lines)
+        if (!l.empty() && l.back() == '\r') l.pop_back();
+    std::string current;
+    size_t insert = std::string::npos;
+    bool replaced = false;
+    for (size_t i = 0; i < lines.size() && !replaced; ++i) {
+        const IniLine l = parse_ini_line(lines[i], current);
+        current = l.section;
+        if (!same_ci(current, section)) continue;
+        if (l.value != std::string::npos && same_ci(l.key, key)) {
+            lines[i] = l.key + "=" + value;
+            replaced = true;
+        } else if (!trim(lines[i]).empty()) insert = i + 1;
+    }
+    if (!replaced && insert != std::string::npos) lines.insert(lines.begin() + (std::ptrdiff_t)insert, key + "=" + value);
+    else if (!replaced) {
+        if (!lines.empty() && !trim(lines.back()).empty()) lines.push_back("");
+        lines.push_back("[" + section + "]");
+        lines.push_back(key + "=" + value);
+    }
+    std::string out;
+    for (const auto& l : lines) out += l + eol;
+    return out;
+}
+
+JSValue utils_ReadINI(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    std::string text;
+    I(ctx)->host.read_text_file(fix_path(arg_str(ctx, argc, argv, 0)), text);
+    return new_string(ctx, ini_read(text, arg_str(ctx, argc, argv, 1), arg_str(ctx, argc, argv, 2), arg_str(ctx, argc, argv, 3)));
+}
+
+JSValue utils_WriteINI(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    if (!writable(ctx, argc, argv, 0)) return JS_FALSE;
+    const std::string path = fix_path(arg_str(ctx, argc, argv, 0)), section = arg_str(ctx, argc, argv, 1), key = arg_str(ctx, argc, argv, 2);
+    if (section.empty() || key.empty()) return JS_FALSE;
+    std::string text;
+    I(ctx)->host.read_text_file(path, text);
+    return JS_NewBool(ctx, I(ctx)->host.write_text_file(path, ini_write(text, section, key, arg_str(ctx, argc, argv, 3))));
 }
 
 bool wildcard(const char* p, const char* s) {
@@ -2227,6 +2368,8 @@ const JSCFunctionListEntry kUtilsFuncs[] = {
     JS_CFUNC_DEF("GetFileSize", 1, utils_file<FileQuery::Size>),
     JS_CFUNC_DEF("ReadTextFile", 2, utils_ReadTextFile),
     JS_CFUNC_DEF("WriteTextFile", 2, utils_WriteTextFile),
+    JS_CFUNC_DEF("ReadINI", 4, utils_ReadINI),
+    JS_CFUNC_DEF("WriteINI", 4, utils_WriteINI),
     JS_CFUNC_DEF("Glob", 3, utils_Glob),
     JS_CFUNC_DEF("FormatDuration", 1, utils_FormatDuration),
     JS_CFUNC_DEF("FormatFileSize", 1, utils_FormatFileSize),
@@ -2430,6 +2573,13 @@ JSValue plman_SortByFormatV2(JSContext* ctx, JSValueConst, int argc, JSValueCons
     return JS_NewBool(ctx, h.reorder_playlist(p, sorted_order(h.format_tracks(arg_str(ctx, argc, argv, 1), items), arg_int(ctx, argc, argv, 2, 1))));
 }
 
+JSValue plman_AddLocations(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    auto paths = arg_strings(ctx, argc, argv, 1);
+    for (auto& p : paths) p = fix_path(p);
+    I(ctx)->host.add_locations(arg_int(ctx, argc, argv, 0, -1), paths, arg_bool(ctx, argc, argv, 2));
+    return JS_UNDEFINED;
+}
+
 JSValue plman_UndoBackup(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     I(ctx)->host.undo_backup(arg_int(ctx, argc, argv, 0, -1));
     return JS_UNDEFINED;
@@ -2452,7 +2602,45 @@ JSValue plman_FlushPlaybackQueue(JSContext* ctx, JSValueConst, int, JSValueConst
     return JS_UNDEFINED;
 }
 
-JSValue plman_GetPlaybackQueueHandles(JSContext* ctx, JSValueConst, int, JSValueConst*) { return new_list(ctx, I(ctx)->host.queue_items()); }
+JSValue plman_GetPlaybackQueueHandles(JSContext* ctx, JSValueConst, int, JSValueConst*) {
+    Tracks out;
+    for (auto& q : I(ctx)->host.queue_items()) out.push_back(q.track);
+    return new_list(ctx, std::move(out));
+}
+
+JSValue plman_GetPlaybackQueueContents(JSContext* ctx, JSValueConst, int, JSValueConst*) {
+    JSValue arr = JS_NewArray(ctx);
+    uint32_t i = 0;
+    for (auto& q : I(ctx)->host.queue_items()) {
+        JSValue o = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, o, "Handle", new_handle(ctx, q.track));
+        JS_SetPropertyStr(ctx, o, "PlaylistIndex", JS_NewInt32(ctx, q.playlist));
+        JS_SetPropertyStr(ctx, o, "PlaylistItemIndex", JS_NewInt32(ctx, q.item));
+        JS_SetPropertyUint32(ctx, arr, i++, o);
+    }
+    return arr;
+}
+
+JSValue plman_FindPlaybackQueueItemIndex(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    TrackPtr t = arg_track(ctx, argc, argv, 0);
+    if (!t) return JS_EXCEPTION;
+    const int p = arg_int(ctx, argc, argv, 1, -1), item = arg_int(ctx, argc, argv, 2, -1);
+    auto& host = I(ctx)->host;
+    const auto items = host.queue_items();
+    for (size_t i = 0; i < items.size(); ++i)
+        if (items[i].playlist == p && items[i].item == item && (items[i].track == t || host.same_track(items[i].track, t))) return JS_NewInt32(ctx, (int)i);
+    return JS_NewInt32(ctx, -1);
+}
+
+JSValue plman_RemoveItemFromPlaybackQueue(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    I(ctx)->host.queue_remove({ arg_int(ctx, argc, argv, 0, -1) });
+    return JS_UNDEFINED;
+}
+
+JSValue plman_RemoveItemsFromPlaybackQueue(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    I(ctx)->host.queue_remove(arg_ints(ctx, argc, argv, 0));
+    return JS_UNDEFINED;
+}
 
 const JSCFunctionListEntry kPlmanFuncs[] = {
     JS_CGETSET_DEF("PlaylistCount", plman_PlaylistCount, nullptr),
@@ -2462,6 +2650,7 @@ const JSCFunctionListEntry kPlmanFuncs[] = {
     JS_CFUNC_DEF("FindOrCreatePlaylist", 2, plman_FindOrCreatePlaylist),
     JS_CFUNC_DEF("ClearPlaylist", 1, plman_ClearPlaylist),
     JS_CFUNC_DEF("InsertPlaylistItems", 4, plman_InsertPlaylistItems),
+    JS_CFUNC_DEF("AddLocations", 3, plman_AddLocations),
     JS_CFUNC_DEF("ExecutePlaylistDefaultAction", 2, plman_ExecutePlaylistDefaultAction),
     JS_CFUNC_DEF("PlaylistItemCount", 1, plman_PlaylistItemCount),
     JS_CFUNC_DEF("GetPlaylistItems", 1, plman_GetItems<false>),
@@ -2498,6 +2687,10 @@ const JSCFunctionListEntry kPlmanFuncs[] = {
     JS_CFUNC_DEF("AddPlaylistItemToPlaybackQueue", 2, plman_AddPlaylistItemToPlaybackQueue),
     JS_CFUNC_DEF("FlushPlaybackQueue", 0, plman_FlushPlaybackQueue),
     JS_CFUNC_DEF("GetPlaybackQueueHandles", 0, plman_GetPlaybackQueueHandles),
+    JS_CFUNC_DEF("GetPlaybackQueueContents", 0, plman_GetPlaybackQueueContents),
+    JS_CFUNC_DEF("FindPlaybackQueueItemIndex", 3, plman_FindPlaybackQueueItemIndex),
+    JS_CFUNC_DEF("RemoveItemFromPlaybackQueue", 1, plman_RemoveItemFromPlaybackQueue),
+    JS_CFUNC_DEF("RemoveItemsFromPlaybackQueue", 1, plman_RemoveItemsFromPlaybackQueue),
     JS_CFUNC_DEF("SetActivePlaylistContext", 0, noop),
 };
 
@@ -2648,6 +2841,10 @@ JSValue window_ScriptInfo(JSContext* ctx, JSValueConst) {
     set_str(ctx, o, "Name", panel_name(e));
     set_str(ctx, o, "Author", e->scriptAuthor);
     set_str(ctx, o, "Version", e->scriptVersion);
+    if (!e->files.empty()) {
+        const std::filesystem::path dir = std::filesystem::path(fix_path(e->files.front())).parent_path();
+        if (dir.parent_path().filename() == "packages") set_str(ctx, o, "PackageId", dir.filename().string());
+    }
     return o;
 }
 
@@ -3080,6 +3277,76 @@ const char* const kPrelude = R"JS(
             Print(msg) { console.log('FbProfiler (' + this.Name + '): ' + (msg ? msg + ' ' : '') + this.Time + ' ms'); },
         };
     };
+    utils.GetPackageInfo = function (id) {
+        id = String(id);
+        if (!id || /[\\/]|\.\./.test(id)) return null;
+        const sep = fb.ProfilePath.slice(-1);
+        for (const owner of ['foo_js_panel', 'foo_spider_monkey_panel']) {
+            const root = fb.ProfilePath + owner + sep + 'packages' + sep + id + sep;
+            if (!utils.IsFile(root + 'package.json')) continue;
+            let meta = {};
+            try { meta = JSON.parse(utils.ReadTextFile(root + 'package.json')) || {}; } catch (e) {}
+            return {
+                Version: String(meta.version || ''),
+                Directories: { Root: root, Assets: root + 'assets' + sep, Scripts: root + 'scripts' + sep,
+                               Storage: fb.ProfilePath + owner + sep + 'package_data' + sep + id + sep },
+            };
+        }
+        return null;
+    };
+    utils.GetPackagePath = function (id) {
+        const info = utils.GetPackageInfo(id);
+        if (!info) throw new Error('Package not found: ' + id);
+        return info.Directories.Root;
+    };
+    class Headers {
+        constructor(init) {
+            this.map = new Map();
+            if (init instanceof Headers) init.forEach((v, k) => this.set(k, v));
+            else if (Array.isArray(init)) init.forEach(([k, v]) => this.append(k, v));
+            else if (init) Object.keys(init).forEach(k => this.append(k, init[k]));
+        }
+        append(k, v) { k = String(k).toLowerCase(); this.map.set(k, this.map.has(k) ? this.map.get(k) + ', ' + v : String(v)); }
+        set(k, v) { this.map.set(String(k).toLowerCase(), String(v)); }
+        get(k) { k = String(k).toLowerCase(); return this.map.has(k) ? this.map.get(k) : null; }
+        has(k) { return this.map.has(String(k).toLowerCase()); }
+        delete(k) { this.map.delete(String(k).toLowerCase()); }
+        forEach(fn, self) { this.map.forEach((v, k) => fn.call(self, v, k, this)); }
+        entries() { return this.map.entries(); }
+        [Symbol.iterator]() { return this.map.entries(); }
+    }
+    class Response {
+        constructor(body, init) {
+            init = init || {};
+            this.body = body === undefined || body === null ? '' : String(body);
+            this.status = init.status === undefined ? 200 : init.status | 0;
+            this.statusText = init.statusText || '';
+            this.headers = new Headers(init.headers);
+            this.url = init.url || '';
+            this.bodyUsed = false;
+        }
+        get ok() { return this.status >= 200 && this.status < 300; }
+        text() {
+            if (this.bodyUsed) return Promise.reject(new TypeError('Body has already been consumed'));
+            this.bodyUsed = true;
+            return Promise.resolve(this.body);
+        }
+        json() { return this.text().then(t => JSON.parse(t)); }
+        clone() { return new Response(this.body, this); }
+    }
+    globalThis.Headers = Headers;
+    globalThis.Response = Response;
+    globalThis.fetch = function (input, init) {
+        init = init || {};
+        const url = String(input && input.url ? input.url : input), method = String(init.method || 'GET').toUpperCase();
+        const headers = [];
+        new Headers(init.headers).forEach((v, k) => headers.push(k + ': ' + v));
+        const body = init.body === undefined || init.body === null ? undefined : String(init.body);
+        return native.httpAsync(method, url, headers, body).then(r => {
+            if (!r.status) throw new TypeError('fetch failed: ' + (r.error || url));
+            return new Response(r.text, { status: r.status, statusText: r.error || '', url });
+        });
+    };
     utils.MapString = function (text, lcid, flags) {
         let s = String(text);
         const shift = (from, to, delta) => s = s.replace(/./gsu, c => {
@@ -3392,9 +3659,15 @@ const char* const kPrelude = R"JS(
     const implicitClose = { LI: ['LI', 'P'], DT: ['DT', 'DD', 'P'], DD: ['DT', 'DD', 'P'], TR: ['TR', 'TD', 'TH'], TD: ['TD', 'TH'], TH: ['TD', 'TH'], OPTION: ['OPTION'] };
     for (const t of blockTags) implicitClose[t] = [...(implicitClose[t] || []), 'P'];
     const entities = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
-    const decode = t => t.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => e[0] === '#'
-        ? String.fromCodePoint(e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10))
-        : entities[e.toLowerCase()] ?? m);
+    const charRef = e => {
+        const n = e[0] === 'x' || e[0] === 'X' ? parseInt(e.slice(1), 16) : parseInt(e, 10);
+        return n > 0 && n <= 0x10ffff && (n < 0xd800 || n > 0xdfff) ? String.fromCodePoint(n) : null;
+    };
+    const decode = t => t.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => e[0] === '#' ? charRef(e.slice(1)) ?? m : entities[e.toLowerCase()] ?? m);
+    const serialize = t => t.replace(/&#(x[0-9a-f]+|\d+);/gi, (m, e) => {
+        const c = charRef(e);
+        return c === null || '&<>"\u00a0'.includes(c) ? m : c;
+    });
     const tagRe = /<!--[\s\S]*?-->|<![^>]*>|<\?[^>]*>|<(\/?)([a-zA-Z][^\s\/>]*)((?:\s*[^\s=\/>]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?)*)\s*(\/?)>/g;
     const attrRe = /([^\s=\/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
     class HtmlElement {
@@ -3408,7 +3681,7 @@ const char* const kPrelude = R"JS(
         get href() { const h = this.attrs.href || ''; return h[0] === '/' && h[1] !== '/' ? 'about:' + h : h; }
         getAttribute(n) { const v = this.attrs[String(n).toLowerCase()]; return v === undefined ? null : v; }
         setAttribute(n, v) { this.attrs[String(n).toLowerCase()] = String(v); }
-        get innerHTML() { return this.src_.slice(this.a_, this.b_); }
+        get innerHTML() { return serialize(this.src_.slice(this.a_, this.b_)); }
         set innerHTML(html) {
             html = String(html);
             this.children = []; this.src_ = html; this.a_ = 0; this.b_ = html.length;
@@ -3452,7 +3725,11 @@ const char* const kPrelude = R"JS(
         set innerText(t) { this.innerHTML = String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
         get textContent() { return this.innerText; }
         set textContent(t) { this.innerText = t; }
-        get outerHTML() { return this.parentNode ? this.src_.slice(this.src_.lastIndexOf('<', this.a_ - 1), this.b_) : this.innerHTML; }
+        get outerHTML() {
+            if (!this.parentNode) return this.innerHTML;
+            const end = this.src_.startsWith('</', this.b_) ? this.src_.indexOf('>', this.b_) + 1 : this.b_;
+            return serialize(this.src_.slice(this.src_.lastIndexOf('<', this.a_ - 1), end || this.b_));
+        }
         getElementsByTagName(name) {
             const want = String(name).toUpperCase(), out = [];
             const walk = e => { for (const c of e.children) { if (want === '*' || c.tagName === want) out.push(c); walk(c); } };
@@ -3979,6 +4256,51 @@ JSValue global_include(JSContext* ctx, JSValueConst, int argc, JSValueConst* arg
     return JS_UNDEFINED;
 }
 
+bool is_module_source(const std::string& source) {
+    size_t start = 0;
+    while (start < source.size()) {
+        size_t end = source.find('\n', start);
+        if (end == std::string::npos) end = source.size();
+        size_t i = source.find_first_not_of(" \t", start);
+        if (i < end) {
+            const std::string_view line(source.data() + i, end - i);
+            for (std::string_view kw : { std::string_view("import"), std::string_view("export") }) {
+                if (line.substr(0, kw.size()) != kw || line.size() == kw.size()) continue;
+                const char next = line[kw.size()];
+                if (next == ' ' || next == '{' || next == '*' || next == '\'' || next == '"' || next == '\t') return true;
+            }
+        }
+        start = end + 1;
+    }
+    return false;
+}
+
+char* module_normalize(JSContext* ctx, const char* base, const char* name, void* opaque) {
+    auto* e = static_cast<JsEngine::Impl*>(opaque);
+    std::string path = fix_path(name);
+    if (!is_absolute(path)) {
+        const std::string dir = script_dir_of(base ? fix_path(base) : std::string());
+        path = (dir.empty() ? e->dir : dir) + path;
+    }
+    path = std::filesystem::path(path).lexically_normal().generic_string();
+    return js_strdup(ctx, path.c_str());
+}
+
+JSModuleDef* module_load(JSContext* ctx, const char* name, void* opaque) {
+    auto* e = static_cast<JsEngine::Impl*>(opaque);
+    std::string source;
+    if (!e->host.read_text_file(name, source)) {
+        JS_ThrowReferenceError(ctx, "import: can't read %s", name);
+        return nullptr;
+    }
+    e->files.push_back(name);
+    JSValue fn = JS_Eval(ctx, source.data(), source.size(), name, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(fn)) return nullptr;
+    auto* m = static_cast<JSModuleDef*>(JS_VALUE_GET_PTR(fn));
+    JS_FreeValue(ctx, fn);
+    return m;
+}
+
 int interrupt(JSRuntime*, void* opaque) {
     auto* e = static_cast<JsEngine::Impl*>(opaque);
     return e->deadline != 0 && now_ms() > e->deadline;
@@ -4005,6 +4327,7 @@ JsEngine::Impl::Impl(JsHost& hst, int budget) : host(hst), budgetMs(budget) {
     JS_SetMemoryLimit(rt, kMemoryLimit);
     JS_SetMaxStackSize(rt, 1024 * 1024);
     JS_SetInterruptHandler(rt, interrupt, this);
+    JS_SetModuleLoaderFunc(rt, module_normalize, module_load, this);
     JS_NewClassID(rt, &g_grClass);
     JS_NewClassID(rt, &g_fontClass);
     JS_NewClassID(rt, &g_tfClass);
@@ -4120,6 +4443,54 @@ bool JsEngine::Impl::eval(const std::string& source, const std::string& filename
     return error.empty();
 }
 
+bool JsEngine::Impl::eval_module(const std::string& source, const std::string& filename) {
+    {
+        Budget b(*this);
+        JSValue fn = JS_Eval(ctx, source.data(), source.size(), filename.c_str(), JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+        if (JS_IsException(fn)) {
+            report_exception();
+            return false;
+        }
+        auto* module = static_cast<JSModuleDef*>(JS_VALUE_GET_PTR(fn));
+        JSValue done = JS_EvalFunction(ctx, fn);
+        if (JS_IsException(done)) {
+            report_exception();
+            return false;
+        }
+        JSContext* jobCtx = nullptr;
+        int job = 1;
+        while (JS_PromiseState(ctx, done) == JS_PROMISE_PENDING && (job = JS_ExecutePendingJob(rt, &jobCtx)) > 0) {
+        }
+        if (job < 0) {
+            JS_FreeValue(ctx, done);
+            report_exception();
+            return false;
+        }
+        if (JS_PromiseState(ctx, done) == JS_PROMISE_REJECTED) {
+            JS_Throw(ctx, JS_PromiseResult(ctx, done));
+            JS_FreeValue(ctx, done);
+            report_exception();
+            return false;
+        }
+        JS_FreeValue(ctx, done);
+        JSValue ns = JS_GetModuleNamespace(ctx, module), global = JS_GetGlobalObject(ctx);
+        JSPropertyEnum* names = nullptr;
+        uint32_t n = 0;
+        if (JS_GetOwnPropertyNames(ctx, &names, &n, ns, JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) == 0) {
+            for (uint32_t i = 0; i < n; ++i) {
+                const char* key = JS_AtomToCString(ctx, names[i].atom);
+                if (key && std::strcmp(key, "default") != 0) JS_SetProperty(ctx, global, names[i].atom, JS_GetProperty(ctx, ns, names[i].atom));
+                JS_FreeCString(ctx, key);
+            }
+            JS_FreePropertyEnum(ctx, names, n);
+        }
+        JS_FreeValue(ctx, global);
+        JS_FreeValue(ctx, ns);
+    }
+    drain_jobs();
+    return error.empty();
+}
+
 bool JsEngine::Impl::call(const char* name, int argc, JSValue* argv, bool* truthy) {
     if (truthy) *truthy = false;
     if (!error.empty()) return false;
@@ -4130,6 +4501,7 @@ bool JsEngine::Impl::call(const char* name, int argc, JSValue* argv, bool* truth
         called = true;
         JSValue r;
         {
+            Timed timed(*this, name);
             Budget b(*this);
             r = JS_Call(ctx, fn, JS_UNDEFINED, argc, argv);
         }
@@ -4323,7 +4695,8 @@ std::string check_syntax(const std::string& source, const std::string& name) {
     JS_SetMemoryLimit(rt, kSyntaxCheckMemory);
     JSContext* ctx = JS_NewContext(rt);
     std::string err;
-    JSValue r = JS_Eval(ctx, source.data(), source.size(), name.c_str(), JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+    const int type = is_module_source(source) ? JS_EVAL_TYPE_MODULE : JS_EVAL_TYPE_GLOBAL;
+    JSValue r = JS_Eval(ctx, source.data(), source.size(), name.c_str(), type | JS_EVAL_FLAG_COMPILE_ONLY);
     if (JS_IsException(r)) {
         JSValue ex = JS_GetException(ctx);
         err = to_string(ctx, ex);
@@ -4338,6 +4711,7 @@ std::string check_syntax(const std::string& source, const std::string& name) {
             }
         }
         JS_FreeValue(ctx, ex);
+        if (type == JS_EVAL_TYPE_MODULE && err.rfind("ReferenceError: could not load module", 0) == 0) err.clear();
     } else {
         JS_FreeValue(ctx, r);
     }
@@ -4443,7 +4817,9 @@ bool JsEngine::load(const std::string& source, const std::string& path) {
             if (spec == "lodash" && !m->eval(kLodashMixins, "<lodash mixins>")) return false;
         }
     }
-    return m->eval(patch_theme_source(path, source), path.empty() ? std::string("<sample>") : path);
+    const std::string name = path.empty() ? std::string("<sample>") : path;
+    if (is_module_source(source)) return m->eval_module(source, name);
+    return m->eval(patch_theme_source(path, source), name);
 }
 
 bool JsEngine::failed() const { return !m->error.empty(); }
@@ -4482,7 +4858,7 @@ bool JsEngine::mouse(Mouse kind, int x, int y, unsigned mask) {
     static const char* const names[] = { "on_mouse_move",        "on_mouse_lbtn_down", "on_mouse_lbtn_up",
                                          "on_mouse_lbtn_dblclk", "on_mouse_rbtn_down", "on_mouse_rbtn_up",
                                          "on_mouse_leave",       "on_mouse_mbtn_down", "on_mouse_mbtn_up",
-                                         "on_mouse_mbtn_dblclk" };
+                                         "on_mouse_mbtn_dblclk", "on_mouse_rbtn_dblclk" };
     bool truthy = false;
     if (kind == Mouse::Leave) {
         m->call(names[(int)kind], 0, nullptr, &truthy);
@@ -4527,9 +4903,9 @@ void JsEngine::drag(Drag kind, int x, int y, unsigned mask, DropAction& a) {
     JS_FreeValue(ctx, action);
 }
 
-void JsEngine::wheel(int step) {
+void JsEngine::wheel(int step, bool horizontal) {
     JSValue arg = JS_NewInt32(m->ctx, step);
-    m->call("on_mouse_wheel", 1, &arg);
+    m->call(horizontal ? "on_mouse_wheel_h" : "on_mouse_wheel", 1, &arg);
 }
 
 bool JsEngine::key_down(int vk) {
@@ -4551,6 +4927,7 @@ void JsEngine::timer(int id) {
     if (m->error.empty()) {
         JSValue r;
         {
+            Impl::Timed timed(*m, "timers");
             Impl::Budget b(*m);
             r = JS_Call(m->ctx, fn, JS_UNDEFINED, 0, nullptr);
         }
@@ -4616,6 +4993,30 @@ bool JsEngine::invoke(const char* name, const std::vector<Arg>& args) {
 bool JsEngine::in_modal() const { return m->modalDepth > 0; }
 
 const std::vector<std::string>& JsEngine::source_files() const { return m->files; }
+
+std::vector<CallTiming> JsEngine::profile() const {
+    std::vector<CallTiming> out;
+    for (const auto& [name, t] : m->timings) out.push_back(t);
+    std::sort(out.begin(), out.end(), [](const CallTiming& a, const CallTiming& b) { return a.totalMs > b.totalMs; });
+    return out;
+}
+
+size_t JsEngine::memory_used() const {
+    JSMemoryUsage u{};
+    JS_ComputeMemoryUsage(m->rt, &u);
+    return (size_t)u.malloc_size;
+}
+
+void JsEngine::skin_message(const std::string& name, const std::string& text) {
+    JSValue info = JS_ParseJSON(m->ctx, text.data(), text.size(), "<skin>");
+    if (JS_IsException(info)) {
+        JS_FreeValue(m->ctx, JS_GetException(m->ctx));
+        info = new_string(m->ctx, text);
+    }
+    JSValue args[2] = { new_string(m->ctx, name), info };
+    m->call("on_notify_data", 2, args);
+    for (JSValue& v : args) JS_FreeValue(m->ctx, v);
+}
 
 void JsEngine::notify_data(const std::string& name, const std::string& json, const std::vector<JsHost::NotifyItem>& items) {
     JSValue info = from_json(m->ctx, json);

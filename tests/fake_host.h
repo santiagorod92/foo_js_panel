@@ -94,6 +94,7 @@ struct FakeHost : jsp::JsHost {
     std::vector<std::string> console_lines;
     std::vector<jsp::Playback> commands;
     std::map<std::string, std::string> files;
+    std::string profilePath = "/profile/";
     std::map<std::string, std::string> fields;
     bool playing = false, paused = false;
     jsp::LibraryState library = jsp::LibraryState::Missing;
@@ -139,7 +140,7 @@ struct FakeHost : jsp::JsHost {
     std::map<int, int> focus;
     int order = 0;
     jsp::ItemLocation location;
-    jsp::Tracks queue;
+    std::vector<jsp::QueueItem> queue;
     jsp::Menu shownMenu;
     std::function<int(const jsp::Menu&)> menuChoice = [](const jsp::Menu&) { return 0; };
     std::shared_ptr<FakeMenu> lastSource;
@@ -185,6 +186,12 @@ struct FakeHost : jsp::JsHost {
     void navidrome_artist_info(const std::string& name, jsp::ArtistInfoDone done) override {
         auto it = artistInfos.find(name);
         if (it == artistInfos.end()) done({}, "no artist named \"" + name + "\" on the server");
+        else done(it->second, "");
+    }
+    std::map<std::string, jsp::SearchResult> navidromeResults;
+    void navidrome_search(const std::string& query, jsp::SearchDone done) override {
+        auto it = navidromeResults.find(query);
+        if (it == navidromeResults.end()) done({}, "search failed for \"" + query + "\"");
         else done(it->second, "");
     }
     void navidrome_play(bool artist, const std::string& id, bool replace, bool play) override {
@@ -234,6 +241,11 @@ struct FakeHost : jsp::JsHost {
         return (int)playlists.size() - 1;
     }
     void clear_playlist(int p) override { playlistItems[p].clear(); actions.push_back("clear " + std::to_string(p)); }
+    void add_locations(int p, const std::vector<std::string>& paths, bool select) override {
+        std::string all;
+        for (const auto& path : paths) all += " " + path;
+        actions.push_back("locations " + std::to_string(p) + all + (select ? " select" : ""));
+    }
     void insert_playlist_items(int p, int base, const jsp::Tracks& tracks, bool) override {
         auto& v = playlistItems[p];
         v.insert(v.begin() + std::min<size_t>((size_t)std::max(0, base), v.size()), tracks.begin(), tracks.end());
@@ -251,7 +263,7 @@ struct FakeHost : jsp::JsHost {
         notes.emplace_back(name, json);
         noteItems.push_back(items);
     }
-    std::string profile_path() override { return "/profile/"; }
+    std::string profile_path() override { return profilePath; }
     double volume() override { return vol; }
     void set_volume(double v) override { vol = v; }
     bool flag(jsp::Flag f) override { return flags[f]; }
@@ -314,9 +326,16 @@ struct FakeHost : jsp::JsHost {
         playlistItems[p] = out;
         return true;
     }
-    void queue_add(const jsp::TrackPtr& t) override { queue.push_back(t); }
+    void queue_add(const jsp::TrackPtr& t) override { queue.push_back({ t }); }
+    void queue_add_playlist_item(int p, int item) override { queue.push_back({ playlistItems[p].at((size_t)item), p, item }); }
     void queue_flush() override { queue.clear(); }
-    jsp::Tracks queue_items() override { return queue; }
+    void queue_remove(const std::vector<int>& indices) override {
+        std::vector<jsp::QueueItem> kept;
+        for (size_t i = 0; i < queue.size(); ++i)
+            if (std::find(indices.begin(), indices.end(), (int)i) == indices.end()) kept.push_back(queue[i]);
+        queue = kept;
+    }
+    std::vector<jsp::QueueItem> queue_items() override { return queue; }
     int popup_menu(int, int, const jsp::Menu& menu) override {
         shownMenu = menu;
         return menuChoice(menu);
