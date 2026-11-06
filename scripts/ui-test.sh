@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 usage() {
   cat <<'USAGE'
-Usage: scripts/ui-test.sh <mac|win11-arm> smoke|dragdrop|jsp3|reload|import
+Usage: scripts/ui-test.sh <mac|mac-vm|win11-arm> smoke|dragdrop|jsp3|reload|import|editor (mac-vm: smoke|jsp3|reload|editor)
        scripts/ui-test.sh win11-arm menus|images|editor
 Runs tests/scripts/smoke.js in a real foobar2000, hosted by Panels UI through the
 tests/skins/panels-ui-embed skin, and asserts on foo_js_panel.log: the session banner, the
@@ -17,6 +17,8 @@ outside it), then utils.InputBox (screenshot, types "hi" + Enter), then a click 
 it asserts each result in the log.
 editor (win11-arm) runs tests/scripts/editor.js, whose line 3 doesn't parse, opens Edit script… from the
 panel's menu and takes a screenshot: the editor opens on line 3, its number in red.
+On mac and mac-vm, editor runs tests/scripts/editor-open.js instead, which opens its own editor with
+window.EditScript() (mac-vm takes a screenshot: the code is highlighted).
 import runs tests/scripts/import.js, which asks Panels UI (SKIN:IMPORT_FCL:<path>) to import Eole's
 columnsUI_eole.fcl: on mac the copy in the profile, in the VM an unzipped copy outside it (so its
 themes/ and wsh-data/ are copied in); it asserts that the new skin runs Eole's panels, then
@@ -34,6 +36,11 @@ translucent shapes, a circle mask, a blurred shadow, a rotated image and a colou
 takes a screenshot (compare with make render SCRIPT=tests/scripts/images.js on macOS).
   mac        this Mac's foobar2000 (build-mac/, make mac-build first); needs Panels UI built
              in ../foo_ui_panels/build-mac
+  mac-vm     the macOS VM on this Mac (terminal-mac, ../foo_navidrome/scripts/terminal-mac.sh,
+             MAC_VM=...): the bundles, scripts/ and tests/ are copied to ~/jsp-test in the guest,
+             mac-local.sh runs there over ssh, so this Mac's desktop and foobar2000 are never
+             touched; screenshot in build/ui-test/. No dragdrop (terminal-mac's drag is one
+             atomic action, too quick for an NSDraggingSession) and no import (no Eole there)
   win11-arm  the Windows 11 ARM VM (../foo_navidrome/scripts/win11-arm.sh, WIN11_ARM=...);
              ARCH=arm64ec (default), x64 (same ARM foobar2000) or x86 (portable 32-bit install);
              Panels UI must already be the guest's UI module
@@ -45,7 +52,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PLATFORM="$1"
 SCENARIO="${2:-smoke}"
-case "$PLATFORM:$SCENARIO" in *:smoke|*:dragdrop|*:jsp3|*:reload|*:import|win11-arm:menus|win11-arm:images|win11-arm:editor) ;; *) usage >&2; exit 2 ;; esac
+case "$PLATFORM:$SCENARIO" in mac-vm:import|mac-vm:dragdrop) usage >&2; exit 2 ;; *:smoke|*:dragdrop|*:jsp3|*:reload|*:import|win11-arm:menus|win11-arm:images|*:editor) ;; *) usage >&2; exit 2 ;; esac
 SHOTS="$REPO/build/ui-test"
 mkdir -p "$SHOTS"
 ACTIVE_SKIN='cfg_var.2A7E4C11-8B3F-4D6A-9E52-1C8F3A6B0D24'
@@ -59,10 +66,19 @@ EXPECT=('foo_js_panel .* QuickJS' 'smoke: loaded, include ok' 'smoke: size ' 'sm
         'smoke: state outputs=[1-9][0-9]* active=1 dsp=[0-9]+ rg=true lock=AddItems\+RenamePlaylist/JS Panel unlocked=0 charset=0 map=AB' 'smoke: state-cb top=(true|false)'
         'smoke: script command run=true' 'smoke: main menu 2' 'smoke: tooltip smoke tooltip [0-9]+'
         'smoke: theme dui=ff[0-9a-f]{6},ff[0-9a-f]{6} cui=ff[0-9a-f]{6} font=.+ [0-9]+ sys=ff[0-9a-f]{6}'
-        'smoke: fonts segoe=true semibold=true nope=false')
+        'smoke: fonts segoe=true semibold=true nope=false'
+        'smoke: ini write=true read=[0-9]+,js panel missing=def package=null' 'smoke: queue found=true contents=[1-9][0-9]* removed=true'
+        'smoke: queue-cb origin=0' 'smoke: add-locations items=1' 'smoke: module answer=42' 'smoke: fetch TypeError'
+        'smoke: skin variable jsp.smoke=[0-9]+' 'smoke: skin message smoke-skin n=1 from=[0-9]+'
+        'smoke: navidrome search (artists=[1-9][0-9]* albums=[0-9]+ tracks=[0-9]+ path=(navidrome|none)|skipped)')
 
 say() { printf '==> %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+
+all_seen() {
+  local re
+  for re in "${EXPECT[@]}"; do grep -aEq "$re" <<<"$1" || return 1; done
+}
 
 check_log() {
   local log="$1" missing=0
@@ -80,68 +96,99 @@ JSP3_EXPECT=('foo_js_panel .* QuickJS' 'jsp3: loaded lodash=function chunks=2 du
 DRAGDROP_EXPECT=('foo_js_panel .* QuickJS' 'dragdrop: clipboard copied=true has=true count=2' 'dragdrop: ready source'
                  'dragdrop: ready target' 'dragdrop: enter effect=[1-3]' 'dragdrop: drop at ' 'dragdrop: added 2')
 MAC_PROFILE="$HOME/Library/foobar2000-v2"
-MAC_DB="$MAC_PROFILE/config.sqlite"
-mac_restore() {
+MAC_VM="${MAC_VM:-$REPO/../foo_navidrome/scripts/terminal-mac.sh}"
+MAC_REPO="$REPO"
+m() { bash -c "$1"; }
+mac_vm_init() {
+  [ -x "$MAC_VM" ] || fail "no $MAC_VM (clone foo_navidrome next to this repo, or set MAC_VM)"
+  m() { "$MAC_VM" ssh "$1"; }
+  local home; home="$(m 'echo $HOME')"
+  [ -n "$home" ] || fail "no ssh into the VM ($MAC_VM status)"
+  MAC_PROFILE="$home/Library/foobar2000-v2"
+  MAC_REPO="$home/jsp-test/foo_js_panel"
+  [ -d "$REPO/../foo_ui_panels/build-mac/foo_ui_panels.component" ] || fail "no ../foo_ui_panels/build-mac/foo_ui_panels.component (make mac-build there)"
+  say "push the bundles, scripts and tests"
+  m "rm -rf ~/jsp-test && mkdir -p ~/jsp-test/foo_js_panel ~/jsp-test/foo_ui_panels"
+  tar -C "$REPO" -cf - scripts tests build-mac/foo_js_panel.component | m "tar -xf - -C '$MAC_REPO'"
+  tar -C "$REPO/../foo_ui_panels" -cf - build-mac/foo_ui_panels.component | m "tar -xf - -C ~/jsp-test/foo_ui_panels"
+}
+mac_quit() {
+  if [ "$PLATFORM" = mac-vm ]; then "$MAC_VM" fb2k stop >/dev/null 2>&1 || true; return 0; fi
   osascript -e 'tell application "foobar2000" to quit' >/dev/null 2>&1 || true
   for _ in $(seq 1 20); do pgrep -x foobar2000 >/dev/null || break; sleep 0.5; done
-  "$REPO/scripts/mac-local.sh" --restore
-  if [ -n "$MAC_PREV_VERBOSE" ]; then sqlite3 "$MAC_DB" "insert or replace into configInts(name,value) values('$VERBOSE',$MAC_PREV_VERBOSE);"
-  else sqlite3 "$MAC_DB" "delete from configInts where name='$VERBOSE';"; fi
+}
+mac_launch() {
+  if [ "$PLATFORM" = mac-vm ]; then "$MAC_VM" fb2k start; else open -a foobar2000; fi
+}
+mac_crashes() { m 'ls ~/Library/Logs/DiagnosticReports 2>/dev/null | grep -c "^foobar2000" || true'; }
+mac_restore() {
+  mac_quit
+  m "MAC_LOCAL_STATE='$MAC_LOCAL_STATE' '$MAC_REPO/scripts/mac-local.sh' --restore"
+  if [ -n "$MAC_PREV_VERBOSE" ]; then m "sqlite3 '$MAC_DB' \"insert or replace into configInts(name,value) values('$VERBOSE',$MAC_PREV_VERBOSE);\""
+  else m "sqlite3 '$MAC_DB' \"delete from configInts where name='$VERBOSE';\""; fi
   if [ -n "${MAC_SKINS_BEFORE:-}" ]; then
     local d
-    for d in "$MAC_PROFILE"/foo_ui_panels-skins/*/; do
-      grep -qxF "$(basename "$d")" "$MAC_SKINS_BEFORE" || rm -rf "$d"
+    for d in $(m "ls '$MAC_PROFILE/foo_ui_panels-skins'"); do
+      grep -qxF "$d" "$MAC_SKINS_BEFORE" || m "rm -rf '$MAC_PROFILE/foo_ui_panels-skins/$d'"
     done
     rm -f "$MAC_SKINS_BEFORE"
   fi
-  rm -rf "$MAC_PROFILE/foo_ui_panels-skins/$SKIN" "$MAC_LOCAL_STATE"
-  [ -n "${MAC_CLIP:-}" ] && { pbcopy < "$MAC_CLIP"; rm -f "$MAC_CLIP"; }
+  m "rm -rf '$MAC_PROFILE/foo_ui_panels-skins/$SKIN' '$MAC_LOCAL_STATE'"
+  [ -n "${MAC_CLIP:-}" ] && { m pbcopy < "$MAC_CLIP"; rm -f "$MAC_CLIP"; }
+  [ "$PLATFORM" = mac-vm ] && m 'rm -rf ~/jsp-test'
   return 0
 }
 
 mac_smoke() {
   local log
   [ -d "$REPO/build-mac/foo_js_panel.component" ] || fail "no build-mac/foo_js_panel.component (make mac-build)"
-  MAC_LOCAL_STATE="$(mktemp -d)"
-  export MAC_LOCAL_STATE
-  MAC_PREV_VERBOSE="$(sqlite3 "$MAC_DB" "select value from configInts where name='$VERBOSE'")"
+  [ "$PLATFORM" = mac-vm ] && mac_vm_init
+  MAC_DB="$MAC_PROFILE/config.sqlite"
+  MAC_LOG="$MAC_PROFILE/foo_js_panel.log"
+  MAC_LOCAL_STATE="$(m 'mktemp -d')"
+  MAC_PREV_VERBOSE="$(m "sqlite3 '$MAC_DB' \"select value from configInts where name='$VERBOSE'\"")"
+  local crashes_before; crashes_before="$(mac_crashes)"
   trap mac_restore EXIT
   if [ "$SCENARIO" = import ]; then
     MAC_SKINS_BEFORE="$(mktemp)"
-    ls "$MAC_PROFILE/foo_ui_panels-skins" > "$MAC_SKINS_BEFORE"
+    m "ls '$MAC_PROFILE/foo_ui_panels-skins'" > "$MAC_SKINS_BEFORE"
   fi
   if [ "$SCENARIO" = dragdrop ]; then
     MAC_CLIP="$(mktemp)"
-    pbpaste > "$MAC_CLIP" 2>/dev/null || true
+    m pbpaste > "$MAC_CLIP" 2>/dev/null || true
   fi
-  local script="$REPO/tests/scripts/$SCENARIO.js"
+  local script="$MAC_REPO/tests/scripts/$SCENARIO.js"
+  [ "$SCENARIO" = editor ] && script="$MAC_REPO/tests/scripts/editor-open.js"
   if [ "$SCENARIO" = reload ]; then
     script="$MAC_LOCAL_STATE/reload.js"
-    cp "$REPO/tests/scripts/reload.js" "$script"
+    m "cp '$MAC_REPO/tests/scripts/reload.js' '$script'"
   fi
-  "$REPO/scripts/mac-local.sh" --panels-ui --skin "$REPO/tests/skins/$SKIN" --script "$script"
-  sqlite3 "$MAC_DB" "insert or replace into configInts(name,value) values('$VERBOSE',1);"
-  local start; start=$(( $(wc -c < "$MAC_PROFILE/foo_js_panel.log" 2>/dev/null || echo 0) + 1 ))
+  mac_quit
+  m "MAC_LOCAL_STATE='$MAC_LOCAL_STATE' '$MAC_REPO/scripts/mac-local.sh' --panels-ui --skin '$MAC_REPO/tests/skins/$SKIN' --script '$script'"
+  m "sqlite3 '$MAC_DB' \"insert or replace into configInts(name,value) values('$VERBOSE',1);\""
+  local start; start=$(( $(m "wc -c < '$MAC_LOG' 2>/dev/null || echo 0") + 1 ))
+  mac_log() { m "tail -c +$start '$MAC_LOG' 2>/dev/null" || true; }
   say "launch foobar2000"
-  open -a foobar2000
+  mac_launch
   local ready='smoke: paint .* ticks=3'
   [ "$SCENARIO" = dragdrop ] && ready='dragdrop: ready target'
   [ "$SCENARIO" = jsp3 ] && ready='jsp3: paint'
   [ "$SCENARIO" = reload ] && ready='reload: generation 1'
+  [ "$SCENARIO" = editor ] && ready='editor: open' && EXPECT=('foo_js_panel .* QuickJS' 'editor: open editor 42 true')
   [ "$SCENARIO" = import ] && ready='titlebar[.]js'
   [ "$SCENARIO" = import ] && EXPECT=("${IMPORT_EXPECT[@]}")
   [ "$SCENARIO" = reload ] && EXPECT=("${RELOAD_EXPECT[@]}")
   [ "$SCENARIO" = jsp3 ] && EXPECT=("${JSP3_EXPECT[@]}")
   for _ in $(seq 1 60); do
-    log="$(tail -c +"$start" "$MAC_PROFILE/foo_js_panel.log" 2>/dev/null || true)"
+    log="$(mac_log)"
     grep -aq "$ready" <<<"$log" && break
     sleep 1
   done
   if [ "$SCENARIO" = reload ]; then
     sleep 2
-    sed -i '' 's/generation = 1/generation = 2/' "$script"
+    m "sed -i '' 's/generation = 1/generation = 2/' '$script'"
     for _ in $(seq 1 15); do
-      log="$(tail -c +"$start" "$MAC_PROFILE/foo_js_panel.log" 2>/dev/null || true)"
+      log="$(mac_log)"
       grep -aq 'reload: generation 2' <<<"$log" && break
       sleep 1
     done
@@ -151,13 +198,23 @@ mac_smoke() {
     sleep 2
     "$REPO/scripts/mac-click.sh" 200 200 drag 200 -40 || say "the drag couldn't be posted"
     for _ in $(seq 1 15); do
-      log="$(tail -c +"$start" "$MAC_PROFILE/foo_js_panel.log" 2>/dev/null || true)"
+      log="$(mac_log)"
       grep -aq 'dragdrop: added' <<<"$log" && break
       sleep 1
     done
   fi
+  for _ in $(seq 1 15); do
+    all_seen "$log" && break
+    sleep 1
+    log="$(mac_log)"
+  done
+  [ "$SCENARIO" = editor ] && sleep 2
+  if [ "$PLATFORM" = mac-vm ]; then
+    "$MAC_VM" shot "$SHOTS/mac-vm-$SCENARIO.png" >/dev/null 2>&1 && say "screenshot $SHOTS/mac-vm-$SCENARIO.png"
+  fi
   say "log"
   check_log "$log"
+  [ "$(mac_crashes)" = "$crashes_before" ] || fail "foobar2000 wrote a crash report (~/Library/Logs/DiagnosticReports)"
 }
 
 VM="${WIN11_ARM:-$REPO/../foo_navidrome/scripts/win11-arm.sh}"
@@ -212,11 +269,14 @@ win11_arm_smoke() {
     say "push an unzipped Eole"
     "$vm" push "$stage/EoleImport" AppData/Local/Temp >/dev/null
     VM_DIRS+=('%LOCALAPPDATA%\Temp\EoleImport')
+    VM_SKINS_BEFORE="$("$vm" ssh "dir /b \"$skins_win\"" 2>/dev/null | tr -d '\r')"
+  fi
+  if [ "$SCENARIO" = import ] || [ "$SCENARIO" = smoke ]; then
     local pui="$REPO/../foo_ui_panels/build-$arch/foo_ui_panels.dll"
     [ "$arch" = x64 ] && pui="$REPO/../foo_ui_panels/build/foo_ui_panels.dll"
+    [ -f "$pui" ] || fail "no $pui (build foo_ui_panels for $arch)"
     say "deploy $(basename "$pui") ($arch)"
     "$vm" deploy "$pui" >/dev/null
-    VM_SKINS_BEFORE="$("$vm" ssh "dir /b \"$skins_win\"" 2>/dev/null | tr -d '\r')"
   fi
   sql="insert or replace into configStrings(name,value) values('$ACTIVE_SKIN','$SKIN');
        insert or replace into configStrings(name,value) values('$DEFAULT_SCRIPT','C:\\Users\\tester\\AppData\\Local\\Temp\\jsp-scripts\\$SCENARIO.js');
@@ -306,6 +366,11 @@ win11_arm_smoke() {
     "$vm" tap 'hover,50%,50%;wait,1500' >/dev/null
     "$vm" shot "$SHOTS/win11-arm-$arch-tooltip.png" >/dev/null 2>&1 && say "screenshot $SHOTS/win11-arm-$arch-tooltip.png"
   fi
+  for _ in $(seq 1 8); do
+    all_seen "$log" && break
+    sleep 2
+    log="$(vm_log)"
+  done
   say "log"
   local banner="$arch"; [ "$arch" = arm64ec ] && banner=ARM64EC
   grep -aq "($banner)" <<<"$log" || fail "the session banner isn't the $arch build"
@@ -314,7 +379,7 @@ win11_arm_smoke() {
 }
 
 case "$PLATFORM" in
-  mac) mac_smoke ;;
+  mac|mac-vm) mac_smoke ;;
   win11-arm) win11_arm_smoke ;;
   *) usage >&2; exit 2 ;;
 esac

@@ -21,6 +21,12 @@ function on_paint(gr) {
 }
 console.log('smoke: navidrome available=' + navidrome.IsAvailable + ' configured=' + navidrome.IsConfigured);
 if (navidrome.IsConfigured) {
+    navidrome.GetArtistsAsync().then(a => a.length ? navidrome.SearchAsync(a[0].Name.trim()) : null).then(
+        r => console.log(r ? 'smoke: navidrome search artists=' + r.Artists.length + ' albums=' + r.Albums.length + ' tracks=' + r.Tracks.Count +
+                             ' path=' + (r.Tracks.Count ? r.Tracks.Item(0).Path.split(':')[0] : 'none') : 'smoke: navidrome search skipped'),
+        e => console.log('smoke: navidrome search error ' + e.message));
+} else console.log('smoke: navidrome search skipped');
+if (navidrome.IsConfigured) {
     navidrome.GetArtistsAsync().then(
         a => console.log('smoke: navidrome artists=' + a.length + (a.length ? ' first=' + JSON.stringify(a[0].Name) : '')),
         e => console.log('smoke: navidrome error ' + e.message));
@@ -101,3 +107,39 @@ const uiFont = window.GetFontDUI(0);
 console.log('smoke: theme dui=' + hex(window.GetColourDUI(0)) + ',' + hex(window.GetColourDUI(1)) + ' cui=' + hex(window.GetColourCUI(4)) +
             ' font=' + uiFont.Name + ' ' + uiFont.Size + ' sys=' + hex(utils.GetSysColour(5)));
 console.log('smoke: fonts segoe=' + utils.CheckFont('Segoe UI') + ' semibold=' + utils.CheckFont('Segoe UI Semibold') + ' nope=' + utils.CheckFont('Nope Font Xyz'));
+const ini = fb.ProfilePath + 'foo_js_panel/smoke-' + window.ID + '.ini';
+const iniOk = utils.WriteINI(ini, 'Smoke', 'Run', String(runs)) && utils.WriteINI(ini, 'Smoke', 'name', 'js panel');
+console.log('smoke: ini write=' + iniOk + ' read=' + utils.ReadINI(ini, 'smoke', 'RUN') + ',' + utils.ReadINI(ini, 'Smoke', 'Name') +
+            ' missing=' + utils.ReadINI(ini, 'Smoke', 'nope', 'def') + ' package=' + utils.GetPackageInfo('{00000000-0000-0000-0000-000000000000}'));
+fso.DeleteFile(ini);
+let queueSeen = 0, addName = '';
+function on_playlist_items_added(p) {
+    if (!addName || plman.GetPlaylistName(p) !== addName) return;
+    console.log('smoke: add-locations items=' + plman.PlaylistItemCount(p));
+    plman.RemovePlaylist(p);
+}
+function on_playback_queue_changed(origin) { if (++queueSeen === 1) console.log('smoke: queue-cb origin=' + origin); }
+if (plman.PlaylistItemCount(ap) > 0) {
+    plman.AddPlaylistItemToPlaybackQueue(ap, 0);
+    const q = plman.GetPlaybackQueueContents(), qi = plman.FindPlaybackQueueItemIndex(plman.GetPlaylistItems(ap).Item(0), ap, 0);
+    const before = q.length;
+    plman.RemoveItemFromPlaybackQueue(qi);
+    console.log('smoke: queue found=' + (qi >= 0 && q[qi].PlaylistIndex === ap) + ' contents=' + before + ' removed=' + (plman.GetPlaybackQueueContents().length === before - 1));
+    addName = 'smoke-add-' + window.ID;
+    plman.AddLocations(plman.CreatePlaylist(plman.PlaylistCount, addName), [plman.GetPlaylistItems(ap).Item(0).Path]);
+} else console.log('smoke: queue skipped, empty playlist');
+import('./lib/mod.js').then(m => console.log('smoke: module answer=' + m.answer), e => console.log('smoke: module error ' + e.message));
+fetch('http://127.0.0.1:1/').then(r => console.log('smoke: fetch status=' + r.status), e => console.log('smoke: fetch ' + e.name));
+let skinVarSeen = 0, skinMsgSeen = 0;
+function on_panelsui_variable_changed(name, value) {
+    if (name === 'jsp.smoke' && ++skinVarSeen === 1) console.log('smoke: skin variable ' + name + '=' + value);
+}
+const previousNotify = on_notify_data;
+on_notify_data = function (name, info) {
+    if (name === 'smoke-skin' && ++skinMsgSeen === 1) console.log('smoke: skin message ' + name + ' n=' + info.n + ' from=' + info.from);
+    else previousNotify(name, info);
+};
+if (panelsui.IsAvailable) {
+    panelsui.SetVariable('jsp.smoke', String(window.ID));
+    panelsui.RunAction('JSPANEL:smoke-skin:{"n":1,"from":' + window.ID + '}');
+} else console.log('smoke: panelsui missing');

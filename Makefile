@@ -1,5 +1,5 @@
 .PHONY: help build build-arm64ec build-x86 build-all deploy launch run kill clean check-portable test win-test \
-	mac-build mac-local mac-smoke mac-demo mac-restore render theme-check jsp3-check mac-shot mac-click ui-smoke win11-arm win11-arm-deploy win11-arm-test win11-arm-smoke win11-arm-menus win11-arm-images win11-arm-dragdrop mac-dragdrop win11-arm-jsp3 mac-jsp3 win11-arm-reload mac-reload win11-arm-editor mac-import win11-arm-import
+	mac-build mac-local mac-smoke mac-demo mac-restore render theme-check jsp3-check mac-shot mac-click ui-smoke win11-arm win11-arm-deploy win11-arm-test win11-arm-smoke win11-arm-menus win11-arm-images win11-arm-dragdrop mac-dragdrop win11-arm-jsp3 mac-jsp3 win11-arm-reload mac-reload win11-arm-editor mac-import win11-arm-import mac-vm mac-vm-smoke mac-vm-jsp3 mac-vm-reload mac-vm-editor
 
 help:
 	@echo "foo_js_panel — make targets"
@@ -26,6 +26,14 @@ help:
 	@echo "  theme-check     (macOS) LAYOUT=x.fcl PROFILE=dir runs every SMP panel of a Columns UI layout in the engine"
 	@echo "  mac-shot        screenshot of this Mac's foobar2000 window (OUT=file.png)"
 	@echo "  mac-click       click this Mac's foobar2000 window at X= Y= points (KIND=right|double)"
+	@echo ""
+	@echo "  macOS VM on this Mac (terminal-mac, ../foo_navidrome/scripts/terminal-mac.sh, set up from foo_navidrome):"
+	@echo "  mac-vm            start the VM and show its window"
+	@echo "  mac-vm-smoke      mac-build here and in ../foo_ui_panels, then the smoke test in the guest (scripts/ui-test.sh mac-vm smoke)"
+	@echo "  mac-vm-jsp3       the same with the JScript Panel 3 style script, with a screenshot"
+	@echo "  mac-vm-reload     the same: a script edited on disk reloads by itself"
+	@echo "  mac-vm-editor     the same: a script opens its own editor (window.EditScript), with a screenshot"
+	@echo "  mac-vm-<cmd>      any terminal-mac.sh command: -status, -shot, -ssh, -view, -fb2k ARGS='log 60 ERROR', ..."
 	@echo ""
 	@echo "  Windows 11 ARM VM on an Apple Silicon Mac (../foo_navidrome/scripts/win11-arm.sh, set up from foo_navidrome):"
 	@echo "  win11-arm         start the VM and open its screen (VNC=0: no browser)"
@@ -132,6 +140,30 @@ render: $(RENDER_BIN)
 	@if [ -n "$(SCRIPT)" ]; then ./$(RENDER_BIN) $(SCRIPT) $(OUT) $(ARGS); fi
 
 ui-smoke: mac-smoke
+
+MAC_VM ?= $(abspath ../foo_navidrome/scripts/terminal-mac.sh)
+mac-vm:
+	$(MAC_VM) up
+	$(MAC_VM) open
+
+mac-vm-smoke: mac-build
+	$(MAKE) -C $(PUI_ROOT) mac-build
+	MAC_VM=$(MAC_VM) ./scripts/ui-test.sh mac-vm smoke
+
+mac-vm-jsp3: mac-build
+	$(MAKE) -C $(PUI_ROOT) mac-build
+	MAC_VM=$(MAC_VM) ./scripts/ui-test.sh mac-vm jsp3
+
+mac-vm-reload: mac-build
+	$(MAKE) -C $(PUI_ROOT) mac-build
+	MAC_VM=$(MAC_VM) ./scripts/ui-test.sh mac-vm reload
+
+mac-vm-editor: mac-build
+	$(MAKE) -C $(PUI_ROOT) mac-build
+	MAC_VM=$(MAC_VM) ./scripts/ui-test.sh mac-vm editor
+
+mac-vm-%:
+	COMPONENT=foo_js_panel $(MAC_VM) $* $(ARGS)
 
 WIN11_ARM ?= $(abspath ../foo_navidrome/scripts/win11-arm.sh)
 VNC ?= 1
