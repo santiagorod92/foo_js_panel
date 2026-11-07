@@ -442,11 +442,16 @@ public:
 };
 FB2K_SERVICE_FACTORY(QueueNotify);
 
-class SkinNotify : public js_panel::js_panel_notify_api {
+class SkinNotify : public js_panel::js_panel_notify_api_v2 {
 public:
     void notify(const char* name, const char* info) override { Panel::skin_message(name ? name : "", info ? info : ""); }
     void variable_changed(const char* name, const char* value) override {
         Panel::broadcast("on_panelsui_variable_changed", { std::string(name ? name : ""), std::string(value ? value : "") });
+    }
+    void state_changed(const char* name, const char* value) override {
+        const std::string n = name ? name : "", v = value ? value : "";
+        if (n == "mini_mode") Panel::broadcast("on_panelsui_mini_mode", { v == "1" });
+        else if (n == "zoom") Panel::broadcast("on_panelsui_zoom", { atoi(v.c_str()) });
     }
 };
 FB2K_SERVICE_FACTORY(SkinNotify);
@@ -1181,6 +1186,12 @@ panels_ui::panels_ui_api::ptr panels_ui_service() {
     return api;
 }
 
+panels_ui::panels_ui_api_v2::ptr panels_ui_service_v2() {
+    panels_ui::panels_ui_api_v2::ptr v2;
+    if (auto api = panels_ui_service(); api.is_valid()) api->service_query_t(v2);
+    return v2;
+}
+
 }
 
 bool Panel::panels_ui_available() {
@@ -1203,6 +1214,80 @@ void Panel::set_panels_ui_variable(const std::string& name, const std::string& v
 bool Panel::panels_ui_action(const std::string& action) {
     auto api = panels_ui_service();
     return api.is_valid() && api->run_action(action.c_str());
+}
+
+bool Panel::panels_ui_eval(const std::string& expr, std::string& out) {
+    auto v2 = panels_ui_service_v2();
+    pfc::string8 text;
+    if (v2.is_empty() || !v2->eval(expr.c_str(), text)) return false;
+    out = text.c_str();
+    return true;
+}
+
+bool Panel::panels_ui_value(const std::string& name, std::string& out) {
+    auto v2 = panels_ui_service_v2();
+    pfc::string8 v;
+    if (v2.is_empty() || !v2->get_value(name.c_str(), v)) return false;
+    out = v.c_str();
+    return true;
+}
+
+void Panel::set_panels_ui_value(const std::string& name, const std::string& value) {
+    if (auto v2 = panels_ui_service_v2(); v2.is_valid()) v2->set_value(name.c_str(), value.c_str());
+}
+
+std::string Panel::panels_ui_panel_name() {
+    if (!m_puiName.empty()) return m_puiName;
+    pfc::string8 name;
+    if (auto v2 = panels_ui_service_v2(); v2.is_valid() && v2->panel_name(m_surface.native(), name)) m_puiName = name.c_str();
+    return m_puiName;
+}
+
+bool Panel::ui_colour(UiColour kind, uint32_t& argb) {
+    const std::string name = panels_ui_panel_name();
+    if (auto v2 = panels_ui_service_v2(); !name.empty() && v2.is_valid() && v2->get_colour(name.c_str(), (int)kind, argb)) return true;
+    return m_surface.ui_colour(kind, argb);
+}
+
+bool Panel::ui_font(int kind, UiFont& font) {
+    const bool host = m_surface.ui_font(kind, font);
+    const std::string name = panels_ui_panel_name();
+    auto v2 = panels_ui_service_v2();
+    pfc::string8 face;
+    int px = 0, style = 0;
+    if (name.empty() || v2.is_empty() || !v2->get_font(name.c_str(), kind, face, px, style)) return host;
+    font.face = face.c_str();
+    if (px > 0) font.px = (float)px;
+    font.style = style;
+    return true;
+}
+
+bool Panel::panels_ui_panel_rect(const std::string& name, pui::gfx::Rect& out) {
+    auto v2 = panels_ui_service_v2();
+    return v2.is_valid() && v2->get_panel_rect(name.c_str(), out.x, out.y, out.w, out.h);
+}
+
+bool Panel::panels_ui_transparent() {
+    const std::string name = panels_ui_panel_name();
+    auto v2 = panels_ui_service_v2();
+    return !name.empty() && v2.is_valid() && v2->is_transparent(name.c_str());
+}
+
+bool Panel::paint_backdrop(pui::gfx::Canvas& canvas) {
+    const std::string name = panels_ui_panel_name();
+    auto v2 = panels_ui_service_v2();
+    if (name.empty() || v2.is_empty() || !v2->is_transparent(name.c_str())) return false;
+    const int w = canvas.width(), h = canvas.height();
+    const double scale = canvas.device_scale() > 0 ? canvas.device_scale() : 1.0;
+    pui::gfx::Pixels px;
+    px.w = std::max(1, (int)std::lround(w * scale));
+    px.h = std::max(1, (int)std::lround(h * scale));
+    px.pargb.resize((size_t)px.w * px.h);
+    if (!v2->get_backdrop(name.c_str(), px.pargb.data(), px.w, px.h)) return false;
+    auto img = pui::gfx::image_from_pixels(px);
+    if (!img) return false;
+    canvas.draw_image(*img, pui::gfx::RectF{ 0, 0, (float)w, (float)h }, pui::gfx::RectF{ 0, 0, (float)img->width(), (float)img->height() });
+    return true;
 }
 
 Tracks Panel::get_ui_selection() {

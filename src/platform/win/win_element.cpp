@@ -35,6 +35,7 @@ public:
     HWND editor = nullptr;
 
     bool key_pressed(int vk) override { return GetKeyState(vk) < 0; }
+    void* native() override { return hwnd; }
     void open_editor(const std::string& title, const std::string& text, EditorHooks hooks) override {
         if (editor && IsWindow(editor)) {
             wchar_t current[512] = {};

@@ -2819,7 +2819,7 @@ JSValue window_host(JSContext* ctx, JSValueConst, int, JSValueConst*) {
 }
 
 JSValue window_IsVisible(JSContext* ctx, JSValueConst) { return JS_NewBool(ctx, I(ctx)->host.visible()); }
-JSValue window_false(JSContext*, JSValueConst) { return JS_FALSE; }
+JSValue window_IsTransparent(JSContext* ctx, JSValueConst) { return JS_NewBool(ctx, I(ctx)->host.panels_ui_transparent()); }
 JSValue window_InstanceType(JSContext* ctx, JSValueConst) { return JS_NewInt32(ctx, 1); }
 
 template <int JsEngine::Impl::*Field>
@@ -2926,7 +2926,7 @@ const JSCFunctionListEntry kWindowFuncs[] = {
     JS_CFUNC_DEF("SetCursor", 1, window_SetCursor),
     JS_CFUNC_DEF("CreatePopupMenu", 0, window_CreatePopupMenu),
     JS_CGETSET_DEF("IsVisible", window_IsVisible, nullptr),
-    JS_CGETSET_DEF("IsTransparent", window_false, nullptr),
+    JS_CGETSET_DEF("IsTransparent", window_IsTransparent, nullptr),
     JS_CGETSET_DEF("InstanceType", window_InstanceType, nullptr),
     JS_CGETSET_DEF("DlgCode", window_GetInt<&JsEngine::Impl::dlgCode>, window_SetInt<&JsEngine::Impl::dlgCode>),
     JS_CGETSET_DEF("MinWidth", window_GetInt<&JsEngine::Impl::minW>, window_SetInt<&JsEngine::Impl::minW>),
@@ -3161,11 +3161,70 @@ JSValue pui_RunAction(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv
     return JS_NewBool(ctx, I(ctx)->host.panels_ui_action(arg_str(ctx, argc, argv, 0)));
 }
 
+JSValue pui_GetValue(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    std::string value;
+    if (!I(ctx)->host.panels_ui_value(arg_str(ctx, argc, argv, 0), value)) return argc > 1 ? JS_DupValue(ctx, argv[1]) : new_string(ctx, "");
+    return new_string(ctx, value);
+}
+
+JSValue pui_SetValue(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    I(ctx)->host.set_panels_ui_value(arg_str(ctx, argc, argv, 0), arg_str(ctx, argc, argv, 1));
+    return JS_UNDEFINED;
+}
+
+JSValue pui_Eval(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    std::string out;
+    I(ctx)->host.panels_ui_eval(arg_str(ctx, argc, argv, 0), out);
+    return new_string(ctx, out);
+}
+
+JSValue pui_PanelName(JSContext* ctx, JSValueConst) { return new_string(ctx, I(ctx)->host.panels_ui_panel_name()); }
+
+std::string pui_panel_arg(JSContext* ctx, int argc, JSValueConst* argv) {
+    std::string name = argc > 0 && !JS_IsUndefined(argv[0]) ? arg_str(ctx, argc, argv, 0) : std::string();
+    return name.empty() ? I(ctx)->host.panels_ui_panel_name() : name;
+}
+
+JSValue pui_GetPanelRect(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    Rect r;
+    const std::string name = pui_panel_arg(ctx, argc, argv);
+    if (name.empty() || !I(ctx)->host.panels_ui_panel_rect(name, r)) return JS_NULL;
+    JSValue o = JS_NewObject(ctx);
+    set_int(ctx, o, "X", r.x);
+    set_int(ctx, o, "Y", r.y);
+    set_int(ctx, o, "Width", r.w);
+    set_int(ctx, o, "Height", r.h);
+    return o;
+}
+
+template <int Verb>
+JSValue pui_PanelAction(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    const std::string name = pui_panel_arg(ctx, argc, argv);
+    if (name.empty()) return JS_FALSE;
+    std::string action;
+    if (Verb == 0) action = (argc > 1 && !JS_IsUndefined(argv[1]) && !JS_ToBool(ctx, argv[1]) ? "PANEL:HIDE:" : "PANEL:SHOW:") + name;
+    if (Verb == 1) action = "PANEL:TOGGLE:" + name;
+    if (Verb == 2) action = "PANEL:RESET:" + name;
+    if (Verb == 3)
+        action = "PANEL:MOVE:" + name + ":" + std::to_string(arg_int(ctx, argc, argv, 1)) + "," + std::to_string(arg_int(ctx, argc, argv, 2)) +
+                 "," + std::to_string(arg_int(ctx, argc, argv, 3)) + "," + std::to_string(arg_int(ctx, argc, argv, 4));
+    return JS_NewBool(ctx, I(ctx)->host.panels_ui_action(action));
+}
+
 const JSCFunctionListEntry kPanelsUiFuncs[] = {
     JS_CGETSET_DEF("IsAvailable", pui_IsAvailable, nullptr),
+    JS_CGETSET_DEF("PanelName", pui_PanelName, nullptr),
     JS_CFUNC_DEF("GetVariable", 2, pui_GetVariable),
     JS_CFUNC_DEF("SetVariable", 2, pui_SetVariable),
     JS_CFUNC_DEF("RunAction", 1, pui_RunAction),
+    JS_CFUNC_DEF("Eval", 1, pui_Eval),
+    JS_CFUNC_DEF("GetValue", 2, pui_GetValue),
+    JS_CFUNC_DEF("SetValue", 2, pui_SetValue),
+    JS_CFUNC_DEF("GetPanelRect", 1, pui_GetPanelRect),
+    JS_CFUNC_DEF("ShowPanel", 2, pui_PanelAction<0>),
+    JS_CFUNC_DEF("TogglePanel", 1, pui_PanelAction<1>),
+    JS_CFUNC_DEF("ResetPanel", 1, pui_PanelAction<2>),
+    JS_CFUNC_DEF("MovePanel", 5, pui_PanelAction<3>),
 };
 
 JSValue native_selection(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
@@ -4834,7 +4893,7 @@ void JsEngine::paint(Canvas& canvas) {
                          pui::gfx::kWordWrap, kErrorText);
         return;
     }
-    canvas.fill_rect(all, kBackground);
+    if (!m->host.paint_backdrop(canvas)) canvas.fill_rect(all, kBackground);
     JSValue gr = JS_NewObjectClass(m->ctx, (int)g_grClass);
     auto* g = new Graphics;
     g->canvas = &canvas;

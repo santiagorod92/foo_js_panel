@@ -44,6 +44,7 @@ public:
     virtual void set_caption(const pui::gfx::Rect& r) = 0;
     virtual void open_editor(const std::string& title, const std::string& text, EditorHooks hooks) = 0;
     virtual bool key_pressed(int vk) = 0;
+    virtual void* native() = 0;
 };
 
 class Panel : public JsHost, private play_callback_impl_base, private library_callback_dynamic_impl_base {
@@ -195,6 +196,13 @@ public:
     bool panels_ui_variable(const std::string& name, std::string& out) override;
     void set_panels_ui_variable(const std::string& name, const std::string& value) override;
     bool panels_ui_action(const std::string& action) override;
+    std::string panels_ui_panel_name() override;
+    bool panels_ui_eval(const std::string& expr, std::string& out) override;
+    bool panels_ui_value(const std::string& name, std::string& out) override;
+    void set_panels_ui_value(const std::string& name, const std::string& value) override;
+    bool panels_ui_panel_rect(const std::string& name, pui::gfx::Rect& out) override;
+    bool panels_ui_transparent() override;
+    bool paint_backdrop(pui::gfx::Canvas& canvas) override;
     int window_state() override { return m_surface.window_state(); }
     void set_window_state(int state) override { m_surface.set_window_state(state); }
     bool fullscreen() override { return m_surface.fullscreen(); }
@@ -218,8 +226,8 @@ public:
     bool clipboard_has_tracks() override;
     Tracks clipboard_tracks() override;
     void tooltip(const std::string& text, bool active, int maxWidth) override { m_surface.set_tooltip(text, active, maxWidth); }
-    bool ui_colour(UiColour kind, uint32_t& argb) override { return m_surface.ui_colour(kind, argb); }
-    bool ui_font(int kind, UiFont& font) override { return m_surface.ui_font(kind, font); }
+    bool ui_colour(UiColour kind, uint32_t& argb) override;
+    bool ui_font(int kind, UiFont& font) override;
     bool sys_colour(int index, uint32_t& argb) override { return m_surface.sys_colour(index, argb); }
     bool pick_colour(uint32_t& argb) override { return m_surface.pick_colour(argb); }
 
@@ -266,6 +274,7 @@ private:
     std::unique_ptr<Callbacks> m_callbacks;
     ui_selection_holder::ptr m_selection;
     std::vector<std::pair<std::string, long long>> m_watched;
+    std::string m_puiName;
     void watch_files();
     bool files_changed();
 };

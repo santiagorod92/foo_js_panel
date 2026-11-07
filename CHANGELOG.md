@@ -3,6 +3,22 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.5.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.4.0...v1.5.0) (2026-11-07)
+
+### Highlights
+- **See-through panels in Panels UI**: with `panel.<name>.transparent = 1` in the skin's
+  `foo_ui_panels.ini`, a panel is drawn over the skin beneath it instead of its dark background,
+  and `window.IsTransparent` is true.
+- **Scripts follow the skin**: inside Panels UI, `window.GetColourDUI`/`GetColourCUI` and
+  `GetFontDUI`/`GetFontCUI` return the skin's `color.*` and `font.*` settings first.
+
+### Added
+- **More of the `panelsui` object** (Panels UI 1.22 or later): `PanelName`, `GetPanelRect([name])`,
+  `ShowPanel`, `TogglePanel`, `MovePanel`, `ResetPanel` (hide, show or move skin panels),
+  `SetValue` / `GetValue` (values the skin reads with `$getvalue`, not saved) and `Eval(expr)`
+  (titleformat run the way the skin runs it).
+- **Callbacks** `on_panelsui_mini_mode(on)` and `on_panelsui_zoom(percent)`.
+
 ## [1.4.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.3.0...v1.4.0) (2026-11-06)
 
 ### Highlights

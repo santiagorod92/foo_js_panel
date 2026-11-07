@@ -438,6 +438,7 @@ public:
     pui::gfx::Rect caption{};
     void set_caption(const pui::gfx::Rect& r) override { caption = r; }
     bool in_caption(NSEvent* e);
+    void* native() override { return (__bridge void*)view; }
     bool key_pressed(int vk) override {
         const NSEventModifierFlags m = NSEvent.modifierFlags;
         switch (vk) {

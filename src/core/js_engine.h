@@ -244,6 +244,13 @@ public:
     virtual bool panels_ui_variable(const std::string&, std::string&) { return false; }
     virtual void set_panels_ui_variable(const std::string&, const std::string&) {}
     virtual bool panels_ui_action(const std::string&) { return false; }
+    virtual std::string panels_ui_panel_name() { return {}; }
+    virtual bool panels_ui_eval(const std::string&, std::string&) { return false; }
+    virtual bool panels_ui_value(const std::string&, std::string&) { return false; }
+    virtual void set_panels_ui_value(const std::string&, const std::string&) {}
+    virtual bool panels_ui_panel_rect(const std::string&, pui::gfx::Rect&) { return false; }
+    virtual bool panels_ui_transparent() { return false; }
+    virtual bool paint_backdrop(pui::gfx::Canvas&) { return false; }
     virtual bool visible() { return true; }
     virtual int window_state() { return 0; }
     virtual void set_window_state(int) {}

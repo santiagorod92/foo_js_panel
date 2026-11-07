@@ -334,6 +334,34 @@ void load_template_js(t::FakeHost& host) {
     host.files["js/lib/palette.js"] = template_js(src, "JSPAL");
     host.files["js/library_tree.js"] = template_js(src, "JSLIB");
     host.files["js/navidrome_artists.js"] = template_js(src, "JSNDA");
+    host.files["js/cover_overlay.js"] = template_js(src, "JSCOV");
+}
+
+TEST("Panels UI templates: cover_overlay.js shades the cover and toggles cover.full on click") {
+    t::FakeHost host;
+    load_template_js(host);
+    CHECK(!host.files["js/cover_overlay.js"].empty());
+    host.puiTransparent = true;
+    JsEngine e(host);
+    CHECK(e.load(host.files["js/cover_overlay.js"], "js/cover_overlay.js"));
+    e.resize(550, 84);
+    t::RecordingCanvas stopped;
+    e.paint(stopped);
+    CHECK(has_prefix(stopped, "text \"Nothing playing\""));
+    host.playing = true;
+    host.length = 240;
+    host.time = 61;
+    host.fields["%title%"] = "Harbor Lights";
+    host.fields["[%artist%][  \u00b7  %album%]"] = "The Glass Pilots  \u00b7  Neon Harbor";
+    t::RecordingCanvas playing;
+    e.paint(playing);
+    CHECK(has_prefix(playing, "text \"Harbor Lights\""));
+    CHECK(has_prefix(playing, "text \"1:01 / 4:00\""));
+    e.mouse(Mouse::LeftUp, 10, 10, 0);
+    CHECK_EQ(host.puiValues["cover.full"], std::string("1"));
+    e.mouse(Mouse::LeftUp, 10, 10, 0);
+    CHECK_EQ(host.puiValues["cover.full"], std::string(""));
+    CHECK(!e.failed());
 }
 
 TEST("Panels UI templates: now_playing.js runs stopped and playing, with the album cover") {
@@ -1644,6 +1672,31 @@ TEST("Panels UI bridge: panelsui reads and writes skin variables and runs action
                  " panelsui.GetVariable('none', 'def'), panelsui.RunAction('MINIMODE:TOGGLE'));", ""));
     CHECK_EQ(host.console_lines.back(), std::string("true 2 def true"));
     CHECK(host.puiActions == std::vector<std::string>{ "MINIMODE:TOGGLE" });
+}
+
+TEST("Panels UI bridge: panelsui publishes values the skin reads with $get") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("panelsui.SetValue('hover', 3); console.log(panelsui.GetValue('hover'), panelsui.GetValue('none', 'def'));", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("3 def"));
+    CHECK_EQ(host.puiValues["hover"], std::string("3"));
+    CHECK(host.puiVars.empty());
+}
+
+TEST("Panels UI bridge: panelsui shows, hides, moves and measures skin panels") {
+    t::FakeHost host;
+    host.puiName = "Cover";
+    host.puiRects["Cover"] = pui::gfx::Rect{ 10, 20, 300, 200 };
+    host.puiTransparent = true;
+    JsEngine e(host);
+    CHECK(e.load("const r = panelsui.GetPanelRect(), o = panelsui.GetPanelRect('Other');"
+                 "panelsui.ShowPanel('Lyrics', false); panelsui.ShowPanel('Lyrics'); panelsui.TogglePanel('Lyrics');"
+                 "panelsui.MovePanel('Lyrics', 1, 2, 30, 40); panelsui.ResetPanel(); "
+                 "console.log(panelsui.PanelName, r.X, r.Y, r.Width, r.Height, o, window.IsTransparent, panelsui.Eval('%pui_zoom%'));", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("Cover 10 20 300 200 null true 125"));
+    const std::vector<std::string> want = { "PANEL:HIDE:Lyrics", "PANEL:SHOW:Lyrics", "PANEL:TOGGLE:Lyrics",
+                                            "PANEL:MOVE:Lyrics:1,2,30,40", "PANEL:RESET:Cover" };
+    CHECK(host.puiActions == want);
 }
 
 TEST("UIHacks drives the main window: state, fullscreen, size limits and the pseudo caption") {

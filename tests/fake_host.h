@@ -428,6 +428,29 @@ struct FakeHost : jsp::JsHost {
         puiActions.push_back(a);
         return true;
     }
+    std::string puiName;
+    std::map<std::string, pui::gfx::Rect> puiRects;
+    std::string panels_ui_panel_name() override { return puiName; }
+    std::map<std::string, std::string> puiValues;
+    bool panels_ui_value(const std::string& n, std::string& out) override {
+        auto it = puiValues.find(n);
+        if (it == puiValues.end()) return false;
+        out = it->second;
+        return true;
+    }
+    void set_panels_ui_value(const std::string& n, const std::string& v) override { puiValues[n] = v; }
+    bool panels_ui_eval(const std::string& expr, std::string& out) override {
+        out = expr == "%pui_zoom%" ? "125" : std::string();
+        return true;
+    }
+    bool panels_ui_panel_rect(const std::string& n, pui::gfx::Rect& out) override {
+        auto it = puiRects.find(n);
+        if (it == puiRects.end()) return false;
+        out = it->second;
+        return true;
+    }
+    bool puiTransparent = false;
+    bool panels_ui_transparent() override { return puiTransparent; }
     bool shown = true;
     bool visible() override { return shown; }
     int window_state() override { return winState; }
