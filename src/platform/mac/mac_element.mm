@@ -803,7 +803,17 @@ int MacSurface::popup_menu(int x, int y, const jsp::Menu& menu) {
     FooJsPanelMenuTarget* target = [FooJsPanelMenuTarget new];
     NSMenu* m = build_menu(menu, target);
     target.chosen = 0;
-    [m popUpMenuPositioningItem:nil atLocation:NSMakePoint(x, y) inView:view];
+    NSPoint at = NSMakePoint(x, y);
+    if (NSWindow* w = view.window; w && w.screen) {
+        const CGFloat margin = 24;
+        const NSRect screen = w.screen.frame;
+        const NSPoint in_window = [view convertPoint:at toView:nil];
+        NSRect r = [w convertRectToScreen:NSMakeRect(in_window.x, in_window.y, 0, 0)];
+        r.origin.x = std::max(r.origin.x, NSMinX(screen) + margin);
+        r.origin.y = std::min(r.origin.y, NSMaxY(screen) - margin);
+        at = [view convertPoint:[w convertRectFromScreen:r].origin fromView:nil];
+    }
+    [m popUpMenuPositioningItem:nil atLocation:at inView:view];
     return (int)target.chosen;
 }
 

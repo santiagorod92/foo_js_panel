@@ -3,6 +3,12 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.5.1](https://github.com/santiagorod92/foo_js_panel/compare/v1.5.0...v1.5.1) (2026-11-09)
+
+### Fixed
+- **macOS: popup menus opened near the left or top edge of a screen** (like Eole's main menu
+  button) no longer jump to the middle of the window when another display sits next to that edge.
+
 ## [1.5.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.4.0...v1.5.0) (2026-11-07)
 
 ### Highlights
