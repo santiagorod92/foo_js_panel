@@ -774,6 +774,20 @@ TEST("keys: macOS key codes map to Windows virtual keys") {
     CHECK_EQ(mac_key_to_vk(50, '`'), 0);
 }
 
+TEST("keys: macOS modifiers for IsKeyPressed: ⌘ is VK_LWIN/RWIN, and still counts as VK_CONTROL") {
+    using M = MacModifiers;
+    const M none{}, shift{ true }, ctrl{ false, true }, opt{ false, false, true }, cmd{ false, false, false, true };
+    CHECK(mac_modifier_pressed(0x10, shift));
+    CHECK(!mac_modifier_pressed(0x10, none));
+    CHECK(mac_modifier_pressed(0x11, ctrl));
+    CHECK(mac_modifier_pressed(0x11, cmd));      // scripts written for Windows read ⌘C as Ctrl+C
+    CHECK(mac_modifier_pressed(0x12, opt));
+    CHECK(mac_modifier_pressed(0x5B, cmd));      // VK_LWIN: tells ⌘ from ⌃
+    CHECK(mac_modifier_pressed(0x5C, cmd));      // VK_RWIN
+    CHECK(!mac_modifier_pressed(0x5B, ctrl));
+    CHECK(!mac_modifier_pressed(0x41, cmd));
+}
+
 TEST("Panels UI templates: navidrome_artists.js plays the selected artist on Enter, adds with Ctrl+Enter") {
     t::FakeHost host;
     load_template_js(host);
