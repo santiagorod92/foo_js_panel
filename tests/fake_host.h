@@ -272,6 +272,7 @@ struct FakeHost : jsp::JsHost {
         commands_run.push_back("main " + path);
         return path == "View/Console";
     }
+    bool main_menu_command_checked(const std::string& path) override { return path == "Playback/Stop after current"; }
     bool run_context_command(const std::string& path, const jsp::Tracks* tracks) override {
         commands_run.push_back("context " + path + " " + std::to_string(tracks ? tracks->size() : 0));
         return true;

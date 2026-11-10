@@ -88,6 +88,20 @@ TEST("engine: GdiDrawText with DT_CALCRECT grows the box to the text, bottom or 
     CHECK(has_prefix(c, "text \"c\" 0,28,50,12 f" + std::to_string(pui::gfx::kSingleLine)));
 }
 
+TEST("engine: DrawString centres or bottom-aligns wrapped text itself, as GDI+ does and the canvases don't") {
+    t::FakeHost host;
+    JsEngine e(host);
+    e.load("const f = gdi.Font('Arial', 14);"
+           "function on_paint(gr) { gr.DrawString('a', f, 0xffffffff, 0, 0, 50, 40, 0x11000000);"
+           " gr.DrawString('b', f, 0xffffffff, 0, 0, 50, 40, 0x02000000);"
+           " gr.DrawString('c', f, 0xffffffff, 0, 0, 50, 40, 0x01001000); }", "");
+    t::RecordingCanvas c;
+    e.paint(c);
+    CHECK(has_prefix(c, "text \"a\" 0,14,50,12 f" + std::to_string(pui::gfx::kAlignCenter | pui::gfx::kWordWrap)));
+    CHECK(has_prefix(c, "text \"b\" 0,28,50,12 f" + std::to_string(pui::gfx::kWordWrap)));
+    CHECK(has_prefix(c, "text \"c\" 0,0,50,40 f" + std::to_string(pui::gfx::kVCenter | pui::gfx::kSingleLine)));
+}
+
 TEST("api: library relative paths use Windows separators, as SMP scripts split them on backslashes") {
 #ifdef _WIN32
     CHECK_EQ(jsp::windows_separators("A\\B\\c.flac"), std::string("A\\B\\c.flac"));
@@ -1006,6 +1020,38 @@ TEST("utils: ReadINI / WriteINI keep sections, case-insensitive keys and the fil
     CHECK_EQ(host.files["/p/a.ini"], std::string("; c\r\n[Main]\r\nName = \"Eole\"\r\nsize=4\r\nnew=n\r\n\r\n[Other]\r\nx=1\r\n\r\n[Third]\r\nk=v\r\n"));
 }
 
+TEST("packages: a relative include that isn't next to the calling file is looked for in the package's scripts folder") {
+    t::FakeHost host;
+    host.files["/p/foo_spider_monkey_panel/packages/{ABC}/scripts/utils.js"] = "var where = 'scripts';";
+    host.files["/p/foo_spider_monkey_panel/packages/{ABC}/local.js"] = "var near = 'root';";
+    JsEngine e(host);
+    CHECK(e.load("include('local.js'); include('utils.js'); console.log(near, where);", "/p/foo_spider_monkey_panel/packages/{ABC}/main.js"));
+    if (e.failed()) printf("%s\n", e.error().c_str());
+    CHECK_EQ(host.console_lines.back(), std::string("root scripts"));
+    JsEngine plain(host);
+    CHECK(!plain.load("include('utils.js');", "/s/main.js"));
+}
+
+TEST("include: a file is evaluated once unless always_evaluate is set, however its path is spelled") {
+    t::FakeHost host;
+    host.files["/s/lib/count.js"] = "var n = (typeof n === 'number' ? n : 0) + 1;";
+    JsEngine e(host);
+    CHECK(e.load("include('lib/count.js'); include('lib//count.js'); include('/s/lib/../lib/count.js'); const once = n;"
+                 "include('lib/count.js', { always_evaluate: true }); console.log(once, n);", "/s/main.js"));
+    CHECK_EQ(host.console_lines.back(), std::string("1 2"));
+}
+
+TEST("include: a relative path resolves against the file of the function that calls include, as in SMP") {
+    t::FakeHost host;
+    host.files["/s/lib/helpers.js"] = "function load_near(p) { include(p); }";
+    host.files["/s/lib/other.js"] = "var from = 'lib';";
+    host.files["/s/top.js"] = "var top = 'top';";
+    JsEngine e(host);
+    CHECK(e.load("include('lib/helpers.js'); load_near('other.js'); include('top.js'); console.log(from, top);", "/s/main.js"));
+    if (e.failed()) printf("%s\n", e.error().c_str());
+    CHECK_EQ(host.console_lines.back(), std::string("lib top"));
+}
+
 TEST("packages: GetPackageInfo / GetPackagePath find SMP 1.6 packages, ScriptInfo.PackageId names the running one") {
     namespace fs = std::filesystem;
     const fs::path profile = fs::temp_directory_path() / "jsp_pkg_test";
@@ -1435,6 +1481,9 @@ TEST("ActiveX: Scripting.FileSystemObject creates, writes, reads, lists, moves a
                  "fso.CreateFolder(fso.BuildPath(sub, 'inner'));"
                  "const folder = fso.GetFolder(sub), names = []; for (const f of folder.Files) names.push(f.Name);"
                  "const file = fso.GetFile(fso.BuildPath(sub, 'a.txt'));"
+                 "const fts = file.OpenAsTextStream(1, -1), viaFile = fts.ReadAll(); fts.Close(); file.Copy(fso.BuildPath(sub, 'c.txt'));"
+                 "const copied = fso.FileExists(fso.BuildPath(sub, 'c.txt')); fso.GetFile(fso.BuildPath(sub, 'c.txt')).Delete();"
+                 "console.log(viaFile.replace(/\\r?\\n/, '+'), copied, fso.FileExists(fso.BuildPath(sub, 'c.txt')));"
                  "console.log(l1, rest, names.join(','), folder.Files.Count, folder.SubFolders.Count, folder.SubFolders.Item(0).Name,"
                  " file.Size, file.DateLastModified instanceof Date, fso.FileExists(fso.BuildPath(sub, 'a.txt')), fso.FolderExists(sub));"
                  "fso.DeleteFile(fso.BuildPath(sub, 'PSS_*'));"
@@ -1445,6 +1494,7 @@ TEST("ActiveX: Scripting.FileSystemObject creates, writes, reads, lists, moves a
                  "fso.DeleteFolder(sub); console.log(fso.FolderExists(sub),"
                  " fso.GetBaseName('C:\\\\x\\\\song.flac'), fso.GetExtensionName('C:\\\\x\\\\song.flac'), fso.GetParentFolderName('C:\\\\x\\\\song.flac'), fso.GetFileName('C:\\\\x\\\\'));", ""));
     const auto& out = host.console_lines;
+    CHECK_EQ(out[out.size() - 4], std::string("one+two! true false"));
     CHECK_EQ(out[out.size() - 3], std::string("one two! PSS_1.txt,PSS_2.txt,a.txt 3 1 inner 9 true true true"));
     CHECK_EQ(out[out.size() - 2], std::string("1 true File not found -2146828235 | File already exists"));
     CHECK_EQ(out.back(), std::string("false song flac C:\\x x"));
@@ -1524,7 +1574,7 @@ TEST("ActiveX: WScript.Shell.Run of a cscript download VBS fetches the URL into 
     fs::remove_all(dir, ec);
 }
 
-TEST("ActiveX: WScript.Shell, htmlfile clipboard, UIHacks, ESLyric and unknown objects") {
+TEST("ActiveX: WScript.Shell, htmlfile clipboard, UIHacks, ESLyric, Georgia-ReBORN's wizards and unknown objects") {
     t::FakeHost host;
     host.clip = "copied";
     JsEngine e(host);
@@ -1537,10 +1587,12 @@ TEST("ActiveX: WScript.Shell, htmlfile clipboard, UIHacks, ESLyric and unknown o
                  "doc.parentWindow.clipboardData.setData('Text', 'new text');"
                  "const ui = new ActiveXObject('UIHacks'); ui.DisableSizing = true; ui.SetPseudoCaption(0, 0, 10, 10);"
                  "const esl = new ActiveXObject('ESLyric'), panel = esl.GetAll(); panel.SetTextColor(1); panel.SetTextFont('Segoe UI', 12, 0);"
+                 "const aw = new ActiveXObject('AudioWizard'), uw = new ActiveXObject('UIWizard'); aw.StartPeakmeterMonitoring(50, 50); uw.FrameStyle = 3;"
                  "let unknown = ''; try { new ActiveXObject('Some.Thing'); } catch (x) { unknown = x.message; }"
                  "let vbs = ''; try { const s = new ActiveXObject('ScriptControl'); s.Language = 'VBScript'; s.Eval('MsgBox(1)'); } catch (x) { vbs = 'no vbs'; }"
-                 "console.log(v, reg, answer, was, ui.FrameStyle, ui.DisableSizing, ui.MaxSize.Enabled, typeof panel, unknown, vbs);", ""));
-    CHECK_EQ(host.console_lines.back(), std::string("10 threw 6 copied 0 true false function Automation server can't create object (Some.Thing) no vbs"));
+                 "console.log(v, reg, answer, was, ui.FrameStyle, ui.DisableSizing, ui.MaxSize.Enabled, typeof panel,"
+                 " JSON.parse(aw.GetWaveformDataInfo()).metricsPerChannel, aw.GetWaveformTrackCount(), aw.PeakmeterAdjustedLeftRMS, unknown, vbs);", ""));
+    CHECK_EQ(host.console_lines.back(), std::string("10 threw 6 copied 0 true false function 5 0 -100 Automation server can't create object (Some.Thing) no vbs"));
     CHECK(host.runs == (std::vector<std::string>{ "\"https://last.fm/x\"", "shutdown.exe /h" }));
     CHECK_EQ(host.boxes[0], std::string("Biography: Delete? (4)"));
     CHECK_EQ(host.clip, std::string("new text"));
@@ -1821,6 +1873,13 @@ TEST("api util: DetectCharset code pages") {
     CHECK_EQ(detect_codepage("\xef\xbb\xbfx"), 65001);
 }
 
+TEST("api util: text files with a byte order mark are read as UTF-8, UTF-16 included") {
+    CHECK_EQ(decode_text("\xef\xbb\xbf{}"), std::string("{}"));
+    CHECK_EQ(decode_text(std::string("\xff\xfe{\0\xe9\0\x3d\xd8\x00\xde}\0", 12)), std::string("{\xc3\xa9\xf0\x9f\x98\x80}"));
+    CHECK_EQ(decode_text(std::string("\xfe\xff\0a\x4e\x2d", 6)), std::string("a\xe4\xb8\xad"));
+    CHECK_EQ(decode_text("plain"), std::string("plain"));
+}
+
 TEST("engine: utils.MapString and DetectCharset") {
     t::FakeHost host;
     const std::string dir = (std::filesystem::temp_directory_path() / "jsp_charset").generic_string();
@@ -2012,9 +2071,9 @@ TEST("jsp3: the preprocessor header lists the imports and marks JScript Panel 3 
     CHECK(is_jsp3_script(src, h));
     CHECK(!is_jsp3_script("function on_paint(gr) { gr.FillSolidRect(0, 0, 1, 1, 0); }", parse_header("")));
     CHECK(is_jsp3_script("function on_paint(gr) { gr.WriteText('a', '', 0, 0, 0, 9, 9); }", parse_header("")));
-    CHECK_EQ(resolve_import("%fb2k_component_path%helpers.txt", "/s/", "/jsp3/", "/p/"), std::string("/jsp3/helpers.txt"));
-    CHECK_EQ(resolve_import("lib/x.js", "/s/", "/jsp3/", "/p/"), std::string("/s/lib/x.js"));
-    CHECK_EQ(resolve_import("%fb2k_profile_path%y.js", "/s/", "/jsp3/", "/p/"), std::string("/p/y.js"));
+    CHECK_EQ(resolve_import("%fb2k_component_path%helpers.txt", "/s/", "/jsp3/", "/p/", "/fb/"), std::string("/jsp3/helpers.txt"));
+    CHECK_EQ(resolve_import("lib/x.js", "/s/", "/jsp3/", "/p/", "/fb/"), std::string("/s/lib/x.js"));
+    CHECK_EQ(resolve_import("%fb2k_profile_path%y.js", "/s/", "/jsp3/", "/p/", "/fb/"), std::string("/p/y.js"));
 }
 
 TEST("jsp3: imports load first and the JScript Panel 3 drawing calls map onto the canvas") {
@@ -2051,6 +2110,140 @@ TEST("jsp3: a missing component import names the folder to copy JScript Panel 3'
     JsEngine e(host);
     CHECK(!e.load("// ==PREPROCESSOR==\n// @import \"%fb2k_component_path%helpers.txt\"\n// ==/PREPROCESSOR==\n", "/s/main.js"));
     CHECK(e.error().find("/jsp3/") != std::string::npos);
+}
+
+TEST("wsh: @feature lines and WSH Panel Mod-only names mark a script, JScript Panel 3 and SMP scripts stay as they are") {
+    const ScriptHeader h = parse_header("// ==PREPROCESSOR==\n// @feature \"v1.4\"\n// @feature \"dragdrop\"\n// ==/PREPROCESSOR==\n");
+    CHECK_EQ(h.features.size(), (size_t)2);
+    CHECK_EQ(h.features[1], std::string("dragdrop"));
+    CHECK(is_wsh_script("", h));
+    CHECK(is_wsh_script("var c = window.GetColorCUI(0);", parse_header("")));
+    CHECK(is_wsh_script("var a = utils.Glob('*').toArray();", parse_header("")));
+    CHECK(!is_wsh_script("var c = window.GetColourCUI(0);", parse_header("")));
+    CHECK_EQ(resolve_import("%fb2k_path%x.js", "/s/", "/c/", "/p/", "/fb/"), std::string("/fb/x.js"));
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("var a = [1].toArray(); function on_paint(gr) { gr.WriteText('a', '', 0, 0, 0, 9, 9); }", "/s/jsp3.js"));
+    CHECK_EQ(e.dialect(), std::string("JScript Panel 3"));
+    JsEngine smp(host);
+    CHECK(smp.load("console.log(plman.FindPlaylist('Default'), plman.FindPlaylist('Nope'), gdi.Font('Segoe UI', 12).Height > 0,"
+                   " fb.IsMainMenuCommandChecked('Playback/Stop after current'), fb.IsMainMenuCommandChecked('Playback/Stop'));", "/s/smp.js"));
+    CHECK_EQ(host.console_lines.back(), std::string("0 -1 true true false"));
+    CHECK(smp.dialect().empty());
+    CHECK(smp.missing_api().empty());
+}
+
+TEST("wsh: JScript globals, colour and playlist aliases, VBArrays and imports") {
+    t::FakeHost host;
+    host.files["/profile/lib/common.js"] = "var shared = 'lib';";
+    host.playlists = { "Default", "Two" };
+    JsEngine e(host);
+    CHECK(e.load("// ==PREPROCESSOR==\n// @import \"%fb2k_profile_path%lib/common.js\"\n// @feature \"v1.4\"\n// ==/PREPROCESSOR==\n"
+                 "CollectGarbage();\n"
+                 "var vb = new VBArray([3, 4]);\n"
+                 "var en = new Enumerator([5, 6]), seen = [];\n"
+                 "for (; !en.atEnd(); en.moveNext()) seen.push(en.item());\n"
+                 "var f = gdi.Font('Segoe UI', 12, 1);\n"
+                 "console.log(shared, typeof window.GetColorCUI(0), typeof utils.GetSysColor(5), fb.PlaylistCount, fb.GetPlaylistName(1),"
+                 " vb.toArray().join(), vb.ubound(), seen.join(), [7].toArray().length, utils.PathWildcardMatch('*.MP3', 'a.mp3'),"
+                 " utils.PathWildcardMatch('a?.txt', 'ab.txt'), utils.PathWildcardMatch('*.txt', 'a.mp3'), f.Height > 0, ScriptEngine());\n",
+                 "/s/wsh.js"));
+    if (e.failed()) printf("%s\n", e.error().c_str());
+    CHECK(!e.failed());
+    CHECK_EQ(e.dialect(), std::string("WSH Panel Mod"));
+    CHECK_EQ(host.console_lines.back(), std::string("lib number number 2 Two 3,4 1 5,6 1 true true false true JScript"));
+    CHECK(std::find(e.source_files().begin(), e.source_files().end(), "/profile/lib/common.js") != e.source_files().end());
+}
+
+TEST("wsh: names are found whatever their case, GdiDrawText answers the box and the characters drawn") {
+    t::FakeHost host;
+    CHECK(is_wsh_script("img.BoxBlur(2); fb.PlayBackOrder = 1;", parse_header("")));
+    JsEngine e(host);
+    CHECK(e.load("fb.PlayBackOrder = 3;\n"
+                 "var f = gdi.font('Segoe UI', 12, 0), r = [];\n"
+                 "function on_paint(gr) { r = gr.gdidrawtext('ab', f, 0xffffffff, 0, 0, 50, 40, 0x400 | 0x4 | 0x20).toArray(); }\n"
+                 "console.log(plman.PlaybackOrder, fb.playbackorder, typeof fb.NoSuch);",
+                 "/s/wsh.js"));
+    if (e.failed()) printf("%s\n", e.error().c_str());
+    CHECK(!e.failed());
+    CHECK_EQ(host.order, 3);
+    CHECK_EQ(host.console_lines.back(), std::string("3 3 undefined"));
+    t::RecordingCanvas c;
+    e.paint(c);
+    CHECK(e.load("console.log(r.length, r[0], r[2], r[3] - r[1] > 0 && r[3] - r[1] < 40, r[4]);", "/s/check.js"));
+    CHECK_EQ(host.console_lines.back(), std::string("5 0 50 true 2"));
+    CHECK(e.missing_api() == std::vector<std::string>{ "fb.NoSuch" });
+    JsEngine smp(host);
+    CHECK(smp.load("var v = fb.playbackorder;", "/s/smp.js"));
+    CHECK(smp.missing_api().empty());
+}
+
+TEST("wsh: timer objects call on_timer with their id until killed") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("var t = window.CreateTimerInterval(50), n = 0;\n"
+                 "function on_timer(id) { if (id === t.ID) ++n; console.log('tick', n); if (n === 2) window.KillTimer(t); }",
+                 "/s/wsh.js"));
+    CHECK_EQ(host.timers.size(), (size_t)1);
+    const int id = host.timers.begin()->first;
+    e.timer(id);
+    e.timer(id);
+    CHECK_EQ(host.console_lines.back(), std::string("tick 2"));
+    CHECK(host.timers.empty());
+}
+
+TEST("wsh: v1.0 scripts get the watched handle in on_metadb_changed and the selection in on_selection_changed") {
+    t::FakeHost host;
+    const jsp::TrackPtr a = t::track("/a"), b = t::track("/b");
+    host.uiSelection = { b };
+    JsEngine e(host);
+    CHECK(e.load("var watched = null;\n"
+                 "function on_metadb_changed(h, fromhook) { console.log('changed', h.Path, fromhook); }\n"
+                 "function on_selection_changed(h) { console.log('selected', h ? h.Path : 'none'); }\n"
+                 "function on_mouse_lbtn_up() { window.WatchMetadb(fb.GetSelection()); }",
+                 "/s/wsh.js"));
+    e.invoke("on_metadb_changed", { Tracks{ b }, false });
+    CHECK(host.console_lines.empty());
+    e.invoke("on_mouse_lbtn_up", { 1, 1, 0 });
+    e.invoke("on_metadb_changed", { Tracks{ a }, false });
+    CHECK(host.console_lines.empty());
+    e.invoke("on_metadb_changed", { Tracks{ a, b }, true });
+    CHECK_EQ(host.console_lines.back(), std::string("changed /b true"));
+    e.invoke("on_selection_changed");
+    CHECK_EQ(host.console_lines.back(), std::string("selected /b"));
+}
+
+TEST("wsh: style text render draws the outline ring and the text, MeasureString has the lowercase fields") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("var r = gdi.CreateStyleTextRender(), f = gdi.Font('Segoe UI', 12, 0);\n"
+                 "r.OutLineText(0xffffffff, 0xff000000, 1);\n"
+                 "function on_paint(gr) { r.RenderStringRect(gr, 'Hi', f, 10, 10, 100, 20, 0);\n"
+                 "  var m = gr.MeasureString('Hi', f, 0, 0, 100, 20); console.log(m.lines, m.chars, m.x); }\n"
+                 "CollectGarbage();",
+                 "/s/wsh.js"));
+    e.resize(120, 40);
+    t::RecordingCanvas c;
+    e.paint(c);
+    CHECK_EQ(std::count_if(c.ops.begin(), c.ops.end(), [](const std::string& o) { return o.rfind("text \"Hi\"", 0) == 0; }), 9);
+    CHECK(std::any_of(c.ops.begin(), c.ops.end(), [](const std::string& o) { return o.rfind("text \"Hi\"", 0) == 0 && o.find("#ffffff") != std::string::npos; }));
+    CHECK_EQ(host.console_lines.back(), std::string("1 2 0"));
+}
+
+TEST("missing api: a script's reads of names JS Panel lacks are listed once, the preludes' are not") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("var a = fb.NoSuchThing, b = fb.NoSuchThing, c = typeof utils.Nope, d = fb.lowercase, e2 = fb.TitleFormat('%title%').Missing;\n"
+                 "var l = fb.CreateHandleList(); var n = l.Count; var g = l[0];\n"
+                 "function on_paint(gr) { if (gr.NotThere) {} }",
+                 "/s/smp.js"));
+    t::RecordingCanvas c;
+    e.paint(c);
+    const std::vector<std::string> expected = { "fb.NoSuchThing", "utils.Nope", "FbTitleFormat.Missing", "GdiGraphics.NotThere" };
+    CHECK(e.missing_api() == expected);
+    JsEngine wsh(host);
+    CHECK(wsh.load("// ==PREPROCESSOR==\n// @feature \"v1.4\"\n// ==/PREPROCESSOR==\nvar x = 1;", "/s/wsh.js"));
+    CHECK(wsh.missing_api().empty());
 }
 
 TEST("jsp3: Spider Monkey Panel scripts keep FillEllipse's box arguments") {
@@ -2090,6 +2283,7 @@ TEST("jsp3: lodash 3 names, CreateImage, Dispose and GetOtherInfo") {
     if (e.failed()) printf("%s\n", e.error().c_str());
     CHECK(!e.failed());
     CHECK_EQ(host.console_lines.back(), std::string("ordered 2,3 3 a.mp3 /music"));
+    CHECK(e.missing_api().empty());
 }
 
 TEST("engine: the preprocessor header names the script") {

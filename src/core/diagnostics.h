@@ -15,6 +15,8 @@ struct PanelInfo {
     std::string status;
     size_t memoryBytes = 0;
     std::vector<CallTiming> calls = {};
+    std::string dialect = {};
+    std::vector<std::string> missing = {};
 };
 
 struct DiagnosticsInfo {
