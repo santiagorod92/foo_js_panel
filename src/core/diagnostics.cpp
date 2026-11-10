@@ -89,6 +89,7 @@ std::string build_diagnostics(const DiagnosticsInfo& d) {
         out += "\n<details><summary>Panels (" + std::to_string(d.panels.size()) + ")</summary>\n\n";
         for (const auto& p : d.panels) {
             out += "- " + (p.script.empty() ? std::string("(built-in sample)") : clean(p.script)) + ": " + clean(p.status);
+            if (!p.dialect.empty()) out += " (" + p.dialect + ")";
             if (p.memoryBytes) out += ", " + fixed(p.memoryBytes / 1048576.0, 1) + " MB";
             out += "\n";
             const size_t shown = std::min<size_t>(p.calls.size(), 5);
@@ -96,6 +97,13 @@ std::string build_diagnostics(const DiagnosticsInfo& d) {
                 const auto& c = p.calls[i];
                 out += "  - " + c.name + ": " + std::to_string(c.calls) + " calls, " + fixed(c.totalMs, 1) + " ms total, " +
                        fixed(c.totalMs / (double)c.calls, 2) + " ms avg, " + fixed(c.maxMs, 1) + " ms max\n";
+            }
+            if (!p.missing.empty()) {
+                const size_t listed = std::min<size_t>(p.missing.size(), 20);
+                out += "  - Not implemented:";
+                for (size_t i = 0; i < listed; ++i) out += (i ? ", " : " ") + p.missing[i];
+                if (p.missing.size() > listed) out += " and " + std::to_string(p.missing.size() - listed) + " more";
+                out += "\n";
             }
         }
         out += "\n</details>\n";

@@ -259,6 +259,10 @@ anything repo-specific stays in the repo's own sections.
 - **Alpha:** `Canvas` only has alpha for rectangles and images, so `with_alpha` draws a
   translucent shape or `DrawString` opaque into a box-sized pixel canvas (at the device scale)
   and composites it with the colour's alpha. `GdiDrawText` stays opaque, as in SMP.
+- **Vertical text alignment:** GDI's `DT_VCENTER`/`DT_BOTTOM` only apply to single-line text and
+  the canvases don't place wrapped text vertically either, so the engine does it: `GdiDrawText`
+  through `dt_text_rect` (also the rect it returns), `DrawString` (StringFormat line alignment 1
+  centre / 2 far) by measuring the wrapped height and moving the box when the text fits.
 - **Arcs:** SMP's `FillRoundRect` arcs are radii; `Canvas::fill_round_rect` takes the corner
   ellipse's size (GDI `RoundRect`), so the engine passes `2 * arc` and `FillEllipse` the full size.
 - **ActiveX stand-ins:** `ActiveXObject` is JS in `kPrelude`, dispatching on the ProgID to
@@ -299,6 +303,16 @@ anything repo-specific stays in the repo's own sections.
   `radio_container`, as Eole's dialogs use) and answers through `message_box`, or Cancel for forms.
 - **Windows paths in scripts:** `fix_path` turns `\` into `/` off Windows for `include`,
   `gdi.Image` and the `utils` file functions (themes build paths as `fb.ProfilePath + 'a\\b.js'`).
+- **`include` as in SMP 1.6:** a relative path is tried next to the calling function's file
+  (`JS_GetScriptOrModuleName(ctx, 1)`: level 0 is the C function itself; SMP uses
+  `DescribeScriptedCaller`), then next to the file being evaluated (`includeDirs`), then in the
+  running package's `scripts/` (`package_dir`: the main script sits in `…/packages/<id>/`). Paths are
+  `lexically_normal`ised before reading, and `Impl::included` makes each file run once unless
+  `{ always_evaluate: true }` (CaTRoX includes shared files from several packages).
+- **Text decoding:** `decode_text` (`js_api_util.h`) strips a UTF-8 BOM and decodes UTF-16LE/BE with
+  a BOM; every text read goes through it (`Panel::read_text_file`, `native.readText` for FSO,
+  `render_script`). Writes stay UTF-8 (FSO's Unicode flag is ignored), which the same reader reads
+  back.
 - **Edit script:** `Surface::open_editor` (one editor window per panel, closed with it; Windows
   `win_editor.cpp` = RichEdit (see Editor colours), macOS `NSTextView` in `mac_element.mm`). Applying writes
   the file and reloads; the built-in sample is saved as `<profile>/foo_js_panel/script[-N].js`.
@@ -356,6 +370,28 @@ anything repo-specific stays in the repo's own sections.
   selected font, so `pop_clip` re-selects it), and clips left open are popped after `on_paint`.
   `make jsp3-check JSP3=<unzipped component>` runs every JSP3 sample in `render_script --sandbox`
   (37/37 for 3.8.5).
+- **WSH Panel Mod layer:** `is_wsh_script` (a `@feature` line or a WSH-only name; only asked when
+  `is_jsp3_script` says no, so JSP3's markers win) makes `JsEngine::load` eval `kWshPrelude(features)`,
+  the `@import`s (`%fb2k_path%` too), the script, then `__jsp.wshReady(watching)`. Without
+  `@feature "v1.4"` that wraps `on_selection_changed` (gets `fb.GetSelection()`) and, only when the
+  source calls `WatchMetadb(`, `on_metadb_changed` (the watched handle, else nothing): a script
+  picked by a weak marker (`.toArray()`) keeps its SMP-style `on_metadb_changed`. The prelude only
+  adds names, never replaces SMP ones. `fb.AddFiles` & co. and `GetSelectionType` are SMP API and
+  live in `kPrelude`. JScript resolved COM names case-insensitively (`fb.PlayBackOrder`), so the
+  prelude sets `__jsp.caseless` and the missing-API proxy (below) answers a miss with the
+  watched object's same-name-other-case property, for get and set. `GlowText` is a blurred
+  (`StackBlur`) copy drawn at `1 - (1 - a)^width` (what Text Designer's stacked translucent strokes add up to);
+  outlines are a ring of copies. The WSH samples (timonwong/foo_uie_wsh_panel_mod) are
+  third-party code: they're run locally with `render_script --sandbox` (23/24; `Preprocessor`
+  needs a file copied next to foobar2000.exe), and `tests/scripts/wsh.js` is our own script with
+  their patterns.
+- **Missing-API log:** `kPrelude` ends by making a `Proxy` the prototype of `fb`, `gdi`, `utils`,
+  `window`, `plman`, `panelsui` and the class prototypes (`native.proto`). Its `get` only runs when a
+  lookup misses, so names that exist cost nothing; PascalCase misses go through `__jsp.missing` →
+  `JsHost::missing_api` (Panel logs one WARN per name, 100 at most) → `PanelInfo::missing` in Copy
+  Diagnostics, with the script's dialect. `recordMissing` is off while the preludes and bundled
+  imports (lodash) run. `render_script` prints them (`not implemented:`), so `make theme-check`
+  shows a theme's gaps. Not mirrored in the sister repos: they have no script engine.
 - **Columns UI layout converter:** lives in Panels UI (`src/core/fcl_import.cpp`, its CLAUDE.md
   has the `.fcl` and Panel Stack Splitter formats). JS Panel's side is what the converted scripts
   call: `RefreshPSS()` / the "Panel Stack Splitter" main-menu command toggle the `pss.refresh`
@@ -456,12 +492,21 @@ anything repo-specific stays in the repo's own sections.
 - `src/core/js_highlight.{h,cpp}` — the editors' JS tokenizer (UTF-16 spans), tested in `tests/test_js_highlight.cpp`.
 - `src/core/theme_patches.{h,cpp}` — Eole's in-memory patches, applied by `include()` and `JsEngine::load`.
 - `tools/fcl_extract.py` + `scripts/theme-check.sh` (`make theme-check`) — pull every Spider
-  Monkey Panel panel (SMP 1.x binary config: version, GUID, edge style, properties, window
-  placement, script) out of a Columns UI `.fcl` export and run each with `render_script`
-  (`--profile`, `--properties`).
-- `tools/render_script.mm` (`make render`, macOS) — runs a script once on a `CGCanvas` (pending
-  timers fired, `--click`s, `--art`, a TSV `--library`/`--navidrome`) and writes the frame as a
-  PNG. The JS layouts' wizard previews are Panels UI's `albums.png`/`playlist.png` (demo library)
+  Monkey Panel panel out of a Columns UI `.fcl` export and run each with `render_script`
+  (`--profile`, `--properties`). Two formats: SMP 1.x binary config (version, GUID, edge style,
+  properties, window placement, script) and SMP 1.6 JSON settings (a length-prefixed
+  `{"id":"settings","version":"1","scriptType":N,"payload":…}`; 1 in-memory script, 3 file by
+  `locationType`, 4/5 package id → `panel-NN.package`, run from the profile's packages folder).
+  Panels UI's `fcl_import.cpp` only knows the binary one so far.
+- `tests/themes.tsv` + `scripts/themes-check.sh` (`make themes-check`) — other authors' themes at
+  pinned commits, fetched into `build/themes/src` (never committed), run sandboxed (`fcl` through
+  theme-check with the repo's packages installed, `script`, `package`), report in
+  `build/themes/report.md`. It runs third-party code, so the auto-mode classifier may stop it;
+  each `render_script --sandbox` call on its own is allowed by `.claude/settings.local.json`.
+- `tools/render_script.mm` (`make render`, macOS) — runs a script once on a `CGCanvas` (`--rounds`
+  of pending timers, 3 by default; async loaders like Georgia-ReBORN's need ~300; `window.Reload`
+  loads the script again, up to 3 times, as a first-run config write expects; `--click`s, `--art`,
+  a TSV `--library`/`--navidrome`) and writes the frame as a PNG. The JS layouts' wizard previews are Panels UI's `albums.png`/`playlist.png` (demo library)
   with these renders composited in at the 1170×600 → 600×308 scale.
 
 ## Build
@@ -483,7 +528,7 @@ anything repo-specific stays in the repo's own sections.
   `build/mac-local-backup/` and `--restore` puts it back: the user's own installs (e.g. a
   release Panels UI from the component updater) must survive a test run. Needs Panels UI as the
   mac UI module.
-- `make mac-vm-smoke` / `mac-vm-jsp3` / `mac-vm-reload`: the same scenarios in the terminal-mac VM
+- `make mac-vm-smoke` / `mac-vm-jsp3` / `mac-vm-wsh` / `mac-vm-reload`: the same scenarios in the terminal-mac VM
   (`ui-test.sh mac-vm`): `scripts/`, `tests/` and both bundles go to `~/jsp-test` in the guest and
   `mac-local.sh` runs there over ssh, so the restore logic is the same code. No `dragdrop` (see
   Test environments) and no `import` (no Eole in the guest).

@@ -3,6 +3,40 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.6.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.5.1...v1.6.0) (2026-11-10)
+
+### Highlights
+- **WSH Panel Mod scripts run**: scripts and themes made for WSH Panel Mod (the panel behind most
+  Columns UI themes before Spider Monkey Panel) are recognised by their `@feature` header or the
+  names only WSH Panel Mod had, and get its API: `CollectGarbage()`, `VBArray` and `.toArray()`,
+  `Enumerator`, `GetColorCUI`/`GetColorDUI`, `utils.GetSysColor`, timer objects with `on_timer`,
+  `WatchMetadb`, the playlist functions on `fb`, `gdi.CreateStyleTextRender()` and `@import`.
+- **Copy diagnostics names what a script is missing**: each panel lists the API names its script
+  used that JS Panel doesn't have (and logs each once as a warning), so a report about a script
+  that doesn't work says exactly what's needed.
+
+### Added
+- `fb.AddFiles`, `AddDirectory`, `ClearPlaylist`, `LoadPlaylist`, `SavePlaylist`, `ShowConsole`,
+  `ShowPreferences` and `GetSelectionType` for Spider Monkey Panel scripts too (they were only
+  there for JScript Panel 3 scripts).
+- `gr.GdiDrawText` returns the box it drew in and the characters drawn, as WSH Panel Mod did
+  (scripts measure text with `DT_CALCRECT` this way).
+- **Other authors' themes**: Georgia-ReBORN, CaTRoX and Wil-B's Library Tree and Biography load
+  and paint. For them: `fb.IsMainMenuCommandChecked`, `plman.FindPlaylist`, fonts' `Height`,
+  `FileSystemObject` files' `OpenAsTextStream`/`Copy`/`Move`/`Delete`, and stand-ins for
+  Georgia-ReBORN's `AudioWizard` and `UIWizard`.
+
+### Fixed
+- **Centred and bottom-aligned text that wraps** (`gr.DrawString` with a vertical alignment) is
+  placed in the middle or at the bottom of its box instead of at the top, on both platforms.
+- **`include` works like Spider Monkey Panel's**: a relative path is found next to the file whose
+  code calls it (a helper in another file that includes its neighbours works), then in the running
+  package's `scripts` folder, and each file runs only once unless `{ always_evaluate: true }` is
+  passed, so themes that include the same file from several places no longer stop with
+  "redeclaration".
+- **Text files saved as UTF-16** (with a byte order mark, as Windows tools often save them) are
+  read correctly by `include`, `utils.ReadTextFile` and `FileSystemObject`.
+
 ## [1.5.1](https://github.com/santiagorod92/foo_js_panel/compare/v1.5.0...v1.5.1) (2026-11-09)
 
 ### Fixed

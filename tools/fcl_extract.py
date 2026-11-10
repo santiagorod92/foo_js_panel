@@ -59,6 +59,45 @@ def parse_panel(data, pos):
     return {'offset': pos, 'end': r.p, 'id': guid.hex(), 'edge': edge, 'transparent': transparent, 'properties': props, 'script': script}
 
 
+def json_panels(data):
+    panels = []
+    start = 0
+    while True:
+        i = data.find(b'"id": "settings"', start)
+        if i < 0:
+            break
+        start = i + 1
+        for b in range(i - 1, max(i - 512, 4), -1):
+            if data[b:b + 1] != b'{':
+                continue
+            n = struct.unpack('<I', data[b - 4:b])[0]
+            try:
+                cfg = json.loads(data[b:b + n].decode('utf-8'))
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if cfg.get('id') != 'settings':
+                continue
+            kind = cfg.get('scriptType')
+            payload = cfg.get('payload', {})
+            panel = {'offset': b, 'end': b + n, 'id': cfg.get('panelId', ''), 'edge': cfg.get('edgeStyle', 0),
+                     'transparent': cfg.get('isPseudoTransparent', False),
+                     'properties': cfg.get('properties', {}).get('values', {}), 'script': '', 'package': ''}
+            if kind == 1:
+                panel['script'] = payload.get('script', '')
+            elif kind == 3:
+                path = payload.get('path', '').replace('\\', '\\\\')
+                base = {1: 'fb.ComponentPath + ', 2: 'fb.ProfilePath + ', 3: 'fb.FoobarPath + '}.get(payload.get('locationType'), '')
+                panel['script'] = "include(%s'%s');\n" % (base, path)
+            elif kind in (4, 5):
+                panel['package'] = payload.get('id', '')
+            else:
+                break
+            panels.append(panel)
+            start = b + n
+            break
+    return panels
+
+
 def find_panels(data):
     panels = []
     pos = data.find(SMP_GUID)
@@ -77,9 +116,10 @@ def find_panels(data):
             continue
         if len(p['script'].strip()) < 32:
             continue
+        p['package'] = ''
         panels.append(p)
         start = p['end']
-    return panels
+    return panels + json_panels(data)
 
 
 def main():
@@ -93,18 +133,22 @@ def main():
     index = []
     for n, p in enumerate(panels, 1):
         name = 'panel-%02d' % n
-        with open(os.path.join(out, name + '.js'), 'w', encoding='utf-8') as f:
-            f.write(p['script'])
+        if p['package']:
+            with open(os.path.join(out, name + '.package'), 'w', encoding='utf-8') as f:
+                f.write(p['package'] + '\n')
+        else:
+            with open(os.path.join(out, name + '.js'), 'w', encoding='utf-8') as f:
+                f.write(p['script'])
         with open(os.path.join(out, name + '.properties.json'), 'w', encoding='utf-8') as f:
             json.dump(p['properties'], f, ensure_ascii=False, indent=1)
         includes = [l.strip() for l in p['script'].splitlines() if 'include(' in l and not l.strip().startswith('//')]
         index.append({'name': name, 'offset': p['offset'], 'id': p['id'], 'properties': len(p['properties']),
-                      'script_bytes': len(p['script']), 'includes': includes})
+                      'script_bytes': len(p['script']), 'includes': includes, 'package': p['package']})
     with open(os.path.join(out, 'index.json'), 'w', encoding='utf-8') as f:
         json.dump(index, f, ensure_ascii=False, indent=1)
     for e in index:
         print('%s  @%-7d props=%-4d script=%-6d %s' % (e['name'], e['offset'], e['properties'], e['script_bytes'],
-                                                      ' '.join(i.split("js\\\\")[-1].rstrip("');") for i in e['includes'])))
+                                                      e['package'] or ' '.join(i.split("js\\\\")[-1].rstrip("');") for i in e['includes'])))
     print('%d SMP panels' % len(index))
     return 0
 

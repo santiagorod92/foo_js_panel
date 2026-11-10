@@ -79,6 +79,7 @@ struct JsEngine::Impl {
     int w = 0, h = 0;
     int nextTimer = 1;
     std::vector<std::string> files;
+    std::set<std::string> included;
     std::map<int, Timer> timers;
     long long deadline = 0;
     std::shared_ptr<bool> alive = std::make_shared<bool>(true);
@@ -92,6 +93,9 @@ struct JsEngine::Impl {
     JSValue props = JS_UNDEFINED;
     bool propsDirty = false;
     std::string scriptName, scriptAuthor, scriptVersion;
+    std::string dialect;
+    bool recordMissing = false;
+    std::vector<std::string> missing;
     int dlgCode = 0, minW = 0, minH = 0, maxW = 0, maxH = 0;
 
     Impl(JsHost& hst, int budget);
@@ -243,6 +247,12 @@ bool is_absolute(const std::string& path) { return !path.empty() && (path[0] == 
 std::string script_relative(JsEngine::Impl* e, const std::string& in) {
     std::string path = fix_path(in);
     return is_absolute(path) ? path : (e->includeDirs.empty() ? e->dir : e->includeDirs.back()) + path;
+}
+
+std::filesystem::path package_dir(JsEngine::Impl* e) {
+    if (e->files.empty()) return {};
+    const std::filesystem::path dir = std::filesystem::path(fix_path(e->files.front())).parent_path();
+    return dir.parent_path().filename() == "packages" ? dir : std::filesystem::path();
 }
 
 Rect arg_rect(JSContext* ctx, int argc, JSValueConst* argv, int i) {
@@ -520,7 +530,7 @@ JSValue gr_FillGradRect(JSContext* ctx, JSValueConst self, int argc, JSValueCons
 }
 
 JSValue draw_text(JSContext* ctx, JSValueConst self, int argc, JSValueConst* argv, unsigned flags, bool alpha,
-                  uint32_t dt = 0) {
+                  uint32_t dt = 0, bool gdi = false, uint32_t line = 0) {
     Canvas* c = canvas_or_throw(ctx, self);
     if (!c) return JS_EXCEPTION;
     FontSpec* f = font_arg(ctx, argc, argv, 1);
@@ -532,22 +542,36 @@ JSValue draw_text(JSContext* ctx, JSValueConst self, int argc, JSValueConst* arg
         const Rect adjusted = dt_text_rect(r, dt, c->text_height(text, r.w, flags & ~pui::gfx::kVCenter));
         if (adjusted.y != r.y || adjusted.h != r.h) flags &= ~pui::gfx::kVCenter;
         r = adjusted;
+    } else if ((line == 1 || line == 2) && !(flags & pui::gfx::kSingleLine)) {
+        c->set_font(*f);
+        const int h = c->text_height(text, r.w, flags & ~pui::gfx::kVCenter);
+        if (h < r.h) {
+            r.y += line == 1 ? (r.h - h) / 2 : r.h - h;
+            r.h = h;
+            flags &= ~pui::gfx::kVCenter;
+        }
     }
     const uint32_t argb = alpha ? arg_u32(ctx, argc, argv, 2) : (arg_u32(ctx, argc, argv, 2) | 0xFF000000u);
     with_alpha(ctx, *c, argb, r, [&](Canvas& cv, float dx, float dy) {
         cv.set_font(*f);
         cv.draw_text(text, Rect{ r.x + (int)dx, r.y + (int)dy, r.w, r.h }, flags, argb_color(argb));
     });
-    return JS_UNDEFINED;
+    if (!gdi) return JS_UNDEFINED;
+    const int chars = (int)std::count_if(text.begin(), text.end(), [](char ch) { return ((unsigned char)ch & 0xC0) != 0x80; });
+    JSValue out = JS_NewArray(ctx);
+    int i = 0;
+    for (const int v : { r.x, r.y, r.x + r.w, r.y + r.h, chars }) JS_SetPropertyUint32(ctx, out, i++, JS_NewInt32(ctx, v));
+    return out;
 }
 
 JSValue gr_DrawString(JSContext* ctx, JSValueConst self, int argc, JSValueConst* argv) {
-    return draw_text(ctx, self, argc, argv, string_format_to_text_flags(arg_u32(ctx, argc, argv, 7)), true);
+    const uint32_t sf = arg_u32(ctx, argc, argv, 7);
+    return draw_text(ctx, self, argc, argv, string_format_to_text_flags(sf), true, 0, false, (sf >> 24) & 0xf);
 }
 
 JSValue gr_GdiDrawText(JSContext* ctx, JSValueConst self, int argc, JSValueConst* argv) {
     const uint32_t dt = arg_u32(ctx, argc, argv, 7);
-    return draw_text(ctx, self, argc, argv, dt_to_text_flags(dt), false, dt);
+    return draw_text(ctx, self, argc, argv, dt_to_text_flags(dt), false, dt, true);
 }
 
 JSValue gr_CalcTextWidth(JSContext* ctx, JSValueConst self, int argc, JSValueConst* argv) {
@@ -1728,6 +1752,10 @@ JSValue fb_RunMainMenuCommand(JSContext* ctx, JSValueConst, int argc, JSValueCon
     return JS_NewBool(ctx, I(ctx)->host.run_main_menu_command(arg_str(ctx, argc, argv, 0)));
 }
 
+JSValue fb_IsMainMenuCommandChecked(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    return JS_NewBool(ctx, I(ctx)->host.main_menu_command_checked(arg_str(ctx, argc, argv, 0)));
+}
+
 JSValue fb_RunContextCommand(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     return JS_NewBool(ctx, I(ctx)->host.run_context_command(arg_str(ctx, argc, argv, 0), nullptr));
 }
@@ -1893,6 +1921,7 @@ const JSCFunctionListEntry kFbFuncs[] = {
     JS_CFUNC_DEF("CheckClipboardContents", 0, fb_CheckClipboardContents),
     JS_CFUNC_DEF("GetClipboardContents", 1, fb_GetClipboardContents),
     JS_CFUNC_DEF("RunMainMenuCommand", 1, fb_RunMainMenuCommand),
+    JS_CFUNC_DEF("IsMainMenuCommandChecked", 1, fb_IsMainMenuCommandChecked),
     JS_CFUNC_DEF("RunContextCommand", 1, fb_RunContextCommand),
     JS_CFUNC_DEF("RunContextCommandWithMetadb", 2, fb_RunContextCommandWithMetadb),
     JS_CFUNC_DEF("ShowPopupMessage", 2, fb_ShowPopupMessage),
@@ -2841,10 +2870,7 @@ JSValue window_ScriptInfo(JSContext* ctx, JSValueConst) {
     set_str(ctx, o, "Name", panel_name(e));
     set_str(ctx, o, "Author", e->scriptAuthor);
     set_str(ctx, o, "Version", e->scriptVersion);
-    if (!e->files.empty()) {
-        const std::filesystem::path dir = std::filesystem::path(fix_path(e->files.front())).parent_path();
-        if (dir.parent_path().filename() == "packages") set_str(ctx, o, "PackageId", dir.filename().string());
-    }
+    if (const std::filesystem::path dir = package_dir(e); !dir.empty()) set_str(ctx, o, "PackageId", dir.filename().string());
     return o;
 }
 
@@ -3023,9 +3049,7 @@ JSValue native_readText(JSContext* ctx, JSValueConst, int argc, JSValueConst* ar
     const std::string path = fix_path(arg_str(ctx, argc, argv, 0));
     std::error_code ec;
     if (!std::filesystem::is_regular_file(fs_path(path), ec)) return JS_NULL;
-    std::string out = read_file(path);
-    if (out.size() >= 3 && (unsigned char)out[0] == 0xEF && (unsigned char)out[1] == 0xBB && (unsigned char)out[2] == 0xBF) out.erase(0, 3);
-    return new_string(ctx, out);
+    return new_string(ctx, decode_text(read_file(path)));
 }
 
 JSValue native_writeText(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
@@ -3246,8 +3270,19 @@ JSValue fb_GetSelections(JSContext* ctx, JSValueConst, int, JSValueConst*) { ret
 JSValue native_proto(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     const std::string kind = arg_str(ctx, argc, argv, 0);
     const JSClassID id = kind == "gr" ? g_grClass : kind == "handle" ? g_handleClass : kind == "list" ? g_listClass
-                       : kind == "image" ? g_bitmapClass : kind == "info" ? g_infoClass : 0;
+                       : kind == "image" ? g_bitmapClass : kind == "info" ? g_infoClass : kind == "font" ? g_fontClass
+                       : kind == "tf" ? g_tfClass : kind == "menu" ? g_menuClass : kind == "menus" ? g_menuManagerClass : 0;
     return id ? JS_GetClassProto(ctx, id) : JS_UNDEFINED;
+}
+
+JSValue native_missing(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    JsEngine::Impl* e = I(ctx);
+    const std::string name = arg_str(ctx, argc, argv, 0) + "." + arg_str(ctx, argc, argv, 1);
+    if (!e->recordMissing || e->missing.size() >= 100 || std::find(e->missing.begin(), e->missing.end(), name) != e->missing.end())
+        return JS_UNDEFINED;
+    e->missing.push_back(name);
+    e->host.missing_api(name);
+    return JS_UNDEFINED;
 }
 
 JSValue native_pushClip(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
@@ -3277,6 +3312,7 @@ JSValue native_tooltip(JSContext* ctx, JSValueConst, int argc, JSValueConst* arg
 const JSCFunctionListEntry kNativeFuncs[] = {
     JS_CFUNC_DEF("tooltip", 3, native_tooltip),
     JS_CFUNC_DEF("proto", 1, native_proto),
+    JS_CFUNC_DEF("missing", 2, native_missing),
     JS_CFUNC_DEF("jsp3Path", 0, native_jsp3Path),
     JS_CFUNC_DEF("pushClip", 5, native_pushClip),
     JS_CFUNC_DEF("popClip", 1, native_popClip),
@@ -3588,6 +3624,10 @@ const char* const kPrelude = R"JS(
         constructor(path, st) { this.Path = String(path); this.Name = fileName(path); this.Size = st.size; this.DateLastModified = new Date(st.mtime);
                                 this.DateLastAccessed = new Date(st.mtime); this.DateCreated = new Date(st.mtime); this.Type = extName(path).toUpperCase() + ' File'; }
         get ParentFolder() { return fso.GetFolder(parentName(this.Path)); }
+        OpenAsTextStream(mode) { return fso.OpenTextFile(this.Path, mode || 1, false); }
+        Copy(to, overwrite) { fso.CopyFile(this.Path, to, overwrite); }
+        Move(to) { fso.MoveFile(this.Path, to); }
+        Delete() { fso.DeleteFile(this.Path); }
     }
     class FsoFolder {
         constructor(path) { this.Path = String(path).replace(/[\\/]+$/, '') || String(path); this.Name = fileName(path); }
@@ -3826,6 +3866,17 @@ const char* const kPrelude = R"JS(
         });
         return p;
     };
+    const audioWizard = () => {
+        const known = {
+            GetWaveformDataInfo: () => JSON.stringify({ metricsPerChannel: 5 }), GetWaveformTrackCount: () => 0, GetWaveformData: () => [],
+            GetPhysicalFilePath: () => '', FullTrackProcessing: false, PeakmeterOffset: 0,
+        };
+        return new Proxy({}, {
+            get: (t, k) => typeof k !== 'string' ? undefined : k in known ? known[k]
+                         : /^(Start|Stop|Set)/.test(k) ? () => {} : /^Peakmeter/.test(k) ? -100 : 0,
+            set: () => true,
+        });
+    };
     let frameStyle = 0;
     const uiHacks = () => {
         const limits = { min: { Enabled: false, Width: 0, Height: 0 }, max: { Enabled: false, Width: 0, Height: 0 } };
@@ -3867,6 +3918,8 @@ const char* const kPrelude = R"JS(
         'htmlfile': htmlDocument,
         'uihacks': uiHacks,
         'eslyric': inert,
+        'audiowizard': audioWizard,
+        'uiwizard': inert,
         'shell.application': () => ({ BrowseForFolder: () => null, NameSpace: () => null, ShellExecute: (f, a) => native.shellRun(String(f) + (a ? ' ' + a : '')) }),
         'scriptcontrol': () => ({ Language: '', AddCode() {}, Eval() { fail('ScriptControl (VBScript) is not available in JS Panel', -2146827859); },
                                   Run() { fail('ScriptControl (VBScript) is not available in JS Panel', -2146827859); } }),
@@ -3876,6 +3929,64 @@ const char* const kPrelude = R"JS(
         if (!make) fail('Automation server can\'t create object (' + progId + ')', -2146827859);
         return make();
     };
+    fb.GetSelectionType = () => 0;
+    const heights = new WeakMap();
+    let measurer = null;
+    Object.defineProperty(native.proto('font'), 'Height', {
+        get() {
+            if (!heights.has(this)) {
+                measurer = measurer || gdi.CreateImage(1, 1).GetGraphics();
+                heights.set(this, measurer.CalcTextHeight('Ag', this));
+            }
+            return heights.get(this);
+        },
+        configurable: true,
+    });
+    plman.FindPlaylist = name => {
+        for (let i = 0; i < plman.PlaylistCount; ++i) if (plman.GetPlaylistName(i) === name) return i;
+        return -1;
+    };
+    const menu = cmd => () => fb.RunMainMenuCommand(cmd);
+    Object.assign(fb, {
+        AddDirectory: menu('File/Add folder...'), AddFiles: menu('File/Add files...'), LoadPlaylist: menu('File/Load playlist...'),
+        SavePlaylist: menu('File/Save playlist...'), ShowConsole: menu('View/Console'), ShowPreferences: menu('File/Preferences'),
+        ClearPlaylist: menu('Edit/Clear'),
+    });
+    const watch = (label, o) => {
+        const base = Object.getPrototypeOf(o);
+        let names = null;
+        const alias = key => {
+            const find = () => names.get(key.toLowerCase());
+            if (!names || find() === undefined) names = new Map(Object.getOwnPropertyNames(o).map(n => [n.toLowerCase(), n]));
+            const real = find();
+            return real !== key ? real : undefined;
+        };
+        Object.setPrototypeOf(o, new Proxy(base, {
+            get(target, key, receiver) {
+                if (typeof key !== 'string' || key in target) return Reflect.get(target, key, receiver);
+                if (native.caseless) {
+                    const real = alias(key);
+                    if (real !== undefined) return receiver[real];
+                }
+                if (/^[A-Z]/.test(key)) native.missing(label, key);
+                return undefined;
+            },
+            set(target, key, value, receiver) {
+                if (native.caseless && typeof key === 'string' && !(key in target)) {
+                    const real = alias(key);
+                    if (real !== undefined) {
+                        receiver[real] = value;
+                        return true;
+                    }
+                }
+                return Reflect.set(target, key, value, receiver);
+            },
+        }));
+    };
+    for (const [label, o] of [['fb', fb], ['gdi', gdi], ['utils', utils], ['window', window], ['plman', plman], ['panelsui', panelsui]]) watch(label, o);
+    for (const [label, kind] of [['GdiGraphics', 'gr'], ['FbMetadbHandle', 'handle'], ['FbMetadbHandleList', 'list'], ['GdiBitmap', 'image'],
+                                 ['FbFileInfo', 'info'], ['GdiFont', 'font'], ['FbTitleFormat', 'tf'], ['MenuObject', 'menu'],
+                                 ['MenuManager', 'menus']]) watch(label, native.proto(kind));
 })();
 )JS";
 
@@ -4067,14 +4178,7 @@ const char* const kJsp3Prelude = R"JS(
     fb.CheckComponent = name => utils.CheckComponent(name, true);
     fb.IsLibraryEnabled = () => true;
     fb.IsLibraryInitialised = () => true;
-    fb.GetSelectionType = () => 0;
     fb.ShowPictureViewer = path => utils.Run(path);
-    const menu = cmd => () => fb.RunMainMenuCommand(cmd);
-    Object.assign(fb, {
-        AddDirectory: menu('File/Add folder...'), AddFiles: menu('File/Add files...'), LoadPlaylist: menu('File/Load playlist...'),
-        SavePlaylist: menu('File/Save playlist...'), ShowConsole: menu('View/Console'), ShowPreferences: menu('File/Preferences'),
-        ClearPlaylist: menu('Edit/Clear'),
-    });
     const smpInputBox = utils.InputBox, smpPicker = utils.ColourPicker;
     utils.InputBox = (prompt, title, def, errorOnCancel) => smpInputBox(window.ID, prompt, title, def === undefined ? '' : def, !!errorOnCancel);
     utils.TextBox = (prompt, title, def) => smpInputBox(window.ID, prompt, title, def === undefined ? '' : def, true);
@@ -4129,10 +4233,6 @@ const char* const kJsp3Prelude = R"JS(
     };
     utils.ConvertToAscii = str => String(str).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\x00-\x7f]/g, '?');
     plman.GetPlaylistItemCount = p => plman.PlaylistItemCount(p);
-    plman.FindPlaylist = name => {
-        for (let i = 0; i < plman.PlaylistCount; ++i) if (plman.GetPlaylistName(i) === name) return i;
-        return -1;
-    };
     plman.GetPlaylistSelectedIndexes = p => {
         const out = [];
         for (let i = 0, n = plman.PlaylistItemCount(p); i < n; ++i) if (plman.IsPlaylistItemSelected(p, i)) out.push(i);
@@ -4300,11 +4400,180 @@ const char* const kJsp3Prelude = R"JS(
 })();
 )JS";
 
+const char* const kWshPrelude = R"JS(
+(function (features) {
+    const native = __jsp;
+    const v14 = features.includes('v1.4');
+    native.caseless = true;
+    Object.defineProperty(Array.prototype, 'toArray', { value() { return this; }, configurable: true, writable: true });
+    function VBArray(a) {
+        if (!(this instanceof VBArray)) return new VBArray(a);
+        this.items = a instanceof VBArray ? a.items.slice() : Array.from(a || []);
+    }
+    Object.assign(VBArray.prototype, {
+        toArray() { return this.items.slice(); }, getItem(i) { return this.items[i]; },
+        lbound() { return 0; }, ubound() { return this.items.length - 1; }, dimensions() { return 1; },
+    });
+    function Enumerator(c) {
+        if (!(this instanceof Enumerator)) return new Enumerator(c);
+        this.items = c === undefined || c === null ? []
+                   : typeof c[Symbol.iterator] === 'function' ? Array.from(c)
+                   : typeof c.Item === 'function' ? Array.from({ length: c.Count | 0 }, (_, i) => c.Item(i)) : [];
+        this.at = 0;
+    }
+    Object.assign(Enumerator.prototype, {
+        atEnd() { return this.at >= this.items.length; }, item() { return this.items[this.at]; },
+        moveNext() { ++this.at; }, moveFirst() { this.at = 0; },
+    });
+    Object.assign(globalThis, {
+        VBArray, Enumerator, CollectGarbage() {},
+        ScriptEngine: () => 'JScript', ScriptEngineMajorVersion: () => 5, ScriptEngineMinorVersion: () => 8, ScriptEngineBuildVersion: () => 0,
+    });
+    globalThis.on_colours_changed = function () { if (typeof on_colors_changed === 'function') on_colors_changed(); };
+    window.GetColorCUI = window.GetColourCUI;
+    window.GetColorDUI = window.GetColourDUI;
+    window.GetBackgroundImage = () => null;
+    utils.GetSysColor = utils.GetSysColour;
+    utils.GetAlbumArt = () => null;
+    utils.GetAlbumArtEmbedded = () => null;
+    utils.PathWildcardMatch = (pattern, str) =>
+        new RegExp('^' + String(pattern).replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i').test(String(str));
+    for (const name of ['PlaylistCount', 'ActivePlaylist', 'PlayingPlaylist', 'PlaybackOrder'])
+        Object.defineProperty(fb, name, { get: () => plman[name], set: v => { plman[name] = v; }, configurable: true });
+    for (const name of ['PlaylistItemCount', 'GetPlaylistName', 'CreatePlaylist', 'RemovePlaylist', 'MovePlaylist', 'RenamePlaylist',
+                        'DuplicatePlaylist', 'IsAutoPlaylist', 'CreateAutoPlaylist', 'ShowAutoPlaylistUI'])
+        fb[name] = (...a) => plman[name](...a);
+    plman.GetPlaybackQueueCount = () => plman.GetPlaybackQueueHandles().Count;
+    plman.IsPlaybackQueueActive = () => plman.GetPlaybackQueueCount() > 0;
+    plman.GetPlaylistFocusItemHandle = force => fb.GetFocusItem(force);
+    plman.InsertPlaylistItemsFilter = (p, base, handles, select) => {
+        const present = plman.GetPlaylistItems(p), fresh = fb.CreateHandleList();
+        for (let i = 0; i < handles.Count; ++i) {
+            const h = handles.Item(i);
+            if (present.Find(h) < 0 && fresh.Find(h) < 0) fresh.Add(h);
+        }
+        return plman.InsertPlaylistItems(p, base, fresh, select);
+    };
+    const timers = new Map();
+    const timer = (repeat, delay) => {
+        const t = { ID: 0, Dispose() { window.KillTimer(t); } };
+        const fire = () => {
+            if (!repeat) timers.delete(t.ID);
+            if (typeof on_timer === 'function') on_timer(t.ID);
+        };
+        t.ID = repeat ? window.SetInterval(fire, delay) : window.SetTimeout(fire, delay);
+        timers.set(t.ID, t);
+        return t;
+    };
+    window.CreateTimerInterval = delay => timer(true, delay);
+    window.CreateTimerTimeout = delay => timer(false, delay);
+    window.KillTimer = t => { if (t && timers.delete(t.ID)) window.ClearInterval(t.ID); };
+    let watched = null;
+    window.WatchMetadb = h => { if (!v14) watched = h || null; };
+    window.UnWatchMetadb = () => { watched = null; };
+    window.CreateTooltip().Dispose = () => {};
+    native.proto('font').Dispose = function () {};
+    native.proto('list').Dispose = function () {};
+    native.proto('tf').Dispose = function () {};
+    const gp = native.proto('gr'), measureString = gp.MeasureString;
+    gp.MeasureString = function (...a) {
+        const r = measureString.apply(this, a);
+        Object.assign(r, { x: r.X, y: r.Y, lines: r.Lines, chars: r.Chars });
+        return r;
+    };
+    const ip = native.proto('image');
+    ip.GetColorScheme = function (max) { return this.GetColourScheme(max); };
+    ip.BoxBlur = function (radius, iteration) { for (let i = 0; i < (iteration || 1); ++i) this.StackBlur(radius); };
+    gdi.CreateStyleTextRender = () => {
+        let colour = 0xff000000, edge = 0, edgeWidth = 0, glow = false, shadow = null, shadowOn = false;
+        const ring = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, 1], [-1, 1], [1, -1]];
+        const halo = (g, str, font, x, y, w, h, flags) => {
+            const p = edgeWidth, img = gdi.CreateImage(w + 2 * p, h + 2 * p), ig = img.GetGraphics();
+            ig.DrawString(str, font, (edge | 0xff000000) >>> 0, p, p, w, h, flags);
+            img.ReleaseGraphics(ig);
+            img.StackBlur(p);
+            const alpha = Math.round(255 * (1 - Math.pow(1 - ((edge >>> 24) & 0xff) / 255, p)));
+            g.DrawImage(img, x - p, y - p, w + 2 * p, h + 2 * p, 0, 0, w + 2 * p, h + 2 * p, 0, alpha);
+        };
+        const draw = (g, str, font, x, y, w, h, flags) => {
+            if (shadowOn && shadow) g.DrawString(str, font, shadow.colour, x + shadow.dx, y + shadow.dy, w, h, flags);
+            if (edgeWidth > 0 && glow) halo(g, str, font, x, y, w, h, flags);
+            else if (edgeWidth > 0)
+                for (const [dx, dy] of ring) g.DrawString(str, font, edge, x + dx * edgeWidth, y + dy * edgeWidth, w, h, flags);
+            g.DrawString(str, font, colour, x, y, w, h, flags);
+            return true;
+        };
+        const style = (isGlow, text, around, width) => {
+            glow = isGlow;
+            colour = text;
+            edge = around;
+            edgeWidth = Math.max(0, Math.round(width || 0));
+        };
+        return {
+            OutLineText(text, around, width) { style(false, text, around, width); },
+            GlowText(text, around, width) { style(true, text, around, width); },
+            DoubleOutLineText(text, around, around2, width) { style(false, text, around, width); },
+            EnableShadow(on) { shadowOn = !!on; },
+            ResetShadow() { shadowOn = false; shadow = null; },
+            Shadow(c, thickness, dx, dy) { shadow = { colour: c, dx: dx || 0, dy: dy || 0 }; },
+            DiffusedShadow(c, thickness, dx, dy) { shadow = { colour: c, dx: dx || 0, dy: dy || 0 }; },
+            SetShadowBackgroundColor() {}, SetShadowBackgroundImage() {}, SetPngImage() {}, Dispose() {},
+            RenderStringPoint(g, str, font, x, y, flags) {
+                return draw(g, str, font, x, y, g.CalcTextWidth(str, font) + 1, g.CalcTextHeight(str, font), flags || 0);
+            },
+            RenderStringRect(g, str, font, x, y, w, h, flags) { return draw(g, str, font, x, y, w, h, flags || 0); },
+        };
+    };
+    native.wshReady = watching => {
+        if (v14) return;
+        if (typeof on_selection_changed === 'function') {
+            const original = on_selection_changed;
+            globalThis.on_selection_changed = () => original(fb.GetSelection());
+        }
+        if (watching && typeof on_metadb_changed === 'function') {
+            const original = on_metadb_changed;
+            globalThis.on_metadb_changed = (list, fromhook) => {
+                if (!watched) return;
+                for (let i = 0; i < list.Count; ++i)
+                    if (list.Item(i).Compare(watched)) return original(watched, fromhook);
+            };
+        }
+    };
+})
+)JS";
+
 JSValue global_include(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     JsEngine::Impl* e = I(ctx);
-    const std::string path = script_relative(e, arg_str(ctx, argc, argv, 0));
-    std::string source;
-    if (!e->host.read_text_file(path, source)) return JS_ThrowInternalError(ctx, "include: can't read %s", path.c_str());
+    const std::string spec = fix_path(arg_str(ctx, argc, argv, 0));
+    std::vector<std::string> candidates;
+    if (is_absolute(spec)) candidates.push_back(spec);
+    else {
+        const JSAtom caller = JS_GetScriptOrModuleName(ctx, 1);
+        if (caller != JS_ATOM_NULL) {
+            const char* name = JS_AtomToCString(ctx, caller);
+            if (name && *name && *name != '<') candidates.push_back(script_dir_of(name) + spec);
+            JS_FreeCString(ctx, name);
+            JS_FreeAtom(ctx, caller);
+        }
+        candidates.push_back(script_relative(e, spec));
+        if (const std::filesystem::path pkg = package_dir(e); !pkg.empty()) candidates.push_back((pkg / "scripts" / spec).generic_string());
+    }
+    std::string path, source;
+    for (const std::string& c : candidates) {
+        const std::string normal = std::filesystem::path(c).lexically_normal().generic_string();
+        if (e->host.read_text_file(normal, source)) {
+            path = normal;
+            break;
+        }
+    }
+    if (path.empty()) return JS_ThrowInternalError(ctx, "include: can't read %s", script_relative(e, spec).c_str());
+    bool always = false;
+    if (argc > 1 && JS_IsObject(argv[1])) {
+        JSValue v = JS_GetPropertyStr(ctx, argv[1], "always_evaluate");
+        always = JS_ToBool(ctx, v) > 0;
+        JS_FreeValue(ctx, v);
+    }
+    if (!e->included.insert(path).second && !always) return JS_UNDEFINED;
     source = patch_theme_source(path, std::move(source));
     e->files.push_back(path);
     e->includeDirs.push_back(script_dir_of(path));
@@ -4854,31 +5123,50 @@ bool JsEngine::load(const std::string& source, const std::string& path) {
     if (!header.name.empty()) m->scriptName = header.name;
     if (!header.author.empty()) m->scriptAuthor = header.author;
     if (!header.version.empty()) m->scriptVersion = header.version;
-    if (is_jsp3_script(source, header)) {
+    const bool jsp3 = is_jsp3_script(source, header), wsh = !jsp3 && is_wsh_script(source, header);
+    if (jsp3) {
+        m->dialect = "JScript Panel 3";
         if (!m->eval(kJsp3Prelude, "<jsp3>")) return false;
-        const std::string component = m->host.jsp3_path(), profile = m->host.profile_path();
+    } else if (wsh) {
+        m->dialect = "WSH Panel Mod";
+        std::string list;
+        for (const std::string& f : header.features) {
+            std::string token;
+            for (const char c : f)
+                if (std::isalnum((unsigned char)c) || c == '.' || c == '-') token += c;
+            list += (list.empty() ? "'" : ", '") + token + "'";
+        }
+        if (!m->eval(std::string(kWshPrelude) + "([" + list + "]);", "<wsh>")) return false;
+    }
+    if (jsp3 || wsh) {
+        const std::string component = jsp3 ? m->host.jsp3_path() : m->host.component_path(), profile = m->host.profile_path();
         for (const std::string& spec : header.imports) {
-            const std::string bundled = m->host.bundled_import(spec);
-            const std::string file = bundled.empty() ? fix_path(resolve_import(spec, m->dir, component, profile)) : "<" + spec + ">";
+            const std::string bundled = jsp3 ? m->host.bundled_import(spec) : std::string();
+            const std::string file = bundled.empty() ? fix_path(resolve_import(spec, m->dir, component, profile, m->host.foobar_path()))
+                                                     : "<" + spec + ">";
             std::string text = bundled;
             if (bundled.empty() && !m->host.read_text_file(file, text)) {
                 m->fail("@import \"" + spec + "\": can't read " + file +
-                        (spec.find("%fb2k_component_path%") != std::string::npos
+                        (jsp3 && spec.find("%fb2k_component_path%") != std::string::npos
                              ? " (copy JScript Panel 3's helpers.txt and samples folder into " + component + ")"
                              : std::string()));
                 return false;
             }
             if (bundled.empty()) m->files.push_back(file);
             m->includeDirs.push_back(script_dir_of(file));
+            m->recordMissing = bundled.empty();
             const bool ok = m->eval(text, file);
+            m->recordMissing = false;
             m->includeDirs.pop_back();
             if (!ok) return false;
             if (spec == "lodash" && !m->eval(kLodashMixins, "<lodash mixins>")) return false;
         }
     }
+    m->recordMissing = true;
     const std::string name = path.empty() ? std::string("<sample>") : path;
     if (is_module_source(source)) return m->eval_module(source, name);
-    return m->eval(patch_theme_source(path, source), name);
+    if (!m->eval(patch_theme_source(path, source), name)) return false;
+    return !wsh || m->eval(source.find("WatchMetadb(") != std::string::npos ? "__jsp.wshReady(true);" : "__jsp.wshReady(false);", "<wsh>");
 }
 
 bool JsEngine::failed() const { return !m->error.empty(); }
@@ -5059,6 +5347,9 @@ std::vector<CallTiming> JsEngine::profile() const {
     std::sort(out.begin(), out.end(), [](const CallTiming& a, const CallTiming& b) { return a.totalMs > b.totalMs; });
     return out;
 }
+
+const std::vector<std::string>& JsEngine::missing_api() const { return m->missing; }
+const std::string& JsEngine::dialect() const { return m->dialect; }
 
 size_t JsEngine::memory_used() const {
     JSMemoryUsage u{};

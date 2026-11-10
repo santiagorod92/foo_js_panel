@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 usage() {
   cat <<'USAGE'
-Usage: scripts/ui-test.sh <mac|mac-vm|win11-arm> smoke|dragdrop|jsp3|reload|import|editor (mac-vm: smoke|jsp3|reload|editor)
+Usage: scripts/ui-test.sh <mac|mac-vm|win11-arm> smoke|dragdrop|jsp3|wsh|reload|import|editor (mac-vm: smoke|jsp3|wsh|reload|editor)
        scripts/ui-test.sh win11-arm menus|images|editor
 Runs tests/scripts/smoke.js in a real foobar2000, hosted by Panels UI through the
 tests/skins/panels-ui-embed skin, and asserts on foo_js_panel.log: the session banner, the
@@ -27,6 +27,10 @@ reload runs a copy of tests/scripts/reload.js, changes it on disk while foobar20
 that the panels reload it by themselves (Reload scripts when their files change).
 jsp3 runs tests/scripts/jsp3.js, a JScript Panel 3 style script (preprocessor header, the bundled
 lodash, string fonts, WriteText, Clear, centre/radius ellipses) and takes a screenshot.
+wsh runs tests/scripts/wsh.js, a WSH Panel Mod style script (@feature header, GetColorDUI,
+GetSysColor, VBArrays, Enumerator, a timer object with on_timer, a style text render, the
+lowercase MeasureString fields), asserts that reading a name JS Panel lacks is logged, and takes a
+screenshot.
 dragdrop runs tests/scripts/dragdrop.js: the big panel copies two tracks to the clipboard
 and reads them back, then a mouse drag from it to the small panel (fb.DoDragDrop) drops them into a
 'jsp-drop' playlist through on_drag_drop; it asserts the clipboard, the drop and the source's effect (on mac the drag is asynchronous, so
@@ -52,7 +56,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PLATFORM="$1"
 SCENARIO="${2:-smoke}"
-case "$PLATFORM:$SCENARIO" in mac-vm:import|mac-vm:dragdrop) usage >&2; exit 2 ;; *:smoke|*:dragdrop|*:jsp3|*:reload|*:import|win11-arm:menus|win11-arm:images|*:editor) ;; *) usage >&2; exit 2 ;; esac
+case "$PLATFORM:$SCENARIO" in mac-vm:import|mac-vm:dragdrop) usage >&2; exit 2 ;; *:smoke|*:dragdrop|*:jsp3|*:wsh|*:reload|*:import|win11-arm:menus|win11-arm:images|*:editor) ;; *) usage >&2; exit 2 ;; esac
 SHOTS="$REPO/build/ui-test"
 mkdir -p "$SHOTS"
 ACTIVE_SKIN='cfg_var.2A7E4C11-8B3F-4D6A-9E52-1C8F3A6B0D24'
@@ -93,6 +97,8 @@ check_log() {
 IMPORT_EXPECT=('foo_js_panel .* QuickJS' 'import: layout found' 'import: requested' 'loaded .*foo_ui_panels-skins.Eole[^/\\]*.js.titlebar[.]js')
 RELOAD_EXPECT=('foo_js_panel .* QuickJS' 'reload: generation 1' 'reload: generation 2')
 JSP3_EXPECT=('foo_js_panel .* QuickJS' 'jsp3: loaded lodash=function chunks=2 dui=true dark=boolean files=number now=true' 'jsp3: paint w=[1-9][0-9]*')
+WSH_EXPECT=('foo_js_panel .* QuickJS' 'wsh: loaded colour=number sys=number playlists=true glob=number enum=6 vb=2 height=true match=true'
+            'uses fb[.]NoSuchWshApi, which JS Panel doesn.t implement' 'wsh: paint lines=1 chars=20' 'wsh: timer ticks=2')
 DRAGDROP_EXPECT=('foo_js_panel .* QuickJS' 'dragdrop: clipboard copied=true has=true count=2' 'dragdrop: ready source'
                  'dragdrop: ready target' 'dragdrop: enter effect=[1-3]' 'dragdrop: drop at ' 'dragdrop: added 2')
 MAC_PROFILE="$HOME/Library/foobar2000-v2"
@@ -173,12 +179,14 @@ mac_smoke() {
   local ready='smoke: paint .* ticks=3'
   [ "$SCENARIO" = dragdrop ] && ready='dragdrop: ready target'
   [ "$SCENARIO" = jsp3 ] && ready='jsp3: paint'
+  [ "$SCENARIO" = wsh ] && ready='wsh: timer'
   [ "$SCENARIO" = reload ] && ready='reload: generation 1'
   [ "$SCENARIO" = editor ] && ready='editor: open' && EXPECT=('foo_js_panel .* QuickJS' 'editor: open editor 42 true')
   [ "$SCENARIO" = import ] && ready='titlebar[.]js'
   [ "$SCENARIO" = import ] && EXPECT=("${IMPORT_EXPECT[@]}")
   [ "$SCENARIO" = reload ] && EXPECT=("${RELOAD_EXPECT[@]}")
   [ "$SCENARIO" = jsp3 ] && EXPECT=("${JSP3_EXPECT[@]}")
+  [ "$SCENARIO" = wsh ] && EXPECT=("${WSH_EXPECT[@]}")
   for _ in $(seq 1 60); do
     log="$(mac_log)"
     grep -aq "$ready" <<<"$log" && break
@@ -347,6 +355,10 @@ win11_arm_smoke() {
     EXPECT=("${JSP3_EXPECT[@]}")
     wait_log 'jsp3: paint' || true
     "$vm" shot "$SHOTS/win11-arm-$arch-jsp3.png" >/dev/null 2>&1 && say "screenshot $SHOTS/win11-arm-$arch-jsp3.png"
+  elif [ "$SCENARIO" = wsh ]; then
+    EXPECT=("${WSH_EXPECT[@]}")
+    wait_log 'wsh: timer' || true
+    "$vm" shot "$SHOTS/win11-arm-$arch-wsh.png" >/dev/null 2>&1 && say "screenshot $SHOTS/win11-arm-$arch-wsh.png"
   elif [ "$SCENARIO" = dragdrop ]; then
     EXPECT=("${DRAGDROP_EXPECT[@]}" 'dragdrop: source effect=1')
     wait_log 'dragdrop: ready target' || fail "the panels never loaded"

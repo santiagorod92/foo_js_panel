@@ -61,6 +61,7 @@ public:
     void edit_properties(const std::string& json) override;
     std::string jsp3_path() override;
     std::string bundled_import(const std::string& name) override;
+    void missing_api(const std::string& name) override;
     std::string apply_source(const std::string& source);
 
     void paint(pui::gfx::Canvas& canvas);
@@ -131,6 +132,7 @@ public:
     bool flag(Flag f) override;
     void set_flag(Flag f, bool on) override;
     bool run_main_menu_command(const std::string& path) override;
+    bool main_menu_command_checked(const std::string& path) override;
     bool run_context_command(const std::string& path, const Tracks* tracks) override;
     void popup_message(const std::string& text, const std::string& title) override;
     TrackPtr focus_item() override;

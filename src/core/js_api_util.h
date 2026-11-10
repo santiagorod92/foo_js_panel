@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdint>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace jsp {
@@ -178,7 +179,7 @@ inline std::string with_fallback_rating(const std::string& expr) {
 
 struct ScriptHeader {
     bool present = false;
-    std::vector<std::string> imports;
+    std::vector<std::string> imports, features;
     std::string name, author, version;
 };
 
@@ -193,15 +194,18 @@ inline ScriptHeader parse_header(const std::string& src) {
     while (pos != std::string::npos && pos < end) {
         const size_t next = src.find('\n', pos + 1);
         const std::string line = src.substr(pos + 1, (next == std::string::npos ? src.size() : next) - pos - 1);
-        for (auto [key, field] : { std::pair{ "@import", (std::string*)nullptr }, std::pair{ "@name", &h.name },
-                                   std::pair{ "@author", &h.author }, std::pair{ "@version", &h.version } }) {
+        for (auto [key, field, list] : { std::tuple{ "@import", (std::string*)nullptr, &h.imports },
+                                         std::tuple{ "@feature", (std::string*)nullptr, &h.features },
+                                         std::tuple{ "@name", &h.name, (std::vector<std::string>*)nullptr },
+                                         std::tuple{ "@author", &h.author, (std::vector<std::string>*)nullptr },
+                                         std::tuple{ "@version", &h.version, (std::vector<std::string>*)nullptr } }) {
             const size_t at = line.find(key);
             if (at == std::string::npos) continue;
             const size_t q1 = line.find('"', at), q2 = q1 == std::string::npos ? q1 : line.find('"', q1 + 1);
             if (q2 == std::string::npos) continue;
             const std::string value = line.substr(q1 + 1, q2 - q1 - 1);
             if (field) *field = value;
-            else h.imports.push_back(value);
+            else list->push_back(value);
         }
         pos = next;
     }
@@ -214,8 +218,9 @@ inline std::string replace_all(std::string s, const std::string& from, const std
 }
 
 inline std::string resolve_import(const std::string& spec, const std::string& scriptDir, const std::string& componentDir,
-                                  const std::string& profileDir) {
-    std::string p = replace_all(replace_all(spec, "%fb2k_component_path%", componentDir), "%fb2k_profile_path%", profileDir);
+                                  const std::string& profileDir, const std::string& foobarDir) {
+    std::string p = replace_all(replace_all(replace_all(spec, "%fb2k_component_path%", componentDir), "%fb2k_profile_path%", profileDir),
+                                "%fb2k_path%", foobarDir);
     const bool absolute = !p.empty() && (p[0] == '/' || p[0] == '\\' || (p.size() > 1 && p[1] == ':'));
     return absolute ? p : scriptDir + p;
 }
@@ -230,6 +235,20 @@ inline bool is_jsp3_script(const std::string& src, const ScriptHeader& h) {
     return false;
 }
 
+inline bool is_wsh_script(const std::string& src, const ScriptHeader& h) {
+    if (!h.features.empty()) return true;
+    std::string lower(src);
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+    static const char* const only[] = { "collectgarbage(", "new vbarray(", "new enumerator(", ".toarray()", "getcolorcui(", "getcolordui(",
+                                        "utils.getsyscolor(", "createtimerinterval(", "createtimertimeout(", "watchmetadb(",
+                                        "createstyletextrender(", "on_colors_changed", ".boxblur(", "getcolorscheme(", "fb.trace(",
+                                        "fb.playbackorder", "fb.playlistcount", "fb.activeplaylist", "fb.playingplaylist",
+                                        "fb.getplaylistname(", "pathwildcardmatch(", "getbackgroundimage(" };
+    for (const char* n : only)
+        if (lower.find(n) != std::string::npos) return true;
+    return false;
+}
+
 inline std::string resolve_script_path(const std::string& p, const std::string& home, const std::string& profile) {
     auto join = [](std::string dir, const std::string& rest) {
         if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') dir += '/';
@@ -240,6 +259,31 @@ inline std::string resolve_script_path(const std::string& p, const std::string& 
     if (p.rfind("~/", 0) == 0) return join(home, p.substr(2));
     const bool absolute = p[0] == '/' || p[0] == '\\' || (p.size() > 1 && p[1] == ':');
     return absolute || profile.empty() ? p : join(profile, p);
+}
+
+inline std::string decode_text(std::string b) {
+    const auto u = [&](size_t i) { return (unsigned char)b[i]; };
+    if (b.size() >= 3 && u(0) == 0xEF && u(1) == 0xBB && u(2) == 0xBF) return b.erase(0, 3);
+    if (b.size() < 2 || !((u(0) == 0xFF && u(1) == 0xFE) || (u(0) == 0xFE && u(1) == 0xFF))) return b;
+    const bool le = u(0) == 0xFF;
+    std::string out;
+    out.reserve(b.size());
+    const auto unit = [&](size_t i) { return le ? (uint32_t)(u(i) | (u(i + 1) << 8)) : (uint32_t)((u(i) << 8) | u(i + 1)); };
+    for (size_t i = 2; i + 1 < b.size(); i += 2) {
+        uint32_t c = unit(i);
+        if (c >= 0xD800 && c < 0xDC00 && i + 3 < b.size()) {
+            const uint32_t lo = unit(i + 2);
+            if (lo >= 0xDC00 && lo < 0xE000) {
+                c = 0x10000 + ((c - 0xD800) << 10) + (lo - 0xDC00);
+                i += 2;
+            }
+        }
+        if (c < 0x80) out += (char)c;
+        else if (c < 0x800) out += {(char)(0xC0 | (c >> 6)), (char)(0x80 | (c & 0x3F))};
+        else if (c < 0x10000) out += {(char)(0xE0 | (c >> 12)), (char)(0x80 | ((c >> 6) & 0x3F)), (char)(0x80 | (c & 0x3F))};
+        else out += {(char)(0xF0 | (c >> 18)), (char)(0x80 | ((c >> 12) & 0x3F)), (char)(0x80 | ((c >> 6) & 0x3F)), (char)(0x80 | (c & 0x3F))};
+    }
+    return out;
 }
 
 inline int detect_codepage(const std::string& b) {
