@@ -558,6 +558,8 @@ PanelInfo Panel::info() const {
     if (m_engine) {
         out.memoryBytes = m_engine->memory_used();
         out.calls = m_engine->profile();
+        out.dialect = m_engine->dialect();
+        out.missing = m_engine->missing_api();
     }
     return out;
 }
@@ -722,6 +724,11 @@ void Panel::edit_script() {
 
 std::string Panel::bundled_import(const std::string& name) { return name == "lodash" ? std::string(lodash_js()) : std::string(); }
 
+void Panel::missing_api(const std::string& name) {
+    log::console(log::Level::Warn, "js", (m_path.empty() ? std::string("the built-in sample") : m_path) + " uses " + name +
+                                             ", which JS Panel doesn't implement");
+}
+
 std::string Panel::jsp3_path() { return native_dir(core_api::pathInProfile("foo_js_panel")) + "jsp3" + kPathSep; }
 
 void Panel::edit_properties(const std::string& json) {
@@ -805,10 +812,7 @@ void Panel::console(const std::string& text) {
 bool Panel::read_text_file(const std::string& path, std::string& out) {
     std::error_code ec;
     if (!std::filesystem::is_regular_file(fs_path(path), ec)) return false;
-    out = read_file(path);
-    if (out.size() >= 3 && (unsigned char)out[0] == 0xEF && (unsigned char)out[1] == 0xBB &&
-        (unsigned char)out[2] == 0xBF)
-        out.erase(0, 3);
+    out = decode_text(read_file(path));
     return true;
 }
 
@@ -1470,7 +1474,7 @@ void Panel::set_flag(Flag f, bool on) {
     }
 }
 
-bool Panel::run_main_menu_command(const std::string& path) {
+template <typename F> bool with_main_menu_command(const std::string& path, F&& f) {
     const bool nameOnly = path.find('/') == std::string::npos;
     for (auto cmds : mainmenu_commands::enumerate()) {
         const std::string prefix = nameOnly ? std::string() : main_menu_prefix(cmds->get_parent());
@@ -1478,12 +1482,28 @@ bool Panel::run_main_menu_command(const std::string& path) {
             pfc::string8 name;
             cmds->get_name(i, name);
             if (!same_text(prefix + strip_accel(name.c_str()), path)) continue;
-            cmds->execute(i, nullptr);
+            f(cmds, i);
             return true;
         }
     }
+    return false;
+}
+
+bool Panel::run_main_menu_command(const std::string& path) {
+    if (with_main_menu_command(path, [](const mainmenu_commands::ptr& cmds, t_uint32 i) { cmds->execute(i, nullptr); })) return true;
     log::info("js", "[" + label(m_path) + "] no main menu command " + path);
     return false;
+}
+
+bool Panel::main_menu_command_checked(const std::string& path) {
+    bool checked = false;
+    with_main_menu_command(path, [&](const mainmenu_commands::ptr& cmds, t_uint32 i) {
+        pfc::string8 text;
+        t_uint32 flags = 0;
+        if (cmds->get_display(i, text, flags))
+            checked = (flags & (mainmenu_commands::flag_checked | mainmenu_commands::flag_radiochecked)) != 0;
+    });
+    return checked;
 }
 
 bool Panel::run_context_command(const std::string& path, const Tracks* tracks) {

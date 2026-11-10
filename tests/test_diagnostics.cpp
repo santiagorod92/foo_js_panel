@@ -44,6 +44,18 @@ TEST("diagnostics: panels show their memory and slowest callbacks, at most five"
     CHECK(r.find("cb4") != std::string::npos && r.find("cb5") == std::string::npos);
 }
 
+TEST("diagnostics: panels name their script dialect and the API names they use that are missing") {
+    jsp::DiagnosticsInfo d;
+    jsp::PanelInfo p{ "/s/wsh.js", "running" };
+    p.dialect = "WSH Panel Mod";
+    for (int i = 0; i < 22; ++i) p.missing.push_back("fb.Name" + std::to_string(i));
+    d.panels = { p };
+    const std::string r = jsp::build_diagnostics(d);
+    CHECK(r.find("- /s/wsh.js: running (WSH Panel Mod)\n") != std::string::npos);
+    CHECK(r.find("  - Not implemented: fb.Name0, fb.Name1, ") != std::string::npos);
+    CHECK(r.find("fb.Name19 and 2 more\n") != std::string::npos);
+}
+
 TEST("diagnostics: no panels, Wine") {
     DiagnosticsInfo d;
     d.platform = "Windows";

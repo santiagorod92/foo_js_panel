@@ -174,6 +174,7 @@ public:
     virtual bool flag(Flag) { return false; }
     virtual void set_flag(Flag, bool) {}
     virtual bool run_main_menu_command(const std::string&) { return false; }
+    virtual bool main_menu_command_checked(const std::string&) { return false; }
     virtual bool run_context_command(const std::string&, const Tracks*) { return false; }
     virtual void popup_message(const std::string&, const std::string&) {}
     virtual TrackPtr focus_item() { return nullptr; }
@@ -288,6 +289,7 @@ public:
     virtual void edit_properties(const std::string&) {}
     virtual std::string jsp3_path() { return {}; }
     virtual std::string bundled_import(const std::string&) { return {}; }
+    virtual void missing_api(const std::string&) {}
 };
 
 using Arg = std::variant<int, double, bool, std::string, TrackPtr, Tracks>;
@@ -327,6 +329,8 @@ public:
     const std::vector<std::string>& source_files() const;
     std::vector<CallTiming> profile() const;
     size_t memory_used() const;
+    const std::vector<std::string>& missing_api() const;
+    const std::string& dialect() const;
     void notify_data(const std::string& name, const std::string& json, const std::vector<JsHost::NotifyItem>& items = {});
     void skin_message(const std::string& name, const std::string& text);
 

@@ -1,4 +1,5 @@
 #include "core/fs_util.h"
+#include "core/js_api_util.h"
 #include "core/js_engine.h"
 #include "platform/mac/mac_canvas.h"
 #include <cstdio>
@@ -6,6 +7,7 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -19,7 +21,7 @@ struct StillTrack : jsp::Track {
 
 struct StillHost : jsp::JsHost {
     std::map<std::string, std::string> fields;
-    bool playing = false, paused = false;
+    bool playing = false, paused = false, reloadAsked = false;
     double time = 0, length = 0;
     pui::gfx::ImagePtr art;
     jsp::TrackPtr playingTrack = std::make_shared<StillTrack>();
@@ -115,10 +117,12 @@ struct StillHost : jsp::JsHost {
     double playback_length() override { return length; }
     void playback(jsp::Playback) override {}
     void console(const std::string& text) override { std::fprintf(stderr, "%s\n", text.c_str()); }
+    void reload_script() override { reloadAsked = true; }
+    void missing_api(const std::string& name) override { std::fprintf(stderr, "not implemented: %s\n", name.c_str()); }
     bool read_text_file(const std::string& path, std::string& out) override {
         std::error_code ec;
         if (!std::filesystem::is_regular_file(jsp::fs_path(path), ec)) return false;
-        out = jsp::read_file(path);
+        out = jsp::decode_text(jsp::read_file(path));
         return true;
     }
 };
@@ -128,9 +132,10 @@ int usage() {
                  "usage: render_script SCRIPT.js OUT.png [--size WxH] [--scale S] [--playing] [--paused]\n"
                  "                     [--time SECONDS] [--length SECONDS] [--field 'EXPR=VALUE']... [--art IMAGE]\n"
                  "                     [--library FILE.tsv] [--navidrome FILE.tsv] [--click X,Y]...\n"
-                 "                     [--profile DIR] [--properties FILE.json] [--sandbox DIR] [--new-track]\n"
-                 "Runs SCRIPT.js in the JS Panel engine (resize, pending timers, clicks, then on_paint) on a\n"
-                 "CoreGraphics canvas and writes the frame as a PNG. --field answers fb.TitleFormat(EXPR).Eval();\n"
+                 "                     [--profile DIR] [--properties FILE.json] [--sandbox DIR] [--new-track] [--rounds N]\n"
+                 "Runs SCRIPT.js in the JS Panel engine (resize, N rounds of pending timers (3), clicks, then\n"
+                 "on_paint) on a CoreGraphics canvas and writes the frame as a PNG. --field answers\n"
+                 "fb.TitleFormat(EXPR).Eval();\n"
                  "--art is every album art request's image; --library is the Media Library, a TSV whose first\n"
                  "line holds titleformat expressions and each further line one track's values; --navidrome is\n"
                  "the server's albums, TSV lines id, name, artist, artist id, year, song count. --profile is\n"
@@ -147,6 +152,7 @@ int main(int argc, char** argv) {
     const std::string script = argv[1], out = argv[2];
     int w = 600, h = 56;
     double scale = 1;
+    int rounds = 3;
     StillHost host;
     std::vector<std::pair<int, int>> clicks;
     bool newTrack = false;
@@ -173,6 +179,10 @@ int main(int argc, char** argv) {
             const char* v = next();
             if (!v) return usage();
             scale = std::atof(v);
+        } else if (a == "--rounds") {
+            const char* v = next();
+            if (!v) return usage();
+            rounds = std::max(0, std::atoi(v));
         } else if (a == "--playing") host.playing = true;
         else if (a == "--paused") host.paused = true;
         else if (a == "--time") {
@@ -236,14 +246,22 @@ int main(int argc, char** argv) {
         t->fields = host.fields;
         if (t->path.empty()) t->path = "now-playing";
     }
-    jsp::JsEngine engine(host);
-    engine.load(source, script);
-    engine.resize(w, h);
-    if (newTrack) engine.playback_new_track(host.playingTrack);
-    for (int round = 0; round < 3 && !host.timers.empty(); ++round) {
-        const auto pending = host.timers;
-        for (const auto& [id, ms] : pending) engine.timer(id);
+    std::unique_ptr<jsp::JsEngine> owner;
+    for (int load = 0; load < 4 && (load == 0 || host.reloadAsked); ++load) {
+        if (load > 0) std::fprintf(stderr, "window.Reload: loading the script again\n");
+        host.reloadAsked = false;
+        host.timers.clear();
+        owner.reset();
+        owner = std::make_unique<jsp::JsEngine>(host);
+        owner->load(source, script);
+        owner->resize(w, h);
+        if (newTrack) owner->playback_new_track(host.playingTrack);
+        for (int round = 0; round < rounds && !host.timers.empty() && !host.reloadAsked; ++round) {
+            const auto pending = host.timers;
+            for (const auto& [id, ms] : pending) owner->timer(id);
+        }
     }
+    jsp::JsEngine& engine = *owner;
     for (const auto& [x, y] : clicks) {
         engine.mouse(jsp::Mouse::LeftDown, x, y, 1);
         engine.mouse(jsp::Mouse::LeftUp, x, y, 0);
