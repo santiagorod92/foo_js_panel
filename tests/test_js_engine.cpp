@@ -794,10 +794,10 @@ TEST("keys: macOS modifiers for IsKeyPressed: ⌘ is VK_LWIN/RWIN, and still cou
     CHECK(mac_modifier_pressed(0x10, shift));
     CHECK(!mac_modifier_pressed(0x10, none));
     CHECK(mac_modifier_pressed(0x11, ctrl));
-    CHECK(mac_modifier_pressed(0x11, cmd));      // scripts written for Windows read ⌘C as Ctrl+C
+    CHECK(mac_modifier_pressed(0x11, cmd));
     CHECK(mac_modifier_pressed(0x12, opt));
-    CHECK(mac_modifier_pressed(0x5B, cmd));      // VK_LWIN: tells ⌘ from ⌃
-    CHECK(mac_modifier_pressed(0x5C, cmd));      // VK_RWIN
+    CHECK(mac_modifier_pressed(0x5B, cmd));
+    CHECK(mac_modifier_pressed(0x5C, cmd));
     CHECK(!mac_modifier_pressed(0x5B, ctrl));
     CHECK(!mac_modifier_pressed(0x41, cmd));
 }

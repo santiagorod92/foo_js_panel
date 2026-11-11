@@ -471,7 +471,12 @@ anything repo-specific stays in the repo's own sections.
 - Keyboard: the hosts take focus on a click (Windows `SetFocus` + `WM_GETDLGCODE` = all keys;
   macOS `makeFirstResponder`) and send `on_key_down` Windows VK codes (`mac_key_to_vk` in
   `js_api_util.h`, tested); a key the script doesn't handle goes to
-  `keyboard_shortcut_manager::on_keydown_auto` (Windows) / `super keyDown` (macOS).
+  `keyboard_shortcut_manager::on_keydown_auto` (Windows) / `super keyDown` (macOS). On macOS ⌘ is
+  `VK_LWIN`/`VK_RWIN` for `IsKeyPressed`, so scripts can tell ⌘A from ⌃A, and it still counts as
+  `VK_CONTROL`, so Windows scripts take ⌘C as Ctrl+C (`mac_modifier_pressed`, tested). AppKit drops
+  `keyUp:` for keys released while ⌘ is down, so a local `NSEventMaskKeyUp` monitor delivers those to
+  the first-responder panel in its window and consumes them (returns `nil`), giving ⌘ combos their
+  `on_key_up`.
 - `src/platform/mac/mac_element.mm` — `ui_element_mac`: flipped `NSView`, `CGCanvas` at backing
   scale, tracking area, `NSTimer`s, `NSMenu`, `NSOpenPanel`, plus the `ui::` platform functions.
 - `tests/` — `test_js_engine.cpp` (`FakeHost` + `RecordingCanvas`), log, diagnostics. `make test`
