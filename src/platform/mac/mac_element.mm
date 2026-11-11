@@ -472,8 +472,6 @@ public:
             if (!fixed) jsp::set_default_script(p);
         });
         [self registerForDraggedTypes:track_types()];
-        // AppKit sends no keyUp: for a key released while ⌘ is down (NSApplication drops it), so a
-        // script would see on_key_down for ⌘A and never on_key_up; deliver those from a monitor
         __weak FooJsPanelView* weakSelf = self;
         _keyUpMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyUp handler:^NSEvent*(NSEvent* e) {
             FooJsPanelView* me = weakSelf;

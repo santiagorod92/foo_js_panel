@@ -111,9 +111,6 @@ inline int mac_key_to_vk(int keyCode, char32_t ch) {
     return 0;
 }
 
-// utils.IsKeyPressed for the modifiers on macOS. ⌘ is VK_LWIN/VK_RWIN (the key in its place on a
-// Windows keyboard), so a script can tell ⌘A from ⌃A; it also still counts as VK_CONTROL, so
-// scripts written for Windows take ⌘C as Ctrl+C.
 struct MacModifiers { bool shift = false, control = false, option = false, command = false; };
 inline bool mac_modifier_pressed(int vk, const MacModifiers& m) {
     switch (vk) {
