@@ -435,6 +435,13 @@ anything repo-specific stays in the repo's own sections.
 ## Repo conventions
 - Remote: `origin` → github.com/santiagorod92/foo_js_panel. Branch `main`.
 - **Commits: author Santiago Rodriguez <santiagom9992@gmail.com> ONLY — no Co-Authored-By trailer.**
+- **Contributions (PRs from forks):** commits keep the contributor as author, but never carry an
+  AI trailer or attribution (`Co-Authored-By: Claude …`, "Generated with …"): strip it before
+  pushing, since removing it after the merge means rewriting `main`. A `feat`/`fix` PR also adds
+  its user-facing entry to `CHANGELOG.md` under the next version's `## [X.Y.Z](compare link)
+  (date)` section (create it, predicted from the commits since the last `v*` tag, if it isn't
+  there): without it the merge's `version` job fails at `verifyRelease` (Shared conventions ›
+  Changelog = release notes) and nothing is released.
 - **No code comments** anywhere in `src/`, `tests/`, `scripts/`, `cmake/`, `CMakeLists.txt`,
   `build.sh`, the `Makefile` and `.github/` (same rule as the sister repos). JS inside raw strings
   (`sample_script.cpp`) is data.

@@ -3,6 +3,15 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.6.1](https://github.com/santiagorod92/foo_js_panel/compare/v1.6.0...v1.6.1) (2026-11-12)
+
+### Fixed
+- **macOS: scripts can tell ⌘ from ⌃**: `utils.IsKeyPressed` also answers `VK_LWIN`/`VK_RWIN`
+  (91/92) for ⌘, which still counts as `VK_CONTROL`, so `IsKeyPressed(17) && !IsKeyPressed(91)`
+  is ⌃ while Windows scripts keep taking ⌘C as Ctrl+C.
+- **macOS: `on_key_up` for keys let go while ⌘ is held**: AppKit doesn't send those to views, so
+  shortcuts like ⌘A used to leave the key stuck down for the script.
+
 ## [1.6.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.5.1...v1.6.0) (2026-11-10)
 
 ### Highlights
