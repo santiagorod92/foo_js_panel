@@ -441,12 +441,8 @@ public:
     void* native() override { return (__bridge void*)view; }
     bool key_pressed(int vk) override {
         const NSEventModifierFlags m = NSEvent.modifierFlags;
-        switch (vk) {
-        case 0x10: return (m & NSEventModifierFlagShift) != 0;
-        case 0x11: return (m & (NSEventModifierFlagControl | NSEventModifierFlagCommand)) != 0;
-        case 0x12: return (m & NSEventModifierFlagOption) != 0;
-        default: return false;
-        }
+        return jsp::mac_modifier_pressed(vk, { (m & NSEventModifierFlagShift) != 0, (m & NSEventModifierFlagControl) != 0,
+                                               (m & NSEventModifierFlagOption) != 0, (m & NSEventModifierFlagCommand) != 0 });
     }
 };
 
@@ -463,6 +459,7 @@ public:
     BOOL _fixedScript;
     NSDragOperation _sourceOps;
     int _dropAllowed;
+    id _keyUpMonitor;
 }
 
 - (instancetype)initWithScript:(NSString*)script {
@@ -475,6 +472,15 @@ public:
             if (!fixed) jsp::set_default_script(p);
         });
         [self registerForDraggedTypes:track_types()];
+        __weak FooJsPanelView* weakSelf = self;
+        _keyUpMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyUp handler:^NSEvent*(NSEvent* e) {
+            FooJsPanelView* me = weakSelf;
+            if (!me || !(e.modifierFlags & NSEventModifierFlagCommand) || e.window != me.window ||
+                me.window.firstResponder != me)
+                return e;
+            [me keyUp:e];
+            return nil;
+        }];
     }
     return self;
 }
@@ -546,6 +552,7 @@ public:
 }
 
 - (void)dealloc {
+    if (_keyUpMonitor) [NSEvent removeMonitor:_keyUpMonitor];
     [_surface.editor close];
     _surface.editor = nil;
     _panel.reset();

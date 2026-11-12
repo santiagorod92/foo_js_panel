@@ -111,6 +111,17 @@ inline int mac_key_to_vk(int keyCode, char32_t ch) {
     return 0;
 }
 
+struct MacModifiers { bool shift = false, control = false, option = false, command = false; };
+inline bool mac_modifier_pressed(int vk, const MacModifiers& m) {
+    switch (vk) {
+    case 0x10: return m.shift;
+    case 0x11: return m.control || m.command;
+    case 0x12: return m.option;
+    case 0x5B: case 0x5C: return m.command;
+    default: return false;
+    }
+}
+
 enum class PowerAction { None, Shutdown, Restart, Sleep };
 
 inline PowerAction windows_power_command(const std::string& command) {
