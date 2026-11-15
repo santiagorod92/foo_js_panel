@@ -104,6 +104,22 @@ inline int mac_key_to_vk(int keyCode, char32_t ch) {
     case 118: return VK_F1_ + 3;
     case 96: return VK_F1_ + 4;
     case 97: return VK_F1_ + 5;
+    case 41: return 0xBA;
+    case 24: return 0xBB;
+    case 43: return 0xBC;
+    case 27: return 0xBD;
+    case 47: return 0xBE;
+    case 44: return 0xBF;
+    case 50: return 0xC0;
+    case 33: return 0xDB;
+    case 42: return 0xDC;
+    case 30: return 0xDD;
+    case 39: return 0xDE;
+    case 67: return 0x6A;
+    case 69: return 0x6B;
+    case 78: return 0x6D;
+    case 65: return 0x6E;
+    case 75: return 0x6F;
     default: break;
     }
     if (ch >= 'a' && ch <= 'z') return (int)(ch - 'a' + 'A');
