@@ -3,6 +3,14 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.6.2](https://github.com/santiagorod92/foo_js_panel/compare/v1.6.1...v1.6.2) (2026-11-14)
+
+### Fixed
+- **macOS: punctuation keys reach `on_key_down`**: the punctuation keys (minus, equals, brackets,
+  backslash, semicolon, quote, comma, period, slash, backtick) and the keypad's operators now send
+  their Windows codes (`VK_OEM_*`, `VK_ADD`…), so a script can handle them, and typing one into a
+  script's text box no longer beeps.
+
 ## [1.6.1](https://github.com/santiagorod92/foo_js_panel/compare/v1.6.0...v1.6.1) (2026-11-12)
 
 ### Fixed

@@ -785,7 +785,27 @@ TEST("keys: macOS key codes map to Windows virtual keys") {
     CHECK_EQ(mac_key_to_vk(0, 'a'), (int)'A');
     CHECK_EQ(mac_key_to_vk(18, '1'), (int)'1');
     CHECK_EQ(mac_key_to_vk(122, 0), 0x70);
-    CHECK_EQ(mac_key_to_vk(50, '`'), 0);
+    CHECK_EQ(mac_key_to_vk(50, '`'), 0xC0);
+    CHECK_EQ(mac_key_to_vk(63, 0xF704), 0);
+}
+
+TEST("keys: macOS punctuation and keypad operators map to VK_OEM_* and VK_* codes") {
+    CHECK_EQ(mac_key_to_vk(27, '-'), 0xBD);
+    CHECK_EQ(mac_key_to_vk(27, '_'), 0xBD);
+    CHECK_EQ(mac_key_to_vk(24, '='), 0xBB);
+    CHECK_EQ(mac_key_to_vk(41, ';'), 0xBA);
+    CHECK_EQ(mac_key_to_vk(43, ','), 0xBC);
+    CHECK_EQ(mac_key_to_vk(47, '.'), 0xBE);
+    CHECK_EQ(mac_key_to_vk(44, '/'), 0xBF);
+    CHECK_EQ(mac_key_to_vk(33, '['), 0xDB);
+    CHECK_EQ(mac_key_to_vk(42, '\\'), 0xDC);
+    CHECK_EQ(mac_key_to_vk(30, ']'), 0xDD);
+    CHECK_EQ(mac_key_to_vk(39, '\''), 0xDE);
+    CHECK_EQ(mac_key_to_vk(78, '-'), 0x6D);
+    CHECK_EQ(mac_key_to_vk(69, '+'), 0x6B);
+    CHECK_EQ(mac_key_to_vk(67, '*'), 0x6A);
+    CHECK_EQ(mac_key_to_vk(75, '/'), 0x6F);
+    CHECK_EQ(mac_key_to_vk(65, '.'), 0x6E);
 }
 
 TEST("keys: macOS modifiers for IsKeyPressed: ⌘ is VK_LWIN/RWIN, and still counts as VK_CONTROL") {
