@@ -460,6 +460,9 @@ public:
     NSDragOperation _sourceOps;
     int _dropAllowed;
     id _keyUpMonitor;
+    jsp::MacFocus _focus;
+    BOOL _responder;
+    NSArray* _keyObservers;
 }
 
 - (instancetype)initWithScript:(NSString*)script {
@@ -553,6 +556,7 @@ public:
 
 - (void)dealloc {
     if (_keyUpMonitor) [NSEvent removeMonitor:_keyUpMonitor];
+    [self stopObservingKey];
     [_surface.editor close];
     _surface.editor = nil;
     _panel.reset();
@@ -595,13 +599,40 @@ public:
     if (!handled) [super keyUp:e];
 }
 
+- (void)syncFocus {
+    const int change = _focus.update(_responder, self.window.isKeyWindow);
+    if (change >= 0 && _panel) jsp::log::guarded("js", "focus", [&] { _panel->focus(change == 1); });
+}
+
+- (void)stopObservingKey {
+    for (id o in _keyObservers) [[NSNotificationCenter defaultCenter] removeObserver:o];
+    _keyObservers = nil;
+}
+
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    [self stopObservingKey];
+    if (self.window) {
+        __weak FooJsPanelView* weakSelf = self;
+        NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
+        void (^sync)(NSNotification*) = ^(NSNotification*) { [weakSelf syncFocus]; };
+        _keyObservers = @[
+            [nc addObserverForName:NSWindowDidBecomeKeyNotification object:self.window queue:nil usingBlock:sync],
+            [nc addObserverForName:NSWindowDidResignKeyNotification object:self.window queue:nil usingBlock:sync],
+        ];
+    }
+    [self syncFocus];
+}
+
 - (BOOL)becomeFirstResponder {
-    if (_panel) jsp::log::guarded("js", "focus", [&] { _panel->focus(true); });
+    _responder = YES;
+    [self syncFocus];
     return YES;
 }
 
 - (BOOL)resignFirstResponder {
-    if (_panel) jsp::log::guarded("js", "focus", [&] { _panel->focus(false); });
+    _responder = NO;
+    [self syncFocus];
     return YES;
 }
 - (BOOL)acceptsFirstMouse:(NSEvent*)e { return YES; }

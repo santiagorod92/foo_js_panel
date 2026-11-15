@@ -3,6 +3,14 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.6.2](https://github.com/santiagorod92/foo_js_panel/compare/v1.6.1...v1.6.2) (2026-11-14)
+
+### Fixed
+- **macOS: `on_focus(false)` when switching to another app**: a panel now loses focus when its
+  window stops being the key window (another app, or another foobar2000 window) and gets it back
+  on return, as on Windows. A script's text box no longer keeps its caret blinking while typing
+  goes elsewhere.
+
 ## [1.6.1](https://github.com/santiagorod92/foo_js_panel/compare/v1.6.0...v1.6.1) (2026-11-12)
 
 ### Fixed

@@ -111,6 +111,16 @@ inline int mac_key_to_vk(int keyCode, char32_t ch) {
     return 0;
 }
 
+struct MacFocus {
+    bool shown = false;
+    int update(bool responder, bool key) {
+        const bool now = responder && key;
+        if (now == shown) return -1;
+        shown = now;
+        return now ? 1 : 0;
+    }
+};
+
 struct MacModifiers { bool shift = false, control = false, option = false, command = false; };
 inline bool mac_modifier_pressed(int vk, const MacModifiers& m) {
     switch (vk) {
