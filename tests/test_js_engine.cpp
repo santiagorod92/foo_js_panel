@@ -1087,6 +1087,25 @@ TEST("packages: GetPackageInfo / GetPackagePath find SMP 1.6 packages, ScriptInf
     fs::remove_all(profile);
 }
 
+TEST("packages: a script that includes a package's main.js runs as that package, as Panels UI's Columns UI import writes it") {
+    namespace fs = std::filesystem;
+    const fs::path profile = fs::temp_directory_path() / "jsp_pkg_include_test";
+    fs::remove_all(profile);
+    const fs::path pkg = profile / "foo_spider_monkey_panel" / "packages" / "{ABC}";
+    fs::create_directories(pkg / "scripts");
+    std::ofstream(pkg / "package.json") << "{\"id\":\"{ABC}\"}";
+    t::FakeHost host;
+    host.profilePath = profile.generic_string() + "/";
+    host.files[(pkg / "package.json").generic_string()] = "{\"id\":\"{ABC}\"}";
+    host.files[(pkg / "main.js").generic_string()] = "include('scripts/x.js'); console.log(window.Name, window.ScriptInfo.PackageId, x);";
+    host.files[(pkg / "scripts" / "x.js").generic_string()] = "var x = 'scripts';";
+    JsEngine e(host);
+    CHECK(e.load("Object.defineProperty(window, 'Name', { get: () => \"Seekbar (mini)\" });\n"
+                 "include(utils.GetPackagePath(\"{ABC}\") + 'main.js');", (profile / "skin" / "js" / "Seekbar.js").string()));
+    CHECK_EQ(host.console_lines.back(), std::string("Seekbar (mini) {ABC} scripts"));
+    fs::remove_all(profile);
+}
+
 TEST("fetch: Response text/json, headers sent, HTTP errors resolve, network errors reject") {
     t::FakeHost host;
     host.web["https://api.example/j"] = { 200, "{\"a\":1}", {} };

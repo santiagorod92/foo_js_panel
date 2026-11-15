@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 usage() {
   cat <<'USAGE'
-Usage: scripts/ui-test.sh <mac|mac-vm|win11-arm> smoke|dragdrop|jsp3|wsh|reload|import|editor (mac-vm: smoke|jsp3|wsh|reload|editor)
+Usage: scripts/ui-test.sh <mac|mac-vm|win11-arm> smoke|dragdrop|jsp3|wsh|reload|import|editor|windowless (mac-vm: smoke|jsp3|wsh|reload|editor|windowless)
        scripts/ui-test.sh win11-arm menus|images|editor
 Runs tests/scripts/smoke.js in a real foobar2000, hosted by Panels UI through the
 tests/skins/panels-ui-embed skin, and asserts on foo_js_panel.log: the session banner, the
@@ -19,6 +19,9 @@ editor (win11-arm) runs tests/scripts/editor.js, whose line 3 doesn't parse, ope
 panel's menu and takes a screenshot: the editor opens on line 3, its number in red.
 On mac and mac-vm, editor runs tests/scripts/editor-open.js instead, which opens its own editor with
 window.EditScript() (mac-vm takes a screenshot: the code is highlighted).
+windowless runs tests/scripts/windowless.js as a windowless JS Panel (tests/skins/panels-ui-windowless:
+panel.WL.windowless = 1): Panels UI draws it into its own frame over a red skin box, with skin text
+above it; the test clicks the panel, presses a, scrolls (mac) and takes a screenshot.
 import runs tests/scripts/import.js, which asks Panels UI (SKIN:IMPORT_FCL:<path>) to import Eole's
 columnsUI_eole.fcl: on mac the copy in the profile, in the VM an unzipped copy outside it (so its
 themes/ and wsh-data/ are copied in); it asserts that the new skin runs Eole's panels, then
@@ -56,13 +59,14 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PLATFORM="$1"
 SCENARIO="${2:-smoke}"
-case "$PLATFORM:$SCENARIO" in mac-vm:import|mac-vm:dragdrop) usage >&2; exit 2 ;; *:smoke|*:dragdrop|*:jsp3|*:wsh|*:reload|*:import|win11-arm:menus|win11-arm:images|*:editor) ;; *) usage >&2; exit 2 ;; esac
+case "$PLATFORM:$SCENARIO" in mac-vm:import|mac-vm:dragdrop) usage >&2; exit 2 ;; *:smoke|*:dragdrop|*:jsp3|*:wsh|*:reload|*:import|win11-arm:menus|win11-arm:images|*:editor|*:windowless) ;; *) usage >&2; exit 2 ;; esac
 SHOTS="$REPO/build/ui-test"
 mkdir -p "$SHOTS"
 ACTIVE_SKIN='cfg_var.2A7E4C11-8B3F-4D6A-9E52-1C8F3A6B0D24'
 DEFAULT_SCRIPT='cfg_var.4876F6EE-F0D3-47D7-BFA4-58D677FC9ADF'
 VERBOSE='cfg_var.BBE2ECF8-9204-42D9-A7F1-0D5293B95080'
 SKIN=panels-ui-embed
+[ "$SCENARIO" = windowless ] && SKIN=panels-ui-windowless
 EXPECT=('foo_js_panel .* QuickJS' 'smoke: loaded, include ok' 'smoke: size ' 'smoke: paint .* ticks=0'
         'smoke: timeout ok' 'smoke: timer ok' 'smoke: paint .* ticks=3' 'smoke: navidrome available='
         'smoke: properties runs=[0-9]+' 'smoke: paths profile=true foobar=true version=[0-9]' 'smoke: menu Playback/Stop=true nope=false'
@@ -99,6 +103,9 @@ RELOAD_EXPECT=('foo_js_panel .* QuickJS' 'reload: generation 1' 'reload: generat
 JSP3_EXPECT=('foo_js_panel .* QuickJS' 'jsp3: loaded lodash=function chunks=2 dui=true dark=boolean files=number now=true' 'jsp3: paint w=[1-9][0-9]*')
 WSH_EXPECT=('foo_js_panel .* QuickJS' 'wsh: loaded colour=number sys=number playlists=true glob=number enum=6 vb=2 height=true match=true'
             'uses fb[.]NoSuchWshApi, which JS Panel doesn.t implement' 'wsh: paint lines=1 chars=20' 'wsh: timer ticks=2')
+WINDOWLESS_EXPECT=('foo_js_panel .* QuickJS' 'windowless panel WL runs' 'windowless: loaded name=WL transparent=true'
+                   'windowless: size [1-9][0-9]*x[1-9][0-9]*' 'windowless: paint .* n=1' 'windowless: timer ok' 'windowless: paint .* n=3'
+                   'windowless: move' 'windowless: focus true' 'windowless: down [0-9]+,[0-9]+' 'windowless: up [0-9]+,[0-9]+' 'windowless: key 65')
 DRAGDROP_EXPECT=('foo_js_panel .* QuickJS' 'dragdrop: clipboard copied=true has=true count=2' 'dragdrop: ready source'
                  'dragdrop: ready target' 'dragdrop: enter effect=[1-3]' 'dragdrop: drop at ' 'dragdrop: added 2')
 MAC_PROFILE="$HOME/Library/foobar2000-v2"
@@ -187,6 +194,7 @@ mac_smoke() {
   [ "$SCENARIO" = reload ] && EXPECT=("${RELOAD_EXPECT[@]}")
   [ "$SCENARIO" = jsp3 ] && EXPECT=("${JSP3_EXPECT[@]}")
   [ "$SCENARIO" = wsh ] && EXPECT=("${WSH_EXPECT[@]}")
+  [ "$SCENARIO" = windowless ] && ready='windowless: timer ok' && EXPECT=("${WINDOWLESS_EXPECT[@]}")
   for _ in $(seq 1 60); do
     log="$(mac_log)"
     grep -aq "$ready" <<<"$log" && break
@@ -198,6 +206,27 @@ mac_smoke() {
     for _ in $(seq 1 15); do
       log="$(mac_log)"
       grep -aq 'reload: generation 2' <<<"$log" && break
+      sleep 1
+    done
+  fi
+  if [ "$SCENARIO" = windowless ]; then
+    sleep 2
+    if [ "$PLATFORM" = mac-vm ]; then
+      local size cx cy
+      "$MAC_VM" shot "$SHOTS/mac-vm-windowless-before.png" >/dev/null 2>&1 || true
+      size="$(sips -g pixelWidth -g pixelHeight "$SHOTS/mac-vm-windowless-before.png" 2>/dev/null | awk '/pixel/{print $2}' | tr '\n' ' ')"
+      cx=$(( ${size%% *} / 2 )); cy=$(( $(awk '{print $2}' <<<"$size") / 2 ))
+      "$MAC_VM" move "$cx" "$cy" >/dev/null
+      "$MAC_VM" click "$cx" "$cy" >/dev/null
+      "$MAC_VM" scroll "$cx" "$cy" -3 >/dev/null || true
+      "$MAC_VM" type a >/dev/null
+    else
+      "$REPO/scripts/mac-click.sh" 200 200 || say "the click couldn't be posted"
+      osascript -e 'tell application "System Events" to keystroke "a"' >/dev/null 2>&1 || say "the key couldn't be posted"
+    fi
+    for _ in $(seq 1 15); do
+      log="$(mac_log)"
+      grep -aq 'windowless: key' <<<"$log" && break
       sleep 1
     done
   fi
@@ -250,13 +279,13 @@ win11_arm_smoke() {
     skins='C:/fb2k-x86/profile/foo_ui_panels-skins'
     skins_win='C:\fb2k-x86\profile\foo_ui_panels-skins'
     crashes_win='C:\fb2k-x86\profile\crash reports'
-    VM_DIRS=('C:\fb2k-x86\profile\user-components\foo_js_panel' 'C:\fb2k-x86\profile\foo_ui_panels-skins\panels-ui-embed')
+    VM_DIRS=('C:\fb2k-x86\profile\user-components\foo_js_panel' "C:\\fb2k-x86\\profile\\foo_ui_panels-skins\\$SKIN")
   else
     export FB2K_ARCH=arm64ec
     skins='AppData/Roaming/foobar2000-v2/foo_ui_panels-skins'
     skins_win='%APPDATA%\foobar2000-v2\foo_ui_panels-skins'
     crashes_win='%APPDATA%\foobar2000-v2\crash reports'
-    VM_DIRS=('%APPDATA%\foobar2000-v2\user-components-arm64ec\foo_js_panel' '%APPDATA%\foobar2000-v2\foo_ui_panels-skins\panels-ui-embed')
+    VM_DIRS=('%APPDATA%\foobar2000-v2\user-components-arm64ec\foo_js_panel' "%APPDATA%\\foobar2000-v2\\foo_ui_panels-skins\\$SKIN")
   fi
   VM_DIRS+=('%LOCALAPPDATA%\Temp\jsp-scripts')
   vm_crashes() { "$VM" ssh "dir /b \"$crashes_win\\*.txt\"" 2>/dev/null | tr -d '\r' | grep -c . || true; }
@@ -279,7 +308,7 @@ win11_arm_smoke() {
     VM_DIRS+=('%LOCALAPPDATA%\Temp\EoleImport')
     VM_SKINS_BEFORE="$("$vm" ssh "dir /b \"$skins_win\"" 2>/dev/null | tr -d '\r')"
   fi
-  if [ "$SCENARIO" = import ] || [ "$SCENARIO" = smoke ]; then
+  if [ "$SCENARIO" = import ] || [ "$SCENARIO" = smoke ] || [ "$SCENARIO" = windowless ]; then
     local pui="$REPO/../foo_ui_panels/build-$arch/foo_ui_panels.dll"
     [ "$arch" = x64 ] && pui="$REPO/../foo_ui_panels/build/foo_ui_panels.dll"
     [ -f "$pui" ] || fail "no $pui (build foo_ui_panels for $arch)"
@@ -351,6 +380,13 @@ win11_arm_smoke() {
     sleep 2
     "$vm" ssh "powershell -NoProfile -Command \"\$f = \$env:LOCALAPPDATA + '\\Temp\\jsp-scripts\\reload.js'; (Get-Content \$f) -replace 'generation = 1','generation = 2' | Set-Content \$f\"" >/dev/null
     wait_log 'reload: generation 2' || true
+  elif [ "$SCENARIO" = windowless ]; then
+    EXPECT=("${WINDOWLESS_EXPECT[@]}")
+    wait_log 'windowless: timer ok' || fail "the windowless panel never ran"
+    sleep 2
+    "$vm" tap '50%,50%;wait,800;key,65;wait,800' >/dev/null
+    wait_log 'windowless: key' || true
+    "$vm" shot "$SHOTS/win11-arm-$arch-windowless.png" >/dev/null 2>&1 && say "screenshot $SHOTS/win11-arm-$arch-windowless.png"
   elif [ "$SCENARIO" = jsp3 ]; then
     EXPECT=("${JSP3_EXPECT[@]}")
     wait_log 'jsp3: paint' || true

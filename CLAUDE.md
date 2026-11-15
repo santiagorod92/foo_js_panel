@@ -59,6 +59,13 @@ anything repo-specific stays in the repo's own sections.
   ones); JS Panel hands them to every panel as `on_notify_data` / `on_panelsui_variable_changed`.
   `js_panel_notify_api_v2::state_changed(name, value)` (`mini_mode`, `zoom`; sent after a render
   that changed them) becomes `on_panelsui_mini_mode` / `on_panelsui_zoom`.
+- **Windowless panels:** `js_panel_windowless_api` (same header, published by JS Panel) creates a
+  JS Panel with no window of its own for a `panel.<name>.windowless = 1` skin panel. Panels UI
+  calls `paint(pargb, w, h, scale)` at the `$panel` call's place in the frame, with the skin drawn
+  so far in the caller's buffer, and puts the result back, so later skin drawing lands on top. It
+  forwards mouse, wheel, focus and the native key event (`MSG*` / `NSEvent*`, so the VK mapping
+  stays JS Panel's) and answers the panel through `js_panel_windowless_host` (invalidate, cursor,
+  tooltip, `to_native` for menus). No drag and drop yet.
 - **Script → skin panels:** `panels_ui_api_v2` (queried from the v1 service) names a hosted JS
   Panel's slot from its native view (HWND / NSView), gives panel rects and, for a
   `panel.<name>.transparent = 1` panel, the skin pixels beneath it (`get_backdrop`, PARGB into the
@@ -420,8 +427,14 @@ anything repo-specific stays in the repo's own sections.
   Ctrl+V pastes plain text and its formatting shortcuts are swallowed.
 - **Hardening:** 5 s budget per call (interrupt handler), 512 MB runtime memory, 1 MB stack. A
   script error stops the script (timers killed) and the panel paints the error + stack, like SMP.
-- Drawing onto the Panels UI canvas is a planned contract; it follows the `service_base` contract
-  pattern in Shared conventions (the variables/actions/notify bridge is done, see Hosting).
+- **Windowless panels** (`windowless.cpp`, see Shared conventions › Windowless panels):
+  `WindowlessSurface` decorates a platform `Surface` anchored to the main window
+  (`make_owner_surface`: menus, dialogs, window state) and sends invalidate, cursor and tooltip to
+  the host; timers are `fb2k::registerTimer`. `paint` draws into the host's buffer through
+  `pixels_canvas` (on Windows that canvas draws twice to recover alpha: the cost of no window).
+  Keys go through `windowless_key` (`mac_key` / `char_from`, shared with the windowed element).
+  `has_backdrop` makes a transparent panel skip `get_backdrop`: the buffer already holds the skin.
+  A windowless panel has no pseudo-caption drag and no drag and drop.
 
 ## Release publishing
 - `release.yml`'s `notify-n8n` posts each release to the n8n workflow
@@ -509,7 +522,8 @@ anything repo-specific stays in the repo's own sections.
   properties, window placement, script) and SMP 1.6 JSON settings (a length-prefixed
   `{"id":"settings","version":"1","scriptType":N,"payload":…}`; 1 in-memory script, 3 file by
   `locationType`, 4/5 package id → `panel-NN.package`, run from the profile's packages folder).
-  Panels UI's `fcl_import.cpp` only knows the binary one so far.
+  Panels UI's `fcl_import.cpp` reads both; a 1.6 package panel becomes a script that `include`s the
+  package's `main.js`, so `package_dir` is the first evaluated file sitting in `packages/<id>/`.
 - `tests/themes.tsv` + `scripts/themes-check.sh` (`make themes-check`) — other authors' themes at
   pinned commits, fetched into `build/themes/src` (never committed), run sandboxed (`fcl` through
   theme-check with the repo's packages installed, `script`, `package`), report in

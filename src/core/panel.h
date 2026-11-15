@@ -45,6 +45,8 @@ public:
     virtual void open_editor(const std::string& title, const std::string& text, EditorHooks hooks) = 0;
     virtual bool key_pressed(int vk) = 0;
     virtual void* native() = 0;
+    virtual std::string panel_name() { return {}; }
+    virtual bool has_backdrop() { return false; }
 };
 
 class Panel : public JsHost, private play_callback_impl_base, private library_callback_dynamic_impl_base {

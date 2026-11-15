@@ -7,6 +7,7 @@
 #include "../../core/log.h"
 #include "../../core/panel.h"
 #include "../../core/settings.h"
+#include "../../core/windowless.h"
 #include "win_dragdrop.h"
 #include "win_editor.h"
 #include "win_input.h"
@@ -254,6 +255,25 @@ public:
     }
 };
 
+class OwnerSurface : public WinSurface {
+public:
+    ~OwnerSurface() override {
+        close_editor();
+        destroy_tooltip();
+    }
+};
+
+unsigned char_from(wchar_t c, wchar_t& high) {
+    if (c >= 0xD800 && c <= 0xDBFF) {
+        high = c;
+        return 0;
+    }
+    unsigned cp = c;
+    if (c >= 0xDC00 && c <= 0xDFFF && high) cp = 0x10000 + ((high - 0xD800u) << 10) + (c - 0xDC00u);
+    high = 0;
+    return cp;
+}
+
 class JsElementInstance : public ui_element_instance {
 public:
     JsElementInstance(HWND parent, ui_element_config::ptr cfg, ui_element_instance_callback_ptr callback)
@@ -421,18 +441,9 @@ private:
         case WM_SYSKEYUP:
             if (m_panel && m_panel->key_up((int)wp)) return 0;
             break;
-        case WM_CHAR: {
-            const wchar_t c = (wchar_t)wp;
-            if (c >= 0xD800 && c <= 0xDBFF) {
-                m_highSurrogate = c;
-                return 0;
-            }
-            unsigned cp = c;
-            if (c >= 0xDC00 && c <= 0xDFFF && m_highSurrogate) cp = 0x10000 + ((m_highSurrogate - 0xD800u) << 10) + (c - 0xDC00u);
-            m_highSurrogate = 0;
-            if (m_panel) m_panel->char_input(cp);
+        case WM_CHAR:
+            if (const unsigned cp = char_from((wchar_t)wp, m_highSurrogate); cp && m_panel) m_panel->char_input(cp);
             return 0;
-        }
         case WM_RBUTTONUP:
             if (m_callback.is_valid() && m_callback->is_edit_mode_enabled()) break;
             if (m_panel) m_panel->mouse(Mouse::RightUp, x, y, mask);
@@ -486,6 +497,30 @@ public:
 };
 FB2K_SERVICE_FACTORY(JsElement);
 
+}
+
+std::unique_ptr<Surface> make_owner_surface(void* native_window) {
+    auto s = std::make_unique<OwnerSurface>();
+    s->hwnd = static_cast<HWND>(native_window);
+    return s;
+}
+
+bool windowless_key(Panel& panel, const void* native_event) {
+    static wchar_t high = 0;
+    const MSG& m = *static_cast<const MSG*>(native_event);
+    switch (m.message) {
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+        return panel.key_down((int)m.wParam);
+    case WM_KEYUP:
+    case WM_SYSKEYUP:
+        return panel.key_up((int)m.wParam);
+    case WM_CHAR:
+        if (const unsigned cp = char_from((wchar_t)m.wParam, high)) panel.char_input(cp);
+        return true;
+    default:
+        return false;
+    }
 }
 
 }
