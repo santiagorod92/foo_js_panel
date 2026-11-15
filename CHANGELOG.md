@@ -3,6 +3,19 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.7.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.6.1...v1.7.0) (2026-11-15)
+
+### Highlights
+- **Panels drawn straight into Panels UI**: a skin with `panel.<name>.windowless = 1` (Panels UI
+  1.24.0) draws the JS Panel into its own window. The skin can draw over the panel, a transparent
+  panel sees the live skin beneath it, and mouse, wheel, keys, cursor, tooltips, menus and timers
+  work as usual. Drag and drop and `SetPseudoCaption` don't work in such a panel yet.
+
+### Fixed
+- `window.ScriptInfo.PackageId` names the package when a script `include`s a package's `main.js`
+  (as the layouts Panels UI imports from Spider Monkey Panel 1.6 do), not only when `main.js` is
+  the panel's script.
+
 ## [1.6.1](https://github.com/santiagorod92/foo_js_panel/compare/v1.6.0...v1.6.1) (2026-11-12)
 
 ### Fixed

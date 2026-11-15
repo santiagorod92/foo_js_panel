@@ -1,0 +1,7 @@
+$drawrect(0,0,%_width%,%_height%,brushcolor-24-25-30 pencolor-null)
+$font(Segoe UI,12,bold)
+$drawstring(Panels UI with a windowless JS Panel,12,10,400,22,235-238-245)
+$drawrect(12,40,$eval(%_width% - 24),$eval(%_height% - 52),brushcolor-170-40-40 pencolor-null)
+$panel(WL,JS Panel,12,40,$eval(%_width% - 24),$eval(%_height% - 52))
+$font(Segoe UI,16,bold)
+$drawstring(skin drawn above the panel,24,$eval(%_height% - 44),400,26,255-230-0)

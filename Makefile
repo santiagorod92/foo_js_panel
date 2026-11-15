@@ -1,5 +1,5 @@
 .PHONY: help build build-arm64ec build-x86 build-all deploy launch run kill clean check-portable test win-test \
-	mac-build mac-local mac-smoke mac-demo mac-restore render theme-check themes-check jsp3-check mac-shot mac-click ui-smoke win11-arm win11-arm-deploy win11-arm-test win11-arm-smoke win11-arm-menus win11-arm-images win11-arm-dragdrop mac-dragdrop win11-arm-jsp3 mac-jsp3 win11-arm-wsh mac-wsh mac-vm-wsh win11-arm-reload mac-reload win11-arm-editor mac-import win11-arm-import mac-vm mac-vm-smoke mac-vm-jsp3 mac-vm-reload mac-vm-editor
+	mac-build mac-local mac-smoke mac-demo mac-restore render theme-check themes-check jsp3-check mac-shot mac-click ui-smoke win11-arm win11-arm-deploy win11-arm-test win11-arm-smoke win11-arm-menus win11-arm-images win11-arm-dragdrop mac-dragdrop win11-arm-jsp3 mac-jsp3 win11-arm-wsh mac-wsh mac-vm-wsh win11-arm-reload mac-reload win11-arm-editor mac-import win11-arm-import mac-vm mac-vm-smoke mac-vm-jsp3 mac-vm-reload mac-vm-editor mac-windowless mac-vm-windowless win11-arm-windowless
 
 help:
 	@echo "foo_js_panel — make targets"
@@ -34,6 +34,7 @@ help:
 	@echo "  mac-vm-wsh        the same with the WSH Panel Mod style script, with a screenshot"
 	@echo "  mac-vm-reload     the same: a script edited on disk reloads by itself"
 	@echo "  mac-vm-editor     the same: a script opens its own editor (window.EditScript), with a screenshot"
+	@echo "  mac-windowless / mac-vm-windowless / win11-arm-windowless   a windowless JS Panel drawn by Panels UI, clicked and typed into"
 	@echo "  mac-vm-<cmd>      any terminal-mac.sh command: -status, -shot, -ssh, -view, -fb2k ARGS='log 60 ERROR', ..."
 	@echo ""
 	@echo "  Windows 11 ARM VM on an Apple Silicon Mac (../foo_navidrome/scripts/win11-arm.sh, set up from foo_navidrome):"
@@ -206,6 +207,18 @@ win11-arm-editor:
 
 mac-import: mac-build
 	./scripts/ui-test.sh mac import
+
+mac-windowless: mac-build
+	$(MAKE) -C $(PUI_ROOT) mac-build
+	./scripts/ui-test.sh mac windowless
+
+mac-vm-windowless: mac-build
+	$(MAKE) -C $(PUI_ROOT) mac-build
+	MAC_VM=$(MAC_VM) ./scripts/ui-test.sh mac-vm windowless
+
+win11-arm-windowless:
+	WIN_ARCH=$(ARCH) ./build.sh
+	WIN11_ARM=$(WIN11_ARM) ARCH=$(ARCH) ./scripts/ui-test.sh win11-arm windowless
 
 win11-arm-import:
 	WIN_ARCH=$(ARCH) ./build.sh

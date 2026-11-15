@@ -6,6 +6,7 @@
 #include "../../core/js_panel_api.h"
 #include "../../core/log.h"
 #include "../../core/panel.h"
+#include "../../core/windowless.h"
 #include "../../core/platform.h"
 #include "../../core/platform_tracks.h"
 #include "../../core/settings.h"
@@ -380,7 +381,7 @@ namespace {
 
 class MacSurface : public jsp::Surface {
 public:
-    __weak FooJsPanelView* view = nil;
+    __weak NSView* view = nil;
     std::map<int, NSTimer*> timers;
     FooJsPanelEditor* editor = nil;
     NSCursor* cursor = nil;
@@ -446,6 +447,35 @@ public:
     }
 };
 
+}
+
+static bool mac_key(jsp::Panel& panel, NSEvent* e) {
+    NSString* chars = e.charactersIgnoringModifiers;
+    const char32_t ch = chars.length ? (char32_t)[chars characterAtIndex:0] : 0;
+    const int vk = jsp::mac_key_to_vk((int)e.keyCode, ch);
+    bool handled = false;
+    if (e.type == NSEventTypeKeyUp) {
+        if (vk) jsp::log::guarded("js", "key", [&] { handled = panel.key_up(vk); });
+        return handled;
+    }
+    if (e.type != NSEventTypeKeyDown) return false;
+    if (vk) jsp::log::guarded("js", "key", [&] { handled = panel.key_down(vk); });
+    const bool command = (e.modifierFlags & NSEventModifierFlagCommand) != 0;
+    NSString* typed = e.characters;
+    if (typed.length) {
+        jsp::Panel* target = &panel;
+        jsp::log::guarded("js", "char", [&] {
+            [typed enumerateSubstringsInRange:NSMakeRange(0, typed.length)
+                                      options:NSStringEnumerationByComposedCharacterSequences
+                                   usingBlock:^(NSString* sub, NSRange, NSRange, BOOL*) {
+                                       NSData* d = [sub dataUsingEncoding:NSUTF32LittleEndianStringEncoding];
+                                       const auto* cps = static_cast<const uint32_t*>(d.bytes);
+                                       for (NSUInteger i = 0; i < d.length / 4; ++i)
+                                           target->char_input(jsp::mac_char_to_wm_char((char32_t)cps[i], command));
+                                   }];
+        });
+    }
+    return handled;
 }
 
 @interface FooJsPanelView : NSView <NSDraggingSource>
@@ -561,38 +591,12 @@ public:
 - (BOOL)isFlipped { return YES; }
 - (BOOL)acceptsFirstResponder { return YES; }
 
-- (int)vk:(NSEvent*)e {
-    NSString* chars = e.charactersIgnoringModifiers;
-    const char32_t ch = chars.length ? (char32_t)[chars characterAtIndex:0] : 0;
-    return jsp::mac_key_to_vk((int)e.keyCode, ch);
-}
-
 - (void)keyDown:(NSEvent*)e {
-    const int vk = [self vk:e];
-    bool handled = false;
-    if (_panel && vk) jsp::log::guarded("js", "key", [&] { handled = _panel->key_down(vk); });
-    const bool command = (e.modifierFlags & NSEventModifierFlagCommand) != 0;
-    NSString* typed = e.characters;
-    if (_panel && typed.length) {
-        jsp::log::guarded("js", "char", [&] {
-            [typed enumerateSubstringsInRange:NSMakeRange(0, typed.length)
-                                      options:NSStringEnumerationByComposedCharacterSequences
-                                   usingBlock:^(NSString* sub, NSRange, NSRange, BOOL*) {
-                                       NSData* d = [sub dataUsingEncoding:NSUTF32LittleEndianStringEncoding];
-                                       const auto* cps = static_cast<const uint32_t*>(d.bytes);
-                                       for (NSUInteger i = 0; i < d.length / 4; ++i)
-                                           if (_panel) _panel->char_input(jsp::mac_char_to_wm_char((char32_t)cps[i], command));
-                                   }];
-        });
-    }
-    if (!handled) [super keyDown:e];
+    if (!(_panel && mac_key(*_panel, e))) [super keyDown:e];
 }
 
 - (void)keyUp:(NSEvent*)e {
-    const int vk = [self vk:e];
-    bool handled = false;
-    if (_panel && vk) jsp::log::guarded("js", "key", [&] { handled = _panel->key_up(vk); });
-    if (!handled) [super keyUp:e];
+    if (!(_panel && mac_key(*_panel, e))) [super keyUp:e];
 }
 
 - (BOOL)becomeFirstResponder {
@@ -717,7 +721,7 @@ namespace {
 
 void MacSurface::invalidate() { [view setNeedsDisplay:YES]; }
 
-int MacSurface::drag_tracks(metadb_handle_list_cref tracks, int effects) { return [view dragTracks:tracks effects:effects]; }
+int MacSurface::drag_tracks(metadb_handle_list_cref tracks, int effects) { return [(FooJsPanelView*)view dragTracks:tracks effects:effects]; }
 
 void MacSurface::set_tooltip(const std::string& text, bool active, int) { view.toolTip = active && !text.empty() ? ns(text) : nil; }
 
@@ -781,7 +785,7 @@ void MacSurface::invalidate_rect(const pui::gfx::Rect& r) {
 
 void MacSurface::start_timer(int id, int ms) {
     stop_timer(id);
-    __weak FooJsPanelView* v = view;
+    __weak FooJsPanelView* v = (FooJsPanelView*)view;
     NSTimer* t = [NSTimer timerWithTimeInterval:ms / 1000.0 repeats:YES block:^(NSTimer*) { [v fireTimer:id]; }];
     [[NSRunLoop mainRunLoop] addTimer:t forMode:NSRunLoopCommonModes];
     timers[id] = t;
@@ -981,6 +985,18 @@ public:
     GUID get_guid() override { return js_panel::element_guid; }
 };
 FB2K_SERVICE_FACTORY(ui_element_mac_js);
+
+}
+
+namespace jsp {
+
+std::unique_ptr<Surface> make_owner_surface(void* native_window) {
+    auto s = std::make_unique<MacSurface>();
+    s->view = (__bridge NSView*)native_window;
+    return s;
+}
+
+bool windowless_key(Panel& panel, const void* native_event) { return mac_key(panel, (__bridge NSEvent*)native_event); }
 
 }
 
