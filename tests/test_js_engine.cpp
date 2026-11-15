@@ -788,6 +788,20 @@ TEST("keys: macOS key codes map to Windows virtual keys") {
     CHECK_EQ(mac_key_to_vk(50, '`'), 0);
 }
 
+TEST("focus: macOS panel focus needs first responder and key window, like WM_SETFOCUS/WM_KILLFOCUS") {
+    MacFocus f;
+    CHECK_EQ(f.update(true, true), 1);
+    CHECK_EQ(f.update(true, true), -1);
+    CHECK_EQ(f.update(true, false), 0);
+    CHECK_EQ(f.update(true, false), -1);
+    CHECK_EQ(f.update(true, true), 1);
+    CHECK_EQ(f.update(false, true), 0);
+    CHECK_EQ(f.update(false, false), -1);
+    CHECK_EQ(f.update(false, true), -1);
+    CHECK_EQ(f.update(true, false), -1);
+    CHECK_EQ(f.update(true, true), 1);
+}
+
 TEST("keys: macOS modifiers for IsKeyPressed: ⌘ is VK_LWIN/RWIN, and still counts as VK_CONTROL") {
     using M = MacModifiers;
     const M none{}, shift{ true }, ctrl{ false, true }, opt{ false, false, true }, cmd{ false, false, false, true };
