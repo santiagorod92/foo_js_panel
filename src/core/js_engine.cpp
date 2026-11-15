@@ -250,9 +250,11 @@ std::string script_relative(JsEngine::Impl* e, const std::string& in) {
 }
 
 std::filesystem::path package_dir(JsEngine::Impl* e) {
-    if (e->files.empty()) return {};
-    const std::filesystem::path dir = std::filesystem::path(fix_path(e->files.front())).parent_path();
-    return dir.parent_path().filename() == "packages" ? dir : std::filesystem::path();
+    for (const std::string& file : e->files) {
+        const std::filesystem::path dir = std::filesystem::path(fix_path(file)).parent_path();
+        if (dir.parent_path().filename() == "packages") return dir;
+    }
+    return {};
 }
 
 Rect arg_rect(JSContext* ctx, int argc, JSValueConst* argv, int i) {

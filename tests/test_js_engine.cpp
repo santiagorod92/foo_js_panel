@@ -808,6 +808,20 @@ TEST("keys: macOS punctuation and keypad operators map to VK_OEM_* and VK_* code
     CHECK_EQ(mac_key_to_vk(65, '.'), 0x6E);
 }
 
+TEST("focus: macOS panel focus needs first responder and key window, like WM_SETFOCUS/WM_KILLFOCUS") {
+    MacFocus f;
+    CHECK_EQ(f.update(true, true), 1);
+    CHECK_EQ(f.update(true, true), -1);
+    CHECK_EQ(f.update(true, false), 0);
+    CHECK_EQ(f.update(true, false), -1);
+    CHECK_EQ(f.update(true, true), 1);
+    CHECK_EQ(f.update(false, true), 0);
+    CHECK_EQ(f.update(false, false), -1);
+    CHECK_EQ(f.update(false, true), -1);
+    CHECK_EQ(f.update(true, false), -1);
+    CHECK_EQ(f.update(true, true), 1);
+}
+
 TEST("keys: macOS modifiers for IsKeyPressed: ⌘ is VK_LWIN/RWIN, and still counts as VK_CONTROL") {
     using M = MacModifiers;
     const M none{}, shift{ true }, ctrl{ false, true }, opt{ false, false, true }, cmd{ false, false, false, true };
@@ -1090,6 +1104,25 @@ TEST("packages: GetPackageInfo / GetPackagePath find SMP 1.6 packages, ScriptInf
     CHECK_EQ(host.console_lines[host.console_lines.size() - 2],
              std::string("1.2.0 foo_spider_monkey_panel/packages/{ABC}/ foo_spider_monkey_panel/package_data/{ABC}/ null null true {ABC}"));
     CHECK_EQ(host.console_lines.back(), std::string("threw"));
+    fs::remove_all(profile);
+}
+
+TEST("packages: a script that includes a package's main.js runs as that package, as Panels UI's Columns UI import writes it") {
+    namespace fs = std::filesystem;
+    const fs::path profile = fs::temp_directory_path() / "jsp_pkg_include_test";
+    fs::remove_all(profile);
+    const fs::path pkg = profile / "foo_spider_monkey_panel" / "packages" / "{ABC}";
+    fs::create_directories(pkg / "scripts");
+    std::ofstream(pkg / "package.json") << "{\"id\":\"{ABC}\"}";
+    t::FakeHost host;
+    host.profilePath = profile.generic_string() + "/";
+    host.files[(pkg / "package.json").generic_string()] = "{\"id\":\"{ABC}\"}";
+    host.files[(pkg / "main.js").generic_string()] = "include('scripts/x.js'); console.log(window.Name, window.ScriptInfo.PackageId, x);";
+    host.files[(pkg / "scripts" / "x.js").generic_string()] = "var x = 'scripts';";
+    JsEngine e(host);
+    CHECK(e.load("Object.defineProperty(window, 'Name', { get: () => \"Seekbar (mini)\" });\n"
+                 "include(utils.GetPackagePath(\"{ABC}\") + 'main.js');", (profile / "skin" / "js" / "Seekbar.js").string()));
+    CHECK_EQ(host.console_lines.back(), std::string("Seekbar (mini) {ABC} scripts"));
     fs::remove_all(profile);
 }
 

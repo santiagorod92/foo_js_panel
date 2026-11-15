@@ -1242,6 +1242,8 @@ void Panel::set_panels_ui_value(const std::string& name, const std::string& valu
 
 std::string Panel::panels_ui_panel_name() {
     if (!m_puiName.empty()) return m_puiName;
+    m_puiName = m_surface.panel_name();
+    if (!m_puiName.empty()) return m_puiName;
     pfc::string8 name;
     if (auto v2 = panels_ui_service_v2(); v2.is_valid() && v2->panel_name(m_surface.native(), name)) m_puiName = name.c_str();
     return m_puiName;
@@ -1278,6 +1280,7 @@ bool Panel::panels_ui_transparent() {
 }
 
 bool Panel::paint_backdrop(pui::gfx::Canvas& canvas) {
+    if (m_surface.has_backdrop()) return panels_ui_transparent();
     const std::string name = panels_ui_panel_name();
     auto v2 = panels_ui_service_v2();
     if (name.empty() || v2.is_empty() || !v2->is_transparent(name.c_str())) return false;
