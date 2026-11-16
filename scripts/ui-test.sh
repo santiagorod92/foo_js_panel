@@ -42,7 +42,8 @@ screenshot.
 dragdrop runs tests/scripts/dragdrop.js: the big panel copies two tracks to the clipboard
 and reads them back, then a mouse drag from it to the small panel (fb.DoDragDrop) drops them into a
 'jsp-drop' playlist through on_drag_drop; it asserts the clipboard, the drop and the source's effect (on mac the drag is asynchronous, so
-DoDragDrop answers 0 there, and the clipboard's text is put back afterwards).
+DoDragDrop answers 0 there, and the clipboard's text is put back afterwards). WINDOWLESS=1 makes the small panel
+windowless (tests/skins/panels-ui-dragdrop-windowless), so the drop goes through Panels UI's own drop target.
 images (win11-arm) runs tests/scripts/images.js: off-screen images drawn with GetGraphics,
 translucent shapes, a circle mask, a blurred shadow, a rotated image and a colour scheme, then
 takes a screenshot (compare with make render SCRIPT=tests/scripts/images.js on macOS).
@@ -72,6 +73,7 @@ DEFAULT_SCRIPT='cfg_var.4876F6EE-F0D3-47D7-BFA4-58D677FC9ADF'
 VERBOSE='cfg_var.BBE2ECF8-9204-42D9-A7F1-0D5293B95080'
 SKIN=panels-ui-embed
 [ "$SCENARIO" = windowless ] && SKIN=panels-ui-windowless
+[ "$SCENARIO" = dragdrop ] && [ "${WINDOWLESS:-0}" = 1 ] && SKIN=panels-ui-dragdrop-windowless
 EXPECT=('foo_js_panel .* QuickJS' 'smoke: loaded, include ok' 'smoke: size ' 'smoke: paint .* ticks=0'
         'smoke: timeout ok' 'smoke: timer ok' 'smoke: paint .* ticks=3' 'smoke: navidrome available='
         'smoke: properties runs=[0-9]+' 'smoke: paths profile=true foobar=true version=[0-9]' 'smoke: menu Playback/Stop=true nope=false'
@@ -83,7 +85,8 @@ EXPECT=('foo_js_panel .* QuickJS' 'smoke: loaded, include ok' 'smoke: size ' 'sm
         'smoke: ini write=true read=[0-9]+,js panel missing=def package=null' 'smoke: queue found=true contents=[1-9][0-9]* removed=true'
         'smoke: queue-cb origin=0' 'smoke: add-locations items=1' 'smoke: module answer=42' 'smoke: fetch TypeError'
         'smoke: skin variable jsp.smoke=[0-9]+' 'smoke: skin message smoke-skin n=1 from=[0-9]+'
-        'smoke: navidrome search (artists=[1-9][0-9]* albums=[0-9]+ tracks=[0-9]+ path=(navidrome|none)|skipped)')
+        'smoke: navidrome search (artists=[1-9][0-9]* albums=[0-9]+ tracks=[0-9]+ path=(navidrome|none)|skipped)'
+        'smoke: dark=boolean wizard=true state=[0-2]' 'smoke: html dialog ok JS Panel dialog 2' 'smoke: html dialog closed')
 
 say() { printf '==> %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -350,7 +353,7 @@ win11_arm_smoke() {
     done
     VM_SKINS_BEFORE="$("$vm" ssh "dir /b \"$skins_win\"" 2>/dev/null | tr -d '\r')"
   fi
-  if [ "$SCENARIO" = import ] || [ "$SCENARIO" = catrox ] || [ "$SCENARIO" = smoke ] || [ "$SCENARIO" = windowless ]; then
+  if [ "$SCENARIO" = import ] || [ "$SCENARIO" = catrox ] || [ "$SCENARIO" = smoke ] || [ "$SCENARIO" = windowless ] || [ "${WINDOWLESS:-0}" = 1 ]; then
     local pui="$REPO/../foo_ui_panels/build-$arch/foo_ui_panels.dll"
     [ "$arch" = x64 ] && pui="$REPO/../foo_ui_panels/build/foo_ui_panels.dll"
     [ -f "$pui" ] || fail "no $pui (build foo_ui_panels for $arch)"

@@ -1,5 +1,5 @@
 .PHONY: help build build-arm64ec build-x86 build-all deploy launch run kill clean check-portable test win-test \
-	mac-build mac-local mac-smoke mac-demo mac-restore render theme-check themes-check jsp3-check mac-shot mac-click ui-smoke win11-arm win11-arm-deploy win11-arm-test win11-arm-smoke win11-arm-menus win11-arm-images win11-arm-dragdrop mac-dragdrop win11-arm-jsp3 mac-jsp3 win11-arm-wsh mac-wsh mac-vm-wsh win11-arm-reload mac-reload win11-arm-editor mac-import win11-arm-import mac-vm mac-vm-smoke mac-vm-jsp3 mac-vm-reload mac-vm-editor mac-windowless mac-vm-windowless mac-vm-catrox win11-arm-catrox win11-arm-windowless
+	mac-build mac-local mac-smoke mac-demo mac-restore render theme-check themes-check jsp3-check mac-shot mac-click ui-smoke win11-arm win11-arm-deploy win11-arm-test win11-arm-smoke win11-arm-menus win11-arm-images win11-arm-dragdrop win11-arm-dragdrop-windowless mac-dragdrop win11-arm-jsp3 mac-jsp3 win11-arm-wsh mac-wsh mac-vm-wsh win11-arm-reload mac-reload win11-arm-editor mac-import win11-arm-import mac-vm mac-vm-smoke mac-vm-jsp3 mac-vm-reload mac-vm-editor mac-windowless mac-vm-windowless mac-vm-catrox win11-arm-catrox win11-arm-windowless
 
 help:
 	@echo "foo_js_panel — make targets"
@@ -257,6 +257,10 @@ mac-wsh: mac-build
 win11-arm-dragdrop:
 	WIN_ARCH=$(ARCH) ./build.sh
 	WIN11_ARM=$(WIN11_ARM) ARCH=$(ARCH) ./scripts/ui-test.sh win11-arm dragdrop
+
+win11-arm-dragdrop-windowless:
+	WIN_ARCH=$(ARCH) ./build.sh
+	WINDOWLESS=1 WIN11_ARM=$(WIN11_ARM) ARCH=$(ARCH) ./scripts/ui-test.sh win11-arm dragdrop
 
 win11-arm-test:
 	WIN11_ARM=$(WIN11_ARM) ./scripts/run-unit-tests.sh win11-arm

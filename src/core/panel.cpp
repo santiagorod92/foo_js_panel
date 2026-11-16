@@ -301,6 +301,12 @@ const GUID* main_menu_root(const std::string& name) {
     return nullptr;
 }
 
+constexpr const char* kResponseHeaders[] = {
+    "content-type", "content-length", "content-encoding", "content-language", "content-disposition", "date", "last-modified",
+    "etag", "expires", "cache-control", "age", "location", "server", "set-cookie", "retry-after", "vary", "link",
+    "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset", "access-control-allow-origin",
+};
+
 HttpResponse run_http(const HttpRequest& r, abort_callback& abort) {
     HttpResponse out;
     try {
@@ -329,6 +335,9 @@ HttpResponse run_http(const HttpRequest& r, abort_callback& abort) {
             const char* p = status.c_str();
             while (*p && !(p[0] >= '1' && p[0] <= '5' && p[1] >= '0' && p[1] <= '9' && p[2] >= '0' && p[2] <= '9')) ++p;
             out.status = *p ? atoi(p) : 200;
+            pfc::string8 value;
+            for (const char* name : kResponseHeaders)
+                if (reply->get_http_header_multi(name, value)) out.headers.emplace_back(name, value.c_str());
         } else {
             out.status = 200;
         }
@@ -1266,6 +1275,13 @@ std::string Panel::panels_ui_panel_name() {
     return m_puiName;
 }
 
+bool Panel::dark_mode() {
+    if (auto ui = ui_config_manager::tryGet(); ui.is_valid()) return ui->is_dark_mode();
+    uint32_t bg = 0;
+    if (!m_surface.ui_colour(UiColour::Background, bg)) return false;
+    return (((bg >> 16) & 0xff) * 299 + ((bg >> 8) & 0xff) * 587 + (bg & 0xff) * 114) / 1000 < 128;
+}
+
 bool Panel::ui_colour(UiColour kind, uint32_t& argb) {
     const std::string name = panels_ui_panel_name();
     if (auto v2 = panels_ui_service_v2(); !name.empty() && v2.is_valid() && v2->get_colour(name.c_str(), (int)kind, argb)) return true;
@@ -1318,6 +1334,60 @@ Tracks Panel::get_ui_selection() {
     metadb_handle_list list;
     ui_selection_manager::get()->get_selection(list);
     return wrap_all(list);
+}
+
+int Panel::recycler_count() {
+    playlist_manager_v3::ptr pm;
+    return playlist_manager_v3::tryGet(pm) ? (int)pm->recycler_get_count() : 0;
+}
+
+std::string Panel::recycler_name(int index) {
+    playlist_manager_v3::ptr pm;
+    if (!playlist_manager_v3::tryGet(pm) || index < 0 || (size_t)index >= pm->recycler_get_count()) return {};
+    pfc::string8 name;
+    pm->recycler_get_name((size_t)index, name);
+    return name.c_str();
+}
+
+Tracks Panel::recycler_items(int index) {
+    playlist_manager_v3::ptr pm;
+    if (!playlist_manager_v3::tryGet(pm) || index < 0 || (size_t)index >= pm->recycler_get_count()) return {};
+    metadb_handle_list list;
+    pm->recycler_get_content((size_t)index, list);
+    return wrap_all(list);
+}
+
+void Panel::recycler_purge(const std::vector<int>& indexes) {
+    playlist_manager_v3::ptr pm;
+    if (!playlist_manager_v3::tryGet(pm)) return;
+    const size_t count = pm->recycler_get_count();
+    bit_array_bittable mask(count);
+    for (int i : indexes)
+        if (i >= 0 && (size_t)i < count) mask.set((size_t)i, true);
+    pm->recycler_purge(mask);
+}
+
+void Panel::recycler_restore(int index) {
+    playlist_manager_v3::ptr pm;
+    if (playlist_manager_v3::tryGet(pm) && index >= 0 && (size_t)index < pm->recycler_get_count()) pm->recycler_restore((size_t)index);
+}
+
+bool Panel::audio_chunk(double duration, double offset, AudioChunk& out) {
+    if (m_vis.is_empty()) {
+        visualisation_manager::ptr vm;
+        if (!visualisation_manager::tryGet(vm)) return false;
+        vm->create_stream(m_vis, visualisation_manager::KStreamFlagNewFFT);
+        if (m_vis.is_empty()) return false;
+    }
+    double now = 0;
+    audio_chunk_impl chunk;
+    if (!m_vis->get_absolute_time(now) || !m_vis->get_chunk_absolute(chunk, now + offset, duration)) return false;
+    out.channels = (int)chunk.get_channels();
+    out.channelConfig = chunk.get_channel_config();
+    out.sampleRate = (int)chunk.get_sample_rate();
+    const audio_sample* d = chunk.get_data();
+    out.data.assign(d, d + chunk.get_used_size());
+    return true;
 }
 
 int Panel::message_box(const std::string& text, const std::string& caption, int type) { return m_surface.message_box(text, caption, type); }

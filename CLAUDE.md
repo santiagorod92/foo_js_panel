@@ -65,7 +65,11 @@ anything repo-specific stays in the repo's own sections.
   so far in the caller's buffer, and puts the result back, so later skin drawing lands on top. It
   forwards mouse, wheel, focus and the native key event (`MSG*` / `NSEvent*`, so the VK mapping
   stays JS Panel's) and answers the panel through `js_panel_windowless_host` (invalidate, cursor,
-  tooltip, `to_native` for menus). No drag and drop yet.
+  tooltip, `to_native` for menus). Drag and drop is `js_panel_windowless_v2::drag(kind, x, y,
+  keys, effects, native)`: Panels UI's main window is the drop target (Windows: an OLE
+  `IDropTarget` passing the `IDataObject*`, which hands drops outside a windowless panel on as
+  `WM_DROPFILES`; macOS: the root view also registers `js_panel::drag_type_tracks` and passes the
+  `NSDraggingInfo`) and JS Panel inserts the tracks.
 - **Script → skin panels:** `panels_ui_api_v2` (queried from the v1 service) names a hosted JS
   Panel's slot from its native view (HWND / NSView), gives panel rects and, for a
   `panel.<name>.transparent = 1` panel, the skin pixels beneath it (`get_backdrop`, PARGB into the
@@ -298,7 +302,10 @@ anything repo-specific stays in the repo's own sections.
 - **`UIHacks.MinSize` / `MaxSize`** clamp the main window's content area (macOS `contentRect`,
   Windows client rect, so without the frame and Panels UI's menu bar): Eole computes them from
   its own panel heights and saves the mini playlist height back, so a frame counted in would
-  shrink it on every round trip.
+  shrink it on every round trip. `UIWizard` (Georgia-ReBORN) is the same window control under other
+  names, plus geometry through `Surface::window_rect`/`set_window_rect` (content area and the
+  monitor's work area, screen coordinates from the top left) for `SetWindowSize`, `SetWindowPosition`
+  and `SetWindowPositionInGrid`.
 - **Eole without tools:** Panels UI's *Import Columns UI layout…* (`SKIN:IMPORT_FCL`) builds the
   skin and copies `themes/` + `wsh-data/` into the profile; JS Panel adapts Eole's files as it
   evaluates them (`patch_theme_source` in `theme_patches.cpp`: only paths under the theme's folder, each
@@ -311,17 +318,26 @@ anything repo-specific stays in the repo's own sections.
   process (`ui::register_font`: `AddFontResourceExW(FR_PRIVATE)` / `CTFontManagerRegisterFontsForURL`
   process scope), so the canvases of both components find them. Panels UI's import copies a theme's
   `fonts/` there (as it copies packages to `foo_spider_monkey_panel/packages`); `render_script` loads
-  the same folder of its `--profile` and `themes-check` copies the theme's fonts into it. Marlett is
-  emulated in Panels UI's mac canvas (`CGCanvas::shown` maps its glyph letters to symbols).
+  the same folder of its `--profile` and `themes-check` copies the theme's fonts into it. Marlett and
+  Segoe Fluent Icons / MDL2 Assets are emulated in Panels UI's mac canvas (`CGCanvas::shown` maps
+  Marlett's glyph letters and the Fluent code points JSP3's samples use to Unicode symbols).
 - **`window.IsVisible`** is the host window's visibility: Panels UI hides panels outside the
   current view without destroying them, and Eole only lets the visible one answer notifications.
 - **Theme checks run third-party code:** `make theme-check` executes a theme's scripts, so
   `render_script --sandbox PROFILE` refuses every write, move or delete outside the theme's
   profile (`JsHost::may_write`, checked by every FSO/`utils` write) and the renderer has no shell,
   network or clipboard. Still run it only on a theme the user asked for, never from CI.
-- **HTML dialogs:** `utils.ShowHtmlDialog` has no HTML engine on either platform; it reads the
-  dialog kind from the HTML's element ids (`btn_cancel`, `btn_later`, `input_container`,
-  `radio_container`, as Eole's dialogs use) and answers through `message_box`, or Cancel for forms.
+- **HTML dialogs:** `utils.ShowHtmlDialog` hands `Surface::html_dialog` the page and `options.data`
+  as a `DialogValue` tree (functions become indexes the platform calls back through `DialogCall`).
+  Windows: MSHTML's `ShowHTMLDialogEx` (the engine SMP used), the page written next to its own file
+  (so relative links work) or to %TEMP%; `dialog_html` turns `window.external.dialogArguments` into
+  the dialog's `window.dialogArguments` (a `VT_ARRAY` VARIANT, so `.toArray()` works; functions are
+  `IDispatch` objects) and adds a `resizeTo` shim after the X-UA-Compatible meta. macOS: a modal
+  `NSPanel` with a `WKWebView` and a document-start script that defines `window.external`,
+  `close` and `resizeTo` over a `jsp` message handler; a `<base>` gives relative links. When no
+  engine answers (Wine without Gecko) the old fallback stays: the dialog kind from the element ids
+  (`btn_cancel`, `btn_later`, `input_container`, `radio_container`) through `message_box`, or Cancel
+  for forms.
 - **Windows paths in scripts:** `fix_path` turns `\` into `/` off Windows for `include`,
   `gdi.Image` and the `utils` file functions (themes build paths as `fb.ProfilePath + 'a\\b.js'`).
 - **`include` as in SMP 1.6:** a relative path is tried next to the calling function's file
@@ -379,7 +395,9 @@ anything repo-specific stays in the repo's own sections.
   `on_colours_changed`/`on_font_changed`; macOS also sends the first on an appearance change.
 - **JScript Panel 3 layer:** `is_jsp3_script` (a `==PREPROCESSOR==` import of `lodash` or
   `%fb2k_component_path%`, or a JSP3-only call) makes `JsEngine::load` eval `kJsp3Prelude`, then the
-  `@import`s, then the script. The prelude adds names to the class prototypes (`__jsp.proto`) and
+  `@import`s, then the script. The playlist recycler is `playlist_manager_v3`'s and
+  `fb.GetAudioChunk` reads a `visualisation_stream` each `Panel` creates on first use. The prelude
+  adds names to the class prototypes (`__jsp.proto`) and
   replaces the few that clash with SMP (`FillEllipse`/`DrawEllipse` take centre + radii,
   `GetFontDUI/CUI` return JSON strings, `InputBox`/`ColourPicker` have no window id), so SMP scripts
   never see it. lodash is vendored and embedded at configure time (`cmake/embed_lodash.cmake` →
@@ -428,8 +446,13 @@ anything repo-specific stays in the repo's own sections.
   reads through the host and records the file for hot reload; the module's exports are copied onto the
   global object so `export function on_*` are callbacks. QuickJS-ng resolves imports already at
   compile time, so `check_syntax` ignores "could not load module".
-- **`fetch`:** JS in `kPrelude` over `native.httpAsync` (the XMLHTTP stand-in's path); the host gives no
-  response headers, so `Response.headers` is empty.
+- **`fetch`:** JS in `kPrelude` over `native.httpAsync` (the XMLHTTP stand-in's path). `http_reply`
+  only answers headers by name, so `run_http` asks for a fixed list (`kResponseHeaders`) and
+  `HttpResponse::headers` feeds `Response.headers`, XMLHTTP's `getResponseHeader` and the JSON of
+  `utils.HTTPRequestAsync`, which is SMP-wide (Georgia-ReBORN calls it without a window id; the
+  JSP3 form with one is told apart by the type of the second argument).
+- **`window.IsDark`:** `ui_config_manager::is_dark_mode()`, else the luminance of the system
+  background colour (never the skin's: Georgia compares it with its theme and runs *View › Mode*).
 - **Profiling:** `Impl::Timed` wraps every `call()` and timer (keyed by callback name, timers as
   `timers`), minus `modalUs` (time inside `Impl::modal`); `Panel::info()` hands it with the memory to
   Copy Diagnostics (top five per panel).
@@ -448,7 +471,12 @@ anything repo-specific stays in the repo's own sections.
   `pixels_canvas` (on Windows that canvas draws twice to recover alpha: the cost of no window).
   Keys go through `windowless_key` (`mac_key` / `char_from`, shared with the windowed element).
   `has_backdrop` makes a transparent panel skip `get_backdrop`: the buffer already holds the skin.
-  A windowless panel has no pseudo-caption drag and no drag and drop.
+  Drops go through `windowless_drag` (the same `drag_event` the windowed element's `IDropTarget` /
+  `NSDraggingDestination` use) and `DoDragDrop` through the owner surface (macOS `start_drag` with a
+  shared `NSDraggingSource`). The pseudo-caption is `Surface::caption_drag`, which hit-tests the
+  current message's position (`GetMessagePos` / `NSApp.currentEvent`), so it works from a
+  forwarded click; Panels UI only takes the mouse capture when a button is still down after the
+  panel handled the click, since the window-move loop has already eaten the button-up.
 
 ## Release publishing
 - `release.yml`'s `notify-n8n` posts each release to the n8n workflow

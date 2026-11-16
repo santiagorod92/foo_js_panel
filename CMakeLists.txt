@@ -127,7 +127,7 @@ if(WIN32)
   target_link_libraries(foo_js_panel PRIVATE
     fb2ksdk pfc qjs
     "${SDK}/foobar2000/shared/${JSP_SHARED_LIB}"
-    user32 gdi32 shell32 ole32 oleaut32 uuid comctl32 comdlg32 advapi32 shlwapi winmm msimg32 gdiplus uxtheme)
+    user32 gdi32 shell32 ole32 oleaut32 uuid comctl32 comdlg32 advapi32 shlwapi winmm msimg32 gdiplus uxtheme urlmon)
 else()
   add_library(foo_js_panel MODULE ${COMP_SRC})
   set_target_properties(foo_js_panel PROPERTIES
@@ -141,7 +141,7 @@ else()
   target_compile_options(foo_js_panel PRIVATE -fobjc-arc)
   target_link_libraries(foo_js_panel PRIVATE fb2ksdk pfc qjs
     "-framework Cocoa" "-framework CoreGraphics" "-framework CoreText" "-framework ImageIO"
-    "-framework QuartzCore" "-framework CoreFoundation" "-framework Security")
+    "-framework QuartzCore" "-framework CoreFoundation" "-framework Security" "-framework WebKit")
 endif()
 add_custom_target(jsp_version
   COMMAND bash "${CMAKE_SOURCE_DIR}/scripts/version.sh" --header "${JSP_GENERATED_DIR}/version_generated.h"

@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#import <WebKit/WebKit.h>
 #include "../../fb2k.h"
 #include "platform/mac/mac_canvas.h"
 #include "../../core/js_api_util.h"
@@ -17,7 +18,7 @@ namespace {
 
 NSString* ns(const std::string& s) { return [NSString stringWithUTF8String:s.c_str()] ?: @""; }
 
-NSString* const kTracksType = @"com.santiagorod92.foo-js-panel.tracks";
+NSString* const kTracksType = @(js_panel::drag_type_tracks);
 
 NSArray<NSPasteboardType>* track_types() { return @[ kTracksType, NSPasteboardTypeFileURL ]; }
 
@@ -105,6 +106,110 @@ unsigned key_mask(NSEventModifierFlags f) {
 @end
 
 @implementation FooJsPanelColourDelegate
+- (void)windowWillClose:(NSNotification*)n { [NSApp stopModal]; }
+@end
+
+namespace {
+
+jsp::DialogValue dialog_value(id v, int depth) {
+    jsp::DialogValue d;
+    if (depth > 16) return d;
+    if ([v isKindOfClass:NSString.class]) {
+        d.kind = jsp::DialogValue::Kind::String;
+        d.text = [(NSString*)v UTF8String] ?: "";
+    } else if ([v isKindOfClass:NSNumber.class]) {
+        const bool boolean = CFGetTypeID((__bridge CFTypeRef)v) == CFBooleanGetTypeID();
+        d.kind = boolean ? jsp::DialogValue::Kind::Bool : jsp::DialogValue::Kind::Number;
+        d.number = [(NSNumber*)v doubleValue];
+    } else if ([v isKindOfClass:NSArray.class]) {
+        d.kind = jsp::DialogValue::Kind::Array;
+        for (id item in (NSArray*)v) d.items.push_back(dialog_value(item, depth + 1));
+    } else if ([v isKindOfClass:NSDictionary.class]) {
+        d.kind = jsp::DialogValue::Kind::Object;
+        for (id key in (NSDictionary*)v) {
+            d.keys.push_back([[key description] UTF8String] ?: "");
+            d.items.push_back(dialog_value(((NSDictionary*)v)[key], depth + 1));
+        }
+    }
+    return d;
+}
+
+std::string js_literal(const jsp::DialogValue& d) {
+    switch (d.kind) {
+    case jsp::DialogValue::Kind::Bool: return d.number != 0 ? "true" : "false";
+    case jsp::DialogValue::Kind::Number: {
+        if (!std::isfinite(d.number)) return "null";
+        char buf[40];
+        snprintf(buf, sizeof buf, "%.17g", d.number);
+        return buf;
+    }
+    case jsp::DialogValue::Kind::String: {
+        std::string out = "\"";
+        for (size_t i = 0; i < d.text.size(); ++i) {
+            const unsigned char c = (unsigned char)d.text[i];
+            if (c == '"' || c == '\\') out += std::string("\\") + (char)c;
+            else if (c < 0x20) {
+                char buf[8];
+                snprintf(buf, sizeof buf, "\\u%04x", c);
+                out += buf;
+            } else if (c == 0xE2 && i + 2 < d.text.size() && (unsigned char)d.text[i + 1] == 0x80 &&
+                       ((unsigned char)d.text[i + 2] == 0xA8 || (unsigned char)d.text[i + 2] == 0xA9)) {
+                out += (unsigned char)d.text[i + 2] == 0xA8 ? "\\u2028" : "\\u2029";
+                i += 2;
+            } else {
+                out += (char)c;
+            }
+        }
+        return out + "\"";
+    }
+    case jsp::DialogValue::Kind::Array: {
+        std::string out = "[";
+        for (size_t i = 0; i < d.items.size(); ++i) out += (i ? "," : "") + js_literal(d.items[i]);
+        return out + "]";
+    }
+    case jsp::DialogValue::Kind::Object: {
+        std::string out = "{";
+        for (size_t i = 0; i < d.items.size() && i < d.keys.size(); ++i) {
+            jsp::DialogValue key;
+            key.kind = jsp::DialogValue::Kind::String;
+            key.text = d.keys[i];
+            out += (i ? "," : "") + js_literal(key) + ":" + js_literal(d.items[i]);
+        }
+        return out + "}";
+    }
+    case jsp::DialogValue::Kind::Function: return "__jsp_fn(" + std::to_string(d.fn) + ")";
+    default: return "null";
+    }
+}
+
+}
+
+@interface FooJsPanelHtmlDialog : NSObject <WKScriptMessageHandler, WKNavigationDelegate, NSWindowDelegate>
+@property (nonatomic, strong) NSPanel* panel;
+@property (nonatomic, assign) const jsp::DialogCall* call;
+@end
+
+@implementation FooJsPanelHtmlDialog
+- (void)userContentController:(WKUserContentController*)c didReceiveScriptMessage:(WKScriptMessage*)m {
+    NSDictionary* b = [m.body isKindOfClass:NSDictionary.class] ? m.body : nil;
+    NSString* op = b[@"op"];
+    if ([op isEqualToString:@"close"]) {
+        [self.panel close];
+    } else if ([op isEqualToString:@"resize"]) {
+        const NSRect f = self.panel.frame;
+        NSRect r = [self.panel frameRectForContentRect:NSMakeRect(0, 0, std::max(100.0, [b[@"w"] doubleValue]), std::max(60.0, [b[@"h"] doubleValue]))];
+        r.origin = NSMakePoint(f.origin.x, NSMaxY(f) - r.size.height);
+        [self.panel setFrame:r display:YES];
+    } else if ([op isEqualToString:@"call"] && self.call && *self.call) {
+        std::vector<jsp::DialogValue> args;
+        if ([b[@"args"] isKindOfClass:NSArray.class])
+            for (id a in (NSArray*)b[@"args"]) args.push_back(dialog_value(a, 0));
+        (*self.call)([b[@"fn"] intValue], args);
+    }
+}
+- (void)webView:(WKWebView*)w didFinishNavigation:(WKNavigation*)n {
+    if (w.title.length) self.panel.title = w.title;
+}
 - (void)windowWillClose:(NSNotification*)n { [NSApp stopModal]; }
 @end
 
@@ -436,9 +541,13 @@ public:
     bool sys_colour(int index, uint32_t& argb) override;
     bool pick_colour(uint32_t& argb) override;
     void set_window_limits(int minW, int minH, int maxW, int maxH) override;
+    bool window_rect(pui::gfx::Rect& content, pui::gfx::Rect& work) override;
+    void set_window_rect(const pui::gfx::Rect& content) override;
     pui::gfx::Rect caption{};
     void set_caption(const pui::gfx::Rect& r) override { caption = r; }
     bool in_caption(NSEvent* e);
+    bool caption_drag(bool double_click) override;
+    bool html_dialog(const jsp::HtmlDialog& dialog, const jsp::DialogCall& call) override;
     void* native() override { return (__bridge void*)view; }
     bool key_pressed(int vk) override {
         const NSEventModifierFlags m = NSEvent.modifierFlags;
@@ -478,8 +587,62 @@ static bool mac_key(jsp::Panel& panel, NSEvent* e) {
     return handled;
 }
 
-@interface FooJsPanelView : NSView <NSDraggingSource>
-- (int)dragTracks:(metadb_handle_list_cref)tracks effects:(int)effects;
+@interface FooJsPanelDragSource : NSObject <NSDraggingSource>
+@property (nonatomic, assign) NSDragOperation ops;
+@end
+
+@implementation FooJsPanelDragSource
+- (NSDragOperation)draggingSession:(NSDraggingSession*)s sourceOperationMaskForDraggingContext:(NSDraggingContext)c { return self.ops; }
+@end
+
+namespace {
+
+int start_drag(NSView* view, metadb_handle_list_cref tracks, int effects) {
+    static FooJsPanelDragSource* source = [FooJsPanelDragSource new];
+    NSEvent* e = NSApp.currentEvent;
+    if (!view || !e || (e.type != NSEventTypeLeftMouseDragged && e.type != NSEventTypeLeftMouseDown)) return 0;
+    NSArray<NSPasteboardItem*>* items = pasteboard_items(tracks);
+    if (!items.count) return 0;
+    source.ops = drag_operation(effects & 2) | drag_operation(effects & 1) | drag_operation(effects & 4);
+    NSImage* image = drag_image(tracks.get_count());
+    const NSPoint p = [view convertPoint:e.locationInWindow fromView:nil];
+    const NSRect frame = NSMakeRect(p.x - 8, p.y - 8, image.size.width, image.size.height);
+    NSMutableArray<NSDraggingItem*>* drag = [NSMutableArray array];
+    for (NSPasteboardItem* item in items) {
+        NSDraggingItem* d = [[NSDraggingItem alloc] initWithPasteboardWriter:item];
+        [d setDraggingFrame:frame contents:drag.count ? nil : image];
+        [drag addObject:d];
+    }
+    @try {
+        [view beginDraggingSessionWithItems:drag event:e source:source];
+    } @catch (NSException* ex) {
+        jsp::log::warn("js", std::string("DoDragDrop: ") + (ex.reason.UTF8String ?: "can't start the drag"));
+    }
+    return 0;
+}
+
+int drag_event(jsp::Panel* panel, int& allowed, jsp::Drag kind, int x, int y, unsigned mask, id<NSDraggingInfo> s) {
+    if (kind == jsp::Drag::Enter)
+        allowed = [s.draggingPasteboard availableTypeFromArray:track_types()] ? drop_effects(s.draggingSourceOperationMask) : 0;
+    jsp::DropAction a;
+    if (kind != jsp::Drag::Leave) a.effect = allowed;
+    if (panel) jsp::log::guarded("js", "drag", [&] { panel->drag(kind, x, y, mask, a); });
+    else a.effect = 0;
+    if (kind == jsp::Drag::Leave) return 0;
+    a.effect &= allowed;
+    if (kind == jsp::Drag::Drop && panel && a.effect && a.playlist >= 0) {
+        jsp::log::guarded("js", "drop", [&] {
+            PasteboardTracks dropped = pasteboard_tracks(s.draggingPasteboard);
+            if (dropped.tracks.get_count()) panel->drop_notify(a)->on_completion(dropped.tracks);
+            else panel->drop_locations(dropped.files, a);
+        });
+    }
+    return a.effect;
+}
+
+}
+
+@interface FooJsPanelView : NSView
 @end
 
 @implementation FooJsPanelView {
@@ -487,7 +650,6 @@ static bool mac_key(jsp::Panel& panel, NSEvent* e) {
     std::unique_ptr<jsp::Panel> _panel;
     NSTrackingArea* _tracking;
     BOOL _fixedScript;
-    NSDragOperation _sourceOps;
     int _dropAllowed;
     id _keyUpMonitor;
     jsp::MacFocus _focus;
@@ -518,71 +680,15 @@ static bool mac_key(jsp::Panel& panel, NSEvent* e) {
     return self;
 }
 
-- (int)dragTracks:(metadb_handle_list_cref)tracks effects:(int)effects {
-    NSEvent* e = NSApp.currentEvent;
-    if (!e || (e.type != NSEventTypeLeftMouseDragged && e.type != NSEventTypeLeftMouseDown)) return 0;
-    NSArray<NSPasteboardItem*>* items = pasteboard_items(tracks);
-    if (!items.count) return 0;
-    _sourceOps = drag_operation(effects & 2) | drag_operation(effects & 1) | drag_operation(effects & 4);
-    NSImage* image = drag_image(tracks.get_count());
-    const NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
-    const NSRect frame = NSMakeRect(p.x - 8, p.y - 8, image.size.width, image.size.height);
-    NSMutableArray<NSDraggingItem*>* drag = [NSMutableArray array];
-    for (NSPasteboardItem* item in items) {
-        NSDraggingItem* d = [[NSDraggingItem alloc] initWithPasteboardWriter:item];
-        [d setDraggingFrame:frame contents:drag.count ? nil : image];
-        [drag addObject:d];
-    }
-    @try {
-        [self beginDraggingSessionWithItems:drag event:e source:self];
-    } @catch (NSException* ex) {
-        jsp::log::warn("js", std::string("DoDragDrop: ") + (ex.reason.UTF8String ?: "can't start the drag"));
-    }
-    return 0;
-}
-
-- (NSDragOperation)draggingSession:(NSDraggingSession*)s sourceOperationMaskForDraggingContext:(NSDraggingContext)c {
-    return _sourceOps;
-}
-
-- (NSDragOperation)drag:(jsp::Drag)kind info:(id<NSDraggingInfo>)s action:(jsp::DropAction&)a {
-    a.effect = _dropAllowed;
+- (NSDragOperation)drag:(jsp::Drag)kind info:(id<NSDraggingInfo>)s {
     const NSPoint p = [self convertPoint:s.draggingLocation fromView:nil];
-    const unsigned mask = key_mask(NSEvent.modifierFlags);
-    if (_panel) jsp::log::guarded("js", "drag", [&] { _panel->drag(kind, (int)p.x, (int)p.y, mask, a); });
-    else a.effect = 0;
-    a.effect &= _dropAllowed;
-    return drag_operation(a.effect);
+    return drag_operation(drag_event(_panel.get(), _dropAllowed, kind, (int)p.x, (int)p.y, key_mask(NSEvent.modifierFlags), s));
 }
 
-- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)s {
-    _dropAllowed = [s.draggingPasteboard availableTypeFromArray:track_types()] ? drop_effects(s.draggingSourceOperationMask) : 0;
-    jsp::DropAction a;
-    return [self drag:jsp::Drag::Enter info:s action:a];
-}
-
-- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)s {
-    jsp::DropAction a;
-    return [self drag:jsp::Drag::Over info:s action:a];
-}
-
-- (void)draggingExited:(id<NSDraggingInfo>)s {
-    jsp::DropAction a;
-    if (_panel) jsp::log::guarded("js", "drag", [&] { _panel->drag(jsp::Drag::Leave, 0, 0, 0, a); });
-}
-
-- (BOOL)performDragOperation:(id<NSDraggingInfo>)s {
-    jsp::DropAction a;
-    if ([self drag:jsp::Drag::Drop info:s action:a] == NSDragOperationNone) return NO;
-    if (_panel && a.playlist >= 0) {
-        jsp::log::guarded("js", "drop", [&] {
-            PasteboardTracks dropped = pasteboard_tracks(s.draggingPasteboard);
-            if (dropped.tracks.get_count()) _panel->drop_notify(a)->on_completion(dropped.tracks);
-            else _panel->drop_locations(dropped.files, a);
-        });
-    }
-    return YES;
-}
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)s { return [self drag:jsp::Drag::Enter info:s]; }
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)s { return [self drag:jsp::Drag::Over info:s]; }
+- (void)draggingExited:(id<NSDraggingInfo>)s { [self drag:jsp::Drag::Leave info:s]; }
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)s { return [self drag:jsp::Drag::Drop info:s] != NSDragOperationNone; }
 
 - (void)dealloc {
     if (_keyUpMonitor) [NSEvent removeMonitor:_keyUpMonitor];
@@ -708,11 +814,7 @@ static bool mac_key(jsp::Panel& panel, NSEvent* e) {
 - (void)mouseExited:(NSEvent*)e { [self send:jsp::Mouse::Leave event:e]; }
 - (BOOL)mouseDownCanMoveWindow { return NO; }
 - (void)mouseDown:(NSEvent*)e {
-    if (_surface.in_caption(e)) {
-        if (e.clickCount == 2) [self.window zoom:nil];
-        else [self.window performWindowDragWithEvent:e];
-        return;
-    }
+    if (_surface.caption_drag(e.clickCount == 2)) return;
     [self.window makeFirstResponder:self];
     [self send:e.clickCount == 2 ? jsp::Mouse::LeftDouble : jsp::Mouse::LeftDown event:e];
 }
@@ -752,7 +854,7 @@ namespace {
 
 void MacSurface::invalidate() { [view setNeedsDisplay:YES]; }
 
-int MacSurface::drag_tracks(metadb_handle_list_cref tracks, int effects) { return [(FooJsPanelView*)view dragTracks:tracks effects:effects]; }
+int MacSurface::drag_tracks(metadb_handle_list_cref tracks, int effects) { return start_drag(view, tracks, effects); }
 
 void MacSurface::set_tooltip(const std::string& text, bool active, int) { view.toolTip = active && !text.empty() ? ns(text) : nil; }
 
@@ -907,6 +1009,61 @@ bool MacSurface::in_caption(NSEvent* e) {
     return p.x >= caption.x && p.x < caption.x + caption.w && p.y >= caption.y && p.y < caption.y + caption.h;
 }
 
+bool MacSurface::html_dialog(const jsp::HtmlDialog& d, const jsp::DialogCall& call) {
+    NSString* file = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"foo_js_panel_dialog_%d.html", getpid()]];
+    const std::string html = jsp::dialog_html(d.html, d.baseDir, false);
+    if (![[NSData dataWithBytes:html.data() length:html.size()] writeToFile:file atomically:YES]) return false;
+    std::string script = "(function(){var post=function(m){window.webkit.messageHandlers.jsp.postMessage(m);};"
+                         "var plain=function(a){return a===undefined||typeof a==='function'?null:a!==null&&typeof a==='object'?JSON.parse(JSON.stringify(a)):a;};"
+                         "var __jsp_fn=function(n){return function(){post({op:'call',fn:n,args:Array.prototype.slice.call(arguments).map(plain)});};};"
+                         "var data=" + js_literal(d.data) + ";"
+                         "if(Array.isArray(data))Object.defineProperty(data,'toArray',{value:function(){return this.slice();}});"
+                         "try{Object.defineProperty(window,'external',{value:{dialogArguments:data},configurable:true,writable:true});}catch(e){}"
+                         "window.dialogArguments=data;window.close=function(){post({op:'close'});};"
+                         "window.resizeTo=function(w,h){post({op:'resize',w:w,h:h});};";
+    if (!d.contextMenu) script += "document.addEventListener('contextmenu',function(e){e.preventDefault();});";
+    if (!d.selection) script += "document.addEventListener('DOMContentLoaded',function(){document.body.style.webkitUserSelect='none';});";
+    script += "})();";
+    FooJsPanelHtmlDialog* h = [FooJsPanelHtmlDialog new];
+    h.call = &call;
+    WKWebViewConfiguration* cfg = [WKWebViewConfiguration new];
+    [cfg.userContentController addUserScript:[[WKUserScript alloc] initWithSource:ns(script)
+                                                                    injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                                                 forMainFrameOnly:YES]];
+    [cfg.userContentController addScriptMessageHandler:h name:@"jsp"];
+    const NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | (d.resizable ? NSWindowStyleMaskResizable : 0);
+    NSPanel* panel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, std::max(d.width, 100), std::max(d.height, 60))
+                                                styleMask:style
+                                                  backing:NSBackingStoreBuffered
+                                                    defer:NO];
+    panel.releasedWhenClosed = NO;
+    panel.title = @"";
+    panel.delegate = h;
+    h.panel = panel;
+    WKWebView* web = [[WKWebView alloc] initWithFrame:panel.contentView.bounds configuration:cfg];
+    web.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    web.navigationDelegate = h;
+    [panel.contentView addSubview:web];
+    if (d.center || !NSScreen.screens.count) [panel center];
+    else [panel setFrameTopLeftPoint:NSMakePoint(d.x, NSMaxY(NSScreen.screens[0].frame) - d.y)];
+    [web loadFileURL:[NSURL fileURLWithPath:file] allowingReadAccessToURL:[NSURL fileURLWithPath:@"/"]];
+    [NSApp runModalForWindow:panel];
+    [cfg.userContentController removeScriptMessageHandlerForName:@"jsp"];
+    web.navigationDelegate = nil;
+    panel.delegate = nil;
+    [panel orderOut:nil];
+    [[NSFileManager defaultManager] removeItemAtPath:file error:nil];
+    return true;
+}
+
+bool MacSurface::caption_drag(bool double_click) {
+    NSEvent* e = NSApp.currentEvent;
+    if (!e || e.type != NSEventTypeLeftMouseDown || !in_caption(e)) return false;
+    if (double_click) [view.window zoom:nil];
+    else [view.window performWindowDragWithEvent:e];
+    return true;
+}
+
 bool MacSurface::visible() {
     return view.window && !view.isHiddenOrHasHiddenAncestor;
 }
@@ -928,6 +1085,28 @@ bool MacSurface::always_on_top() {
 
 void MacSurface::set_always_on_top(bool on) {
     if (NSWindow* w = view.window) w.level = on ? NSFloatingWindowLevel : NSNormalWindowLevel;
+}
+
+static pui::gfx::Rect top_left(NSRect r) {
+    const CGFloat top = NSScreen.screens.count ? NSMaxY(NSScreen.screens[0].frame) : NSMaxY(r);
+    return { (int)std::lround(r.origin.x), (int)std::lround(top - NSMaxY(r)), (int)std::lround(r.size.width), (int)std::lround(r.size.height) };
+}
+
+bool MacSurface::window_rect(pui::gfx::Rect& content, pui::gfx::Rect& work) {
+    NSWindow* w = view.window;
+    if (!w) return false;
+    content = top_left([w contentRectForFrameRect:w.frame]);
+    work = top_left((w.screen ?: NSScreen.mainScreen).visibleFrame);
+    return true;
+}
+
+void MacSurface::set_window_rect(const pui::gfx::Rect& content) {
+    NSWindow* w = view.window;
+    if (!w || w.miniaturized || fullscreen()) return;
+    if (maximized(w)) [w zoom:nil];
+    const CGFloat top = NSScreen.screens.count ? NSMaxY(NSScreen.screens[0].frame) : 0;
+    const NSRect r = NSMakeRect(content.x, top - content.y - content.h, content.w, content.h);
+    [w setFrame:[w frameRectForContentRect:r] display:YES];
 }
 
 void MacSurface::set_window_limits(int minW, int minH, int maxW, int maxH) {
@@ -1028,6 +1207,11 @@ std::unique_ptr<Surface> make_owner_surface(void* native_window) {
 }
 
 bool windowless_key(Panel& panel, const void* native_event) { return mac_key(panel, (__bridge NSEvent*)native_event); }
+
+int windowless_drag(Panel& panel, int& allowed, Drag kind, int x, int y, unsigned keys, int, const void* native_data, void*) {
+    id<NSDraggingInfo> info = (__bridge id<NSDraggingInfo>)native_data;
+    return info ? drag_event(&panel, allowed, kind, x, y, keys, info) : 0;
+}
 
 }
 

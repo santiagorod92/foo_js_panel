@@ -3,6 +3,33 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.9.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.8.0...v1.9.0) (2026-11-16)
+
+### Highlights
+- **Real HTML dialogs**: `utils.ShowHtmlDialog` opens the theme's page in a real window, the
+  Internet Explorer engine Spider Monkey Panel used on Windows and WebKit on macOS. Forms work now
+  (Eole's input and radio dialogs used to be answered Cancel), and the page's buttons call back into
+  the script.
+- **Windowless panels take drag and drop**: with Panels UI 1.26.0, tracks and files dragged onto a
+  `panel.<name>.windowless = 1` panel reach its script, `fb.DoDragDrop` starts drags from it, and
+  its `SetPseudoCaption` area moves the window.
+
+### Added
+- `window.IsDark` for every script: foobar2000's dark mode (Georgia-ReBORN switches *View › Mode*
+  with it).
+- `utils.HTTPRequestAsync` for every script, with or without a window id, answered by
+  `on_http_request_done` with the response headers.
+- Response headers: `fetch`'s `Response.headers`, XMLHTTP's `getResponseHeader` and
+  `getAllResponseHeaders` (the common ones: content type, length, dates, `etag`, caching,
+  `location`, cookies, rate limits).
+- `UIWizard` (Georgia-ReBORN's window control) moves, sizes, maximizes and snaps the main window
+  instead of doing nothing: window state, position and size, grid positions, size limits, the
+  caption area and full screen.
+- JScript Panel 3: the playlist recycler (`RecyclerCount`, `GetRecyclerName`, `GetRecyclerItems`,
+  `RecyclerRestore`, `RecyclerPurge`) and `fb.GetAudioChunk`, so VU meters move.
+- macOS: Segoe Fluent Icons and Segoe MDL2 Assets icons (JScript Panel 3's playback, rating,
+  check box and menu buttons) draw as symbols instead of boxes.
+
 ## [1.8.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.7.2...v1.8.0) (2026-11-16)
 
 ### Highlights

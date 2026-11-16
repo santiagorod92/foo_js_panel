@@ -9,6 +9,7 @@
 #include "../../core/settings.h"
 #include "../../core/windowless.h"
 #include "win_dragdrop.h"
+#include "win_html_dialog.h"
 #include "win_editor.h"
 #include "win_input.h"
 #include <memory>
@@ -235,20 +236,45 @@ public:
         if (w != cw || h != ch)
             SetWindowPos(r, nullptr, 0, 0, rc.right - rc.left + w - cw, rc.bottom - rc.top + h - ch, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
+    bool html_dialog(const HtmlDialog& dialog, const DialogCall& call) override { return win::html_dialog(root(), dialog, call); }
+    bool window_rect(pui::gfx::Rect& content, pui::gfx::Rect& work) override {
+        HWND r = root();
+        if (!r) return false;
+        RECT c;
+        GetClientRect(r, &c);
+        POINT o{ 0, 0 };
+        ClientToScreen(r, &o);
+        content = { o.x, o.y, c.right, c.bottom };
+        MONITORINFO mi{ sizeof mi };
+        GetMonitorInfoW(MonitorFromWindow(r, MONITOR_DEFAULTTONEAREST), &mi);
+        work = { mi.rcWork.left, mi.rcWork.top, mi.rcWork.right - mi.rcWork.left, mi.rcWork.bottom - mi.rcWork.top };
+        return true;
+    }
+    void set_window_rect(const pui::gfx::Rect& content) override {
+        HWND r = root();
+        if (!r || IsIconic(r) || full) return;
+        if (IsZoomed(r)) ShowWindow(r, SW_RESTORE);
+        RECT wr, c;
+        GetWindowRect(r, &wr);
+        GetClientRect(r, &c);
+        POINT o{ 0, 0 };
+        ClientToScreen(r, &o);
+        SetWindowPos(r, nullptr, content.x - (o.x - wr.left), content.y - (o.y - wr.top), content.w + (wr.right - wr.left) - c.right,
+                     content.h + (wr.bottom - wr.top) - c.bottom, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
     pui::gfx::Rect caption{};
     void set_caption(const pui::gfx::Rect& r) override { caption = r; }
-    bool in_caption(int x, int y) {
+    bool caption_drag(bool double_click) override {
         HWND r = root();
         if (!r || caption.w <= 0 || caption.h <= 0 || full) return false;
-        POINT p{ x, y };
-        MapWindowPoints(hwnd, r, &p, 1);
-        return p.x >= caption.x && p.x < caption.x + caption.w && p.y >= caption.y && p.y < caption.y + caption.h;
-    }
-    void drag_window() {
-        HWND r = root();
-        POINT p;
-        GetCursorPos(&p);
-        SendMessageW(r, WM_NCLBUTTONDOWN, HTCAPTION, MAKELPARAM(p.x, p.y));
+        const DWORD pos = GetMessagePos();
+        const POINT screen{ GET_X_LPARAM(pos), GET_Y_LPARAM(pos) };
+        POINT p = screen;
+        ScreenToClient(r, &p);
+        if (p.x < caption.x || p.x >= caption.x + caption.w || p.y < caption.y || p.y >= caption.y + caption.h) return false;
+        if (double_click) set_window_state(window_state() == 2 ? 0 : 2);
+        else SendMessageW(r, WM_NCLBUTTONDOWN, HTCAPTION, MAKELPARAM(screen.x, screen.y));
+        return true;
     }
     int message_box(const std::string& text, const std::string& caption, int type) override {
         return MessageBoxW(hwnd ? GetAncestor(hwnd, GA_ROOT) : nullptr, widen(text).c_str(), widen(caption).c_str(), (UINT)(type & 0xFFFF));
@@ -391,10 +417,7 @@ private:
             if (m_panel) m_panel->mouse(Mouse::Leave, 0, 0, 0);
             return 0;
         case WM_LBUTTONDOWN:
-            if (m_surface.in_caption(x, y)) {
-                m_surface.drag_window();
-                return 0;
-            }
+            if (m_surface.caption_drag(false)) return 0;
             SetFocus(hwnd);
             SetCapture(hwnd);
             if (m_panel) m_panel->mouse(Mouse::LeftDown, x, y, mask);
@@ -404,10 +427,7 @@ private:
             if (m_panel) m_panel->mouse(Mouse::LeftUp, x, y, mask);
             return 0;
         case WM_LBUTTONDBLCLK:
-            if (m_surface.in_caption(x, y)) {
-                m_surface.set_window_state(m_surface.window_state() == 2 ? 0 : 2);
-                return 0;
-            }
+            if (m_surface.caption_drag(true)) return 0;
             if (m_panel) m_panel->mouse(Mouse::LeftDouble, x, y, mask);
             return 0;
         case WM_RBUTTONDBLCLK:
@@ -503,6 +523,14 @@ std::unique_ptr<Surface> make_owner_surface(void* native_window) {
     auto s = std::make_unique<OwnerSurface>();
     s->hwnd = static_cast<HWND>(native_window);
     return s;
+}
+
+int windowless_drag(Panel& panel, int& allowed, Drag kind, int x, int y, unsigned keys, int effects, const void* native_data, void* native_window) {
+    DWORD a = (DWORD)allowed;
+    const int effect = win::drag_event(&panel, a, kind, x, y, keys, (DWORD)effects, static_cast<IDataObject*>(const_cast<void*>(native_data)),
+                                       GetAncestor(static_cast<HWND>(native_window), GA_ROOT));
+    allowed = (int)a;
+    return effect;
 }
 
 bool windowless_key(Panel& panel, const void* native_event) {

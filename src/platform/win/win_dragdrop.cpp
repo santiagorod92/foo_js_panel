@@ -36,50 +36,27 @@ public:
     DropTarget(HWND hwnd, std::function<Panel*()> panel) : m_hwnd(hwnd), m_panel(std::move(panel)) {}
 
     HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* data, DWORD keys, POINTL pt, DWORD* effect) override {
-        m_data = data;
-        m_allowed = DROPEFFECT_NONE;
-        bool native = false;
-        DWORD check = *effect;
-        if (data && SUCCEEDED(ole_interaction::get()->check_dataobject(data, check, native))) m_allowed = check & *effect;
-        return send(Drag::Enter, keys, pt, effect);
+        return send(Drag::Enter, keys, pt, effect, data);
     }
-    HRESULT STDMETHODCALLTYPE DragOver(DWORD keys, POINTL pt, DWORD* effect) override { return send(Drag::Over, keys, pt, effect); }
+    HRESULT STDMETHODCALLTYPE DragOver(DWORD keys, POINTL pt, DWORD* effect) override { return send(Drag::Over, keys, pt, effect, nullptr); }
     HRESULT STDMETHODCALLTYPE DragLeave() override {
-        DropAction action;
-        if (Panel* p = m_panel()) p->drag(Drag::Leave, 0, 0, 0, action);
-        m_data.release();
+        drag_event(m_panel(), m_allowed, Drag::Leave, 0, 0, 0, DROPEFFECT_NONE, nullptr, GetAncestor(m_hwnd, GA_ROOT));
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE Drop(IDataObject* data, DWORD keys, POINTL pt, DWORD* effect) override {
-        m_data = data;
-        DropAction action = run(Drag::Drop, keys, pt, *effect);
-        *effect = (DWORD)action.effect & m_allowed;
-        Panel* p = m_panel();
-        if (p && *effect != DROPEFFECT_NONE && data && action.playlist >= 0)
-            playlist_incoming_item_filter_v2::get()->process_dropped_files_async(data, playlist_incoming_item_filter_v2::op_flag_delay_ui,
-                                                                                 GetAncestor(m_hwnd, GA_ROOT), p->drop_notify(action));
-        m_data.release();
-        return S_OK;
+        return send(Drag::Drop, keys, pt, effect, data);
     }
 
 private:
-    DropAction run(Drag kind, DWORD keys, POINTL pt, DWORD offered) {
-        DropAction action;
-        action.effect = (int)(offered & m_allowed);
+    HRESULT send(Drag kind, DWORD keys, POINTL pt, DWORD* effect, IDataObject* data) {
         POINT p{ pt.x, pt.y };
         ScreenToClient(m_hwnd, &p);
-        if (Panel* panel = m_panel()) panel->drag(kind, p.x, p.y, keys, action);
-        else action.effect = 0;
-        return action;
-    }
-    HRESULT send(Drag kind, DWORD keys, POINTL pt, DWORD* effect) {
-        *effect = (DWORD)run(kind, keys, pt, *effect).effect & m_allowed;
+        *effect = (DWORD)drag_event(m_panel(), m_allowed, kind, p.x, p.y, keys, *effect, data, GetAncestor(m_hwnd, GA_ROOT));
         return S_OK;
     }
 
     HWND m_hwnd;
     std::function<Panel*()> m_panel;
-    pfc::com_ptr_t<IDataObject> m_data;
     DWORD m_allowed = DROPEFFECT_NONE;
 };
 
@@ -95,6 +72,25 @@ public:
 }
 
 IDropTarget* create_drop_target(HWND hwnd, std::function<Panel*()> panel) { return new DropTarget(hwnd, std::move(panel)); }
+
+int drag_event(Panel* panel, DWORD& allowed, Drag kind, int x, int y, DWORD keys, DWORD offered, IDataObject* data, HWND owner) {
+    if (kind == Drag::Enter) {
+        allowed = DROPEFFECT_NONE;
+        bool native = false;
+        DWORD check = offered;
+        if (data && SUCCEEDED(ole_interaction::get()->check_dataobject(data, check, native))) allowed = check & offered;
+    }
+    DropAction action;
+    if (kind != Drag::Leave) action.effect = (int)(offered & allowed);
+    if (panel) panel->drag(kind, x, y, keys, action);
+    else action.effect = 0;
+    if (kind == Drag::Leave) return DROPEFFECT_NONE;
+    const DWORD effect = (DWORD)action.effect & allowed;
+    if (kind == Drag::Drop && panel && effect != DROPEFFECT_NONE && data && action.playlist >= 0)
+        playlist_incoming_item_filter_v2::get()->process_dropped_files_async(data, playlist_incoming_item_filter_v2::op_flag_delay_ui, owner,
+                                                                             panel->drop_notify(action));
+    return (int)effect;
+}
 
 int drag_tracks(metadb_handle_list_cref tracks, int effects) {
     pfc::com_ptr_t<IDataObject> data = ole_interaction::get()->create_dataobject(tracks);

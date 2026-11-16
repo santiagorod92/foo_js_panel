@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -262,11 +263,55 @@ inline std::string resolve_import(const std::string& spec, const std::string& sc
     return absolute ? p : scriptDir + p;
 }
 
+inline std::string file_url(const std::string& path) {
+    static const char hex[] = "0123456789ABCDEF";
+    std::string out = "file://";
+    if (!path.empty() && path[0] != '/') out += '/';
+    for (unsigned char c : path) {
+        if (std::isalnum(c) || std::strchr("/._~-:", c)) out += (char)c;
+        else if (c == '\\') out += '/';
+        else {
+            out += '%';
+            out += hex[c >> 4];
+            out += hex[c & 15];
+        }
+    }
+    return out;
+}
+
+inline std::string dialog_html(const std::string& html, const std::string& baseDir, bool mshtml) {
+    std::string out = html;
+    std::string head;
+    if (mshtml) {
+        const std::string from = "window.external.dialogArguments", to = "window.dialogArguments";
+        for (size_t at = out.find(from); at != std::string::npos; at = out.find(from, at + to.size())) out.replace(at, from.size(), to);
+        head = "<script>window.resizeTo=function(w,h){try{window.dialogWidth=w+'px';window.dialogHeight=h+'px';}catch(e){}};</script>";
+    } else if (!baseDir.empty()) {
+        head = "<base href=\"" + file_url(baseDir.back() == '/' ? baseDir : baseDir + "/") + "\">";
+    }
+    if (head.empty()) return out;
+    std::string lower(out);
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+    size_t at = std::string::npos;
+    if (mshtml) at = lower.find("</head");
+    if (at == std::string::npos) {
+        for (const char* tag : { "<head", "<html" }) {
+            const size_t open = lower.find(tag);
+            if (open != std::string::npos && lower.find('>', open) != std::string::npos) {
+                at = lower.find('>', open) + 1;
+                break;
+            }
+        }
+    }
+    out.insert(at == std::string::npos ? 0 : at, head);
+    return out;
+}
+
 inline bool is_jsp3_script(const std::string& src, const ScriptHeader& h) {
     for (const auto& i : h.imports)
         if (i == "lodash" || i.find("%fb2k_component_path%") != std::string::npos) return true;
     static const char* const only[] = { ".WriteText(", ".WriteText2(", ".WriteTextSimple(", ".FillRectangle(", ".DrawRectangle(",
-                                        ".FillRoundedRectangle(", "utils.ReadUTF8(", "utils.ListFiles(", "window.IsDark" };
+                                        ".FillRoundedRectangle(", "utils.ReadUTF8(", "utils.ListFiles(" };
     for (const char* n : only)
         if (src.find(n) != std::string::npos) return true;
     return false;

@@ -2871,6 +2871,7 @@ JSValue window_host(JSContext* ctx, JSValueConst, int, JSValueConst*) {
 }
 
 JSValue window_IsVisible(JSContext* ctx, JSValueConst) { return JS_NewBool(ctx, I(ctx)->host.visible()); }
+JSValue window_IsDark(JSContext* ctx, JSValueConst) { return JS_NewBool(ctx, I(ctx)->host.dark_mode()); }
 JSValue window_IsTransparent(JSContext* ctx, JSValueConst) { return JS_NewBool(ctx, I(ctx)->host.panels_ui_transparent()); }
 JSValue window_InstanceType(JSContext* ctx, JSValueConst) { return JS_NewInt32(ctx, 1); }
 
@@ -2975,6 +2976,7 @@ const JSCFunctionListEntry kWindowFuncs[] = {
     JS_CFUNC_DEF("SetCursor", 1, window_SetCursor),
     JS_CFUNC_DEF("CreatePopupMenu", 0, window_CreatePopupMenu),
     JS_CGETSET_DEF("IsVisible", window_IsVisible, nullptr),
+    JS_CGETSET_DEF("IsDark", window_IsDark, nullptr),
     JS_CGETSET_DEF("IsTransparent", window_IsTransparent, nullptr),
     JS_CGETSET_DEF("InstanceType", window_InstanceType, nullptr),
     JS_CGETSET_DEF("DlgCode", window_GetInt<&JsEngine::Impl::dlgCode>, window_SetInt<&JsEngine::Impl::dlgCode>),
@@ -3106,6 +3108,9 @@ JSValue response_object(JSContext* ctx, const HttpResponse& r) {
     set_int(ctx, o, "status", r.status);
     set_str(ctx, o, "text", r.text);
     set_str(ctx, o, "error", r.error);
+    JSValue headers = JS_NewObject(ctx);
+    for (const auto& [k, v] : r.headers) set_str(ctx, headers, k.c_str(), v);
+    JS_SetPropertyStr(ctx, o, "headers", headers);
     return o;
 }
 
@@ -3125,6 +3130,48 @@ JSValue native_httpAsync(JSContext* ctx, JSValueConst, int argc, JSValueConst* a
         if (*token) e->settle_promise(id, response_object(e->ctx, r));
     });
     return promise;
+}
+
+JSValue native_recycler(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    JsHost& host = I(ctx)->host;
+    const std::string op = arg_str(ctx, argc, argv, 0);
+    const int index = arg_int(ctx, argc, argv, 1);
+    if (op == "count") return JS_NewInt32(ctx, host.recycler_count());
+    if (op == "name") return new_string(ctx, host.recycler_name(index));
+    if (op == "items") return new_list(ctx, host.recycler_items(index));
+    if (op == "restore") host.recycler_restore(index);
+    if (op == "purge") {
+        std::vector<int> indexes;
+        if (argc > 1 && JS_IsArray(argv[1])) {
+            int64_t n = 0;
+            JS_GetLength(ctx, argv[1], &n);
+            for (int64_t i = 0; i < n; ++i) {
+                JSValue v = JS_GetPropertyUint32(ctx, argv[1], (uint32_t)i);
+                int32_t k = -1;
+                JS_ToInt32(ctx, &k, v);
+                JS_FreeValue(ctx, v);
+                indexes.push_back(k);
+            }
+        } else if (argc > 1) {
+            indexes.push_back(index);
+        }
+        host.recycler_purge(indexes);
+    }
+    return JS_UNDEFINED;
+}
+
+JSValue native_audioChunk(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    AudioChunk c;
+    if (!I(ctx)->host.audio_chunk(arg_num(ctx, argc, argv, 0), arg_num(ctx, argc, argv, 1), c)) return JS_NULL;
+    JSValue o = JS_NewObject(ctx);
+    set_int(ctx, o, "ChannelCount", c.channels);
+    JS_SetPropertyStr(ctx, o, "ChannelConfig", JS_NewUint32(ctx, c.channelConfig));
+    set_int(ctx, o, "SampleRate", c.sampleRate);
+    set_int(ctx, o, "SampleCount", c.channels > 0 ? (int)(c.data.size() / (size_t)c.channels) : 0);
+    JSValue data = JS_NewArray(ctx);
+    for (size_t i = 0; i < c.data.size(); ++i) JS_SetPropertyUint32(ctx, data, (uint32_t)i, JS_NewFloat64(ctx, c.data[i]));
+    JS_SetPropertyStr(ctx, o, "Data", data);
+    return o;
 }
 
 JSValue native_download(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
@@ -3162,6 +3209,120 @@ JSValue native_clipboard(JSContext* ctx, JSValueConst, int argc, JSValueConst* a
     return new_string(ctx, I(ctx)->host.clipboard_text());
 }
 
+DialogValue dialog_value(JSContext* ctx, JSValueConst v, std::vector<JSValue>& fns, int depth) {
+    DialogValue d;
+    if (depth > 16) return d;
+    if (JS_IsFunction(ctx, v)) {
+        d.kind = DialogValue::Kind::Function;
+        d.fn = (int)fns.size();
+        fns.push_back(JS_DupValue(ctx, v));
+    } else if (JS_IsBool(v)) {
+        d.kind = DialogValue::Kind::Bool;
+        d.number = JS_ToBool(ctx, v) > 0 ? 1 : 0;
+    } else if (JS_IsNumber(v)) {
+        d.kind = DialogValue::Kind::Number;
+        JS_ToFloat64(ctx, &d.number, v);
+    } else if (JS_IsString(v)) {
+        d.kind = DialogValue::Kind::String;
+        d.text = to_string(ctx, v);
+    } else if (JS_IsArray(v)) {
+        d.kind = DialogValue::Kind::Array;
+        int64_t n = 0;
+        JS_GetLength(ctx, v, &n);
+        for (int64_t i = 0; i < n && i < 10000; ++i) {
+            JSValue item = JS_GetPropertyUint32(ctx, v, (uint32_t)i);
+            d.items.push_back(dialog_value(ctx, item, fns, depth + 1));
+            JS_FreeValue(ctx, item);
+        }
+    } else if (JS_IsObject(v)) {
+        d.kind = DialogValue::Kind::Object;
+        JSPropertyEnum* props = nullptr;
+        uint32_t n = 0;
+        if (JS_GetOwnPropertyNames(ctx, &props, &n, v, JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) == 0) {
+            for (uint32_t i = 0; i < n; ++i) {
+                const char* key = JS_AtomToCString(ctx, props[i].atom);
+                JSValue item = JS_GetProperty(ctx, v, props[i].atom);
+                d.keys.push_back(key ? key : "");
+                d.items.push_back(dialog_value(ctx, item, fns, depth + 1));
+                JS_FreeValue(ctx, item);
+                JS_FreeCString(ctx, key);
+            }
+            JS_FreePropertyEnum(ctx, props, n);
+        }
+    }
+    return d;
+}
+
+JSValue js_value(JSContext* ctx, const DialogValue& d) {
+    switch (d.kind) {
+    case DialogValue::Kind::Bool: return JS_NewBool(ctx, d.number != 0);
+    case DialogValue::Kind::Number: return JS_NewFloat64(ctx, d.number);
+    case DialogValue::Kind::String: return new_string(ctx, d.text);
+    case DialogValue::Kind::Array: {
+        JSValue a = JS_NewArray(ctx);
+        for (uint32_t i = 0; i < d.items.size(); ++i) JS_SetPropertyUint32(ctx, a, i, js_value(ctx, d.items[i]));
+        return a;
+    }
+    case DialogValue::Kind::Object: {
+        JSValue o = JS_NewObject(ctx);
+        for (size_t i = 0; i < d.items.size() && i < d.keys.size(); ++i) JS_SetPropertyStr(ctx, o, d.keys[i].c_str(), js_value(ctx, d.items[i]));
+        return o;
+    }
+    default: return JS_NULL;
+    }
+}
+
+JSValue native_htmlDialog(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    JsEngine::Impl* e = I(ctx);
+    HtmlDialog d;
+    d.html = arg_str(ctx, argc, argv, 0);
+    d.baseDir = fix_path(arg_str(ctx, argc, argv, 1));
+    std::vector<JSValue> fns;
+    if (argc > 2 && JS_IsObject(argv[2])) {
+        JSValueConst o = argv[2];
+        const auto num = [&](const char* k, int& out) {
+            JSValue v = JS_GetPropertyStr(ctx, o, k);
+            int32_t n = 0;
+            if (JS_IsNumber(v) && JS_ToInt32(ctx, &n, v) == 0) out = n;
+            JS_FreeValue(ctx, v);
+        };
+        const auto flag = [&](const char* k, bool& out) {
+            JSValue v = JS_GetPropertyStr(ctx, o, k);
+            if (!JS_IsUndefined(v)) out = JS_ToBool(ctx, v) > 0;
+            JS_FreeValue(ctx, v);
+        };
+        num("width", d.width);
+        num("height", d.height);
+        num("x", d.x);
+        num("y", d.y);
+        flag("center", d.center);
+        flag("resizable", d.resizable);
+        flag("scroll", d.scroll);
+        flag("context_menu", d.contextMenu);
+        flag("selection", d.selection);
+        JSValue data = JS_GetPropertyStr(ctx, o, "data");
+        d.data = dialog_value(ctx, data, fns, 0);
+        JS_FreeValue(ctx, data);
+    }
+    const bool shown = e->modal([&] {
+        return e->host.html_dialog(d, [&](int fn, const std::vector<DialogValue>& args) {
+            if (fn < 0 || fn >= (int)fns.size() || !e->error.empty()) return;
+            std::vector<JSValue> argv2;
+            for (const auto& a : args) argv2.push_back(js_value(ctx, a));
+            JSValue r;
+            {
+                JsEngine::Impl::Budget b(*e);
+                r = JS_Call(ctx, fns[fn], JS_UNDEFINED, (int)argv2.size(), argv2.data());
+            }
+            if (JS_IsException(r)) e->report_exception();
+            else JS_FreeValue(ctx, r);
+            for (JSValue v : argv2) JS_FreeValue(ctx, v);
+        });
+    });
+    for (JSValue f : fns) JS_FreeValue(ctx, f);
+    return JS_NewBool(ctx, shown);
+}
+
 JSValue native_messageBox(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     JsEngine::Impl* e = I(ctx);
     const std::string text = arg_str(ctx, argc, argv, 0), caption = arg_str(ctx, argc, argv, 1);
@@ -3184,6 +3345,19 @@ JSValue native_fullscreen(JSContext* ctx, JSValueConst, int argc, JSValueConst* 
 JSValue native_windowLimits(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     I(ctx)->host.set_window_limits(arg_int(ctx, argc, argv, 0), arg_int(ctx, argc, argv, 1), arg_int(ctx, argc, argv, 2), arg_int(ctx, argc, argv, 3));
     return JS_UNDEFINED;
+}
+
+JSValue native_windowRect(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    if (argc >= 4) {
+        I(ctx)->host.set_window_rect(arg_rect(ctx, argc, argv, 0));
+        return JS_UNDEFINED;
+    }
+    pui::gfx::Rect content, work;
+    if (!I(ctx)->host.window_rect(content, work)) return JS_NULL;
+    JSValue a = JS_NewArray(ctx);
+    const int v[] = { content.x, content.y, content.w, content.h, work.x, work.y, work.w, work.h };
+    for (uint32_t i = 0; i < 8; ++i) JS_SetPropertyUint32(ctx, a, i, JS_NewInt32(ctx, v[i]));
+    return a;
 }
 
 JSValue native_caption(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
@@ -3350,6 +3524,9 @@ const JSCFunctionListEntry kNativeFuncs[] = {
     JS_CFUNC_DEF("http", 4, native_http),
     JS_CFUNC_DEF("httpAsync", 4, native_httpAsync),
     JS_CFUNC_DEF("download", 2, native_download),
+    JS_CFUNC_DEF("recycler", 2, native_recycler),
+    JS_CFUNC_DEF("audioChunk", 2, native_audioChunk),
+    JS_CFUNC_DEF("htmlDialog", 3, native_htmlDialog),
     JS_CFUNC_DEF("shellRun", 1, native_shellRun),
     JS_CFUNC_DEF("clipboard", 1, native_clipboard),
     JS_CFUNC_DEF("messageBox", 3, native_messageBox),
@@ -3359,6 +3536,7 @@ const JSCFunctionListEntry kNativeFuncs[] = {
     JS_CFUNC_DEF("kind", 1, native_kind),
     JS_CFUNC_DEF("fullscreen", 1, native_fullscreen),
     JS_CFUNC_DEF("windowLimits", 4, native_windowLimits),
+    JS_CFUNC_DEF("windowRect", 4, native_windowRect),
     JS_CFUNC_DEF("caption", 4, native_caption),
     JS_CFUNC_DEF("selection", 2, native_selection),
     JS_CFUNC_DEF("getSelection", 0, fb_GetSelection),
@@ -3462,8 +3640,24 @@ const char* const kPrelude = R"JS(
         const body = init.body === undefined || init.body === null ? undefined : String(init.body);
         return native.httpAsync(method, url, headers, body).then(r => {
             if (!r.status) throw new TypeError('fetch failed: ' + (r.error || url));
-            return new Response(r.text, { status: r.status, statusText: r.error || '', url });
+            return new Response(r.text, { status: r.status, statusText: r.error || '', url, headers: r.headers });
         });
+    };
+    let httpTask = 0;
+    utils.HTTPRequestAsync = function (...a) {
+        if (typeof a[1] !== 'string') a.shift();
+        const [type, url, extra, post] = a, task = ++httpTask, headers = [];
+        if (extra) {
+            const s = String(extra);
+            if (s[0] !== '{') headers.push('User-Agent: ' + s);
+            else try { for (const [k, v] of Object.entries(JSON.parse(s))) headers.push(k + ': ' + v); } catch (e) {}
+        }
+        native.httpAsync(type === 1 ? 'POST' : 'GET', String(url), headers, type === 1 && post !== undefined ? String(post) : undefined).then(r => {
+            if (typeof on_http_request_done !== 'function') return;
+            const ok = !r.error && r.status > 0;
+            on_http_request_done(task, ok, r.text, ok ? r.status : 0, JSON.stringify(r.headers));
+        });
+        return task;
     };
     utils.MapString = function (text, lcid, flags) {
         let s = String(text);
@@ -3539,9 +3733,15 @@ const char* const kPrelude = R"JS(
         };
     };
     utils.ShowHtmlDialog = function (id, code, options) {
+        let html = String(code), base = '';
+        if (/^file:\/\//i.test(html)) {
+            const path = decodeURIComponent(html.replace(/^file:\/\/\/?/i, __jsp.os === 'windows' ? '' : '/'));
+            html = utils.ReadTextFile(path);
+            base = path.replace(/[\\/][^\\/]*$/, '');
+        }
+        if (__jsp.htmlDialog(html, base, options || {})) return;
         const data = (options && options.data) || [];
         const callback = data.find(d => typeof d === 'function');
-        const html = String(code);
         const plain = s => String(s === undefined || s === null ? '' : s).replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]*>/g, '')
             .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
         const title = plain(data[0]) || 'JS Panel', text = plain(data[1]);
@@ -3754,6 +3954,7 @@ const char* const kPrelude = R"JS(
                 this.status = r.status;
                 this.statusText = r.error || (r.status >= 200 && r.status < 300 ? 'OK' : '');
                 this.responseText = r.text;
+                this.responseHeaders = r.headers || {};
                 this.readyState = 4;
                 if (typeof this.onreadystatechange === 'function') this.onreadystatechange();
             };
@@ -3762,8 +3963,10 @@ const char* const kPrelude = R"JS(
             else finish(native.http(this.method, this.url, this.headers, body));
         }
         abort() { this.aborted = true; this.readyState = 0; }
-        getResponseHeader() { return ''; }
-        getAllResponseHeaders() { return ''; }
+        getResponseHeader(name) { const v = (this.responseHeaders || {})[String(name).toLowerCase()]; return v === undefined ? '' : v; }
+        getAllResponseHeaders() { return Object.entries(this.responseHeaders || {}).map(([k, v]) => k + ': ' + v + '\r\n').join(''); }
+        GetResponseHeader(name) { return this.getResponseHeader(name); }
+        GetAllResponseHeaders() { return this.getAllResponseHeaders(); }
         Open(m, u, a) { this.open(m, u, a === true); }
         Send(b) { this.send(b); }
         SetRequestHeader(k, v) { this.setRequestHeader(k, v); }
@@ -3901,6 +4104,55 @@ const char* const kPrelude = R"JS(
         });
     };
     let frameStyle = 0;
+    const setFrameStyle = v => {
+        frameStyle = v | 0;
+        if (typeof panelsui !== 'undefined' && panelsui.IsAvailable)
+            panelsui.RunAction(frameStyle >= 2 ? 'WINDOWSTYLE:hidetitlebar' : 'WINDOWSTYLE:showtitlebar');
+    };
+    const uiWizard = () => {
+        const lim = { min: false, max: false, MinWidth: 0, MinHeight: 0, MaxWidth: 0, MaxHeight: 0 };
+        const apply = () => native.windowLimits(lim.min ? lim.MinWidth : 0, lim.min ? lim.MinHeight : 0, lim.max ? lim.MaxWidth : 0, lim.max ? lim.MaxHeight : 0);
+        const rect = () => native.windowRect() || [0, 0, window.Width, window.Height, 0, 0, window.Width, window.Height];
+        const place = (x, y, w, h) => native.windowRect(Math.round(x), Math.round(y), w | 0, h | 0);
+        const o = {
+            get FrameStyle() { return frameStyle; },
+            set FrameStyle(v) { setFrameStyle(v); },
+            MoveStyle: 0, DisableWindowSizing: false, DisableWindowMaximizing: false, DisableSizing: false, WindowBgColor: 0,
+            DisplayResolutionMode: '', DisplayResolution: '', DisplayResolutionMultiMonitors: '', DisplayDPI: 96,
+            get WindowState() { return native.fullscreen() ? 2 : native.windowState() === 2 ? 1 : 0; },
+            set WindowState(v) {
+                v |= 0;
+                native.fullscreen(v === 2);
+                if (v !== 2) native.windowState(v === 1 ? 2 : 0);
+            },
+            get WindowX() { return rect()[0]; },
+            get WindowY() { return rect()[1]; },
+            get WindowWidth() { return rect()[2]; },
+            get WindowHeight() { return rect()[3]; },
+            get WindowMinSize() { return lim.min; },
+            set WindowMinSize(v) { lim.min = !!v; apply(); },
+            get WindowMaxSize() { return lim.max; },
+            set WindowMaxSize(v) { lim.max = !!v; apply(); },
+            SetWindowSizeLimits(a, b, c, d) { Object.assign(lim, { MinWidth: a | 0, MinHeight: b | 0, MaxWidth: c | 0, MaxHeight: d | 0 }); apply(); },
+            SetWindowSize(w, h) { const r = rect(); place(r[0], r[1], w, h); },
+            SetWindowPosition(x, y) { const r = rect(); place(x, y, r[2], r[3]); },
+            SetWindowPositionInGrid(where) {
+                const r = rect(), s = String(where).toLowerCase();
+                const x = /left/.test(s) ? r[4] : /right/.test(s) ? r[4] + r[6] - r[2] : r[4] + (r[6] - r[2]) / 2;
+                const y = /top/.test(s) ? r[5] : /bottom/.test(s) ? r[5] + r[7] - r[3] : r[5] + (r[7] - r[3]) / 2;
+                place(x, y, r[2], r[3]);
+            },
+            SetCaptionAreaSize(x, y, w, h) { native.caption(x | 0, y | 0, w | 0, h | 0); },
+            WindowMinimize() { native.windowState(1); },
+            ToggleMaximize() { native.windowState(native.windowState() === 2 ? 0 : 2); },
+            ExitMaximize() { if (native.windowState() === 2) native.windowState(0); },
+            ToggleFullscreen() { native.fullscreen(!native.fullscreen()); },
+            ExitFullscreen() { native.fullscreen(false); },
+        };
+        for (const k of ['MinWidth', 'MinHeight', 'MaxWidth', 'MaxHeight'])
+            Object.defineProperty(o, 'Window' + k, { enumerable: true, get: () => lim[k], set: v => { lim[k] = v | 0; apply(); } });
+        return o;
+    };
     const uiHacks = () => {
         const limits = { min: { Enabled: false, Width: 0, Height: 0 }, max: { Enabled: false, Width: 0, Height: 0 } };
         const apply = () => native.windowLimits(limits.min.Enabled ? limits.min.Width : 0, limits.min.Enabled ? limits.min.Height : 0,
@@ -3913,11 +4165,7 @@ const char* const kPrelude = R"JS(
         };
         return {
             get FrameStyle() { return frameStyle; },
-            set FrameStyle(v) {
-                frameStyle = v | 0;
-                if (typeof panelsui !== 'undefined' && panelsui.IsAvailable)
-                    panelsui.RunAction(frameStyle >= 2 ? 'WINDOWSTYLE:hidetitlebar' : 'WINDOWSTYLE:showtitlebar');
-            },
+            set FrameStyle(v) { setFrameStyle(v); },
             DisableSizing: false, MoveStyle: 0, BlockMaximize: false,
             Aero: { Effect: 0, Left: 0, Top: 0, Right: 0, Bottom: 0 },
             MinSize: size('min'), MaxSize: size('max'),
@@ -3942,7 +4190,7 @@ const char* const kPrelude = R"JS(
         'uihacks': uiHacks,
         'eslyric': inert,
         'audiowizard': audioWizard,
-        'uiwizard': inert,
+        'uiwizard': uiWizard,
         'shell.application': () => ({ BrowseForFolder: () => null, NameSpace: () => null, ShellExecute: (f, a) => native.shellRun(String(f) + (a ? ' ' + a : '')) }),
         'scriptcontrol': () => ({ Language: '', AddCode() {}, Eval() { fail('ScriptControl (VBScript) is not available in JS Panel', -2146827859); },
                                   Run() { fail('ScriptControl (VBScript) is not available in JS Panel', -2146827859); } }),
@@ -4182,11 +4430,6 @@ const char* const kJsp3Prelude = R"JS(
     const smpFontDUI = window.GetFontDUI, smpFontCUI = window.GetFontCUI;
     window.GetFontDUI = t => fontString(smpFontDUI.call(window, t));
     window.GetFontCUI = t => fontString(smpFontCUI.call(window, t));
-    const dark = () => {
-        const c = window.GetColourDUI(1);
-        return (((c >> 16) & 0xff) * 299 + ((c >> 8) & 0xff) * 587 + (c & 0xff) * 114) / 1000 < 128;
-    };
-    Object.defineProperty(window, 'IsDark', { get: dark });
     Object.defineProperty(window, 'IsDefaultUI', { get: () => true });
     Object.defineProperty(window, 'DPI', { get: () => 96 });
     window.SetTooltipFont = () => {};
@@ -4350,22 +4593,6 @@ const char* const kJsp3Prelude = R"JS(
         return h.toString(16).padStart(16, '0');
     };
     utils.RemoveFolderRecursive = path => !!native.remove(String(path), true);
-    const headers = arg => {
-        if (!arg) return [];
-        const a = String(arg);
-        if (a[0] !== '{') return ['User-Agent: ' + a];
-        try { return Object.entries(JSON.parse(a)).map(([k, v]) => k + ': ' + v); } catch (e) { return []; }
-    };
-    let nextTask = 1;
-    utils.HTTPRequestAsync = (id, type, url, ua, post) => {
-        const task = nextTask++;
-        native.httpAsync(type === 1 ? 'POST' : 'GET', String(url), headers(ua), type === 1 ? post : undefined).then(r => {
-            if (typeof on_http_request_done !== 'function') return;
-            const ok = !r.error && r.status > 0;
-            on_http_request_done(task, ok, r.text, ok ? r.status : 0, '{}');
-        });
-        return task;
-    };
     utils.DownloadFileAsync = (id, url, path) => {
         native.download(String(url), String(path)).then(ok => {
             if (typeof on_download_file_done === 'function') on_download_file_done(path, !!ok, ok ? '' : 'download failed');
@@ -4381,7 +4608,7 @@ const char* const kJsp3Prelude = R"JS(
         });
     };
     fb.GetAlbumArtStub = () => null;
-    fb.GetAudioChunk = () => null;
+    fb.GetAudioChunk = (duration, offset) => native.audioChunk(duration, offset || 0);
     fb.AddLocationsAsync = () => 0;
     plman.SortPlaylistsByName = direction => {
         const desc = direction === -1;
@@ -4401,11 +4628,11 @@ const char* const kJsp3Prelude = R"JS(
         plman.SetPlaylistSelection(p, want, true);
     };
     plman.ShowPlaylistLockUI = () => {};
-    plman.RecyclerCount = 0;
-    plman.GetRecyclerName = () => '';
-    plman.GetRecyclerItems = () => fb.CreateHandleList();
-    plman.RecyclerPurge = () => {};
-    plman.RecyclerRestore = () => {};
+    Object.defineProperty(plman, 'RecyclerCount', { get: () => native.recycler('count') });
+    plman.GetRecyclerName = i => native.recycler('name', i);
+    plman.GetRecyclerItems = i => native.recycler('items', i);
+    plman.RecyclerPurge = indexes => native.recycler('purge', Array.isArray(indexes) ? indexes : indexes && indexes.toArray ? indexes.toArray() : [indexes]);
+    plman.RecyclerRestore = i => native.recycler('restore', i);
     const tfp = Object.getPrototypeOf(fb.TitleFormat(''));
     tfp.EvalPlaylistItem = function (p, i) { return this.EvalWithMetadb(plman.GetPlaylistItems(p).Item(i)); };
     tfp.EvalActivePlaylistItem = function (i) { return this.EvalPlaylistItem(plman.ActivePlaylist, i); };

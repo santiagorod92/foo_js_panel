@@ -143,3 +143,12 @@ if (panelsui.IsAvailable) {
     panelsui.SetVariable('jsp.smoke', String(window.ID));
     panelsui.RunAction('JSPANEL:smoke-skin:{"n":1,"from":' + window.ID + '}');
 } else console.log('smoke: panelsui missing');
+window.SetTimeout(() => {
+    const wizard = new ActiveXObject('UIWizard');
+    console.log('smoke: dark=' + typeof window.IsDark + ' wizard=' + (wizard.WindowWidth > 0 && wizard.WindowHeight > 0) + ' state=' + wizard.WindowState);
+    utils.ShowHtmlDialog(window.ID, '<html><head><title>JS Panel dialog</title></head><body style="font:16px sans-serif"><p id="t"></p>' +
+        '<script>var a = window.external.dialogArguments.toArray(); document.getElementById("t").innerText = a[0];' +
+        'setTimeout(function () { a[1]("ok", document.title, a.length); window.close(); }, 2500);</script></body></html>',
+        { width: 320, height: 140, data: ['shown by the smoke test', (s, t, n) => console.log('smoke: html dialog ' + s + ' ' + t + ' ' + n)] });
+    console.log('smoke: html dialog closed');
+}, 800);

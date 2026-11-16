@@ -402,7 +402,7 @@ struct FakeHost : jsp::JsHost {
         if (!r.body.empty()) line += " body=" + r.body;
         requests.push_back(line);
         auto it = web.find(r.url);
-        return it == web.end() ? jsp::HttpResponse{ 404, "not found", {} } : it->second;
+        return it == web.end() ? jsp::HttpResponse{ 404, "not found", {}, {} } : it->second;
     }
     void http_request(const jsp::HttpRequest& r, jsp::HttpDone done) override { httpWaiting.emplace_back(r, std::move(done)); }
     jsp::HttpResponse http_request_sync(const jsp::HttpRequest& r) override { return respond(r); }
@@ -457,13 +457,53 @@ struct FakeHost : jsp::JsHost {
     bool puiTransparent = false;
     bool panels_ui_transparent() override { return puiTransparent; }
     bool shown = true;
+    bool dark = false;
+    bool htmlEngine = false;
+    jsp::HtmlDialog lastDialog;
+    std::vector<jsp::DialogValue> dialogAnswer;
+    std::vector<std::pair<std::string, jsp::Tracks>> recycler;
+    pui::gfx::Rect winRect{ 100, 50, 800, 600 };
     bool visible() override { return shown; }
+    bool dark_mode() override { return dark; }
+    bool html_dialog(const jsp::HtmlDialog& d, const jsp::DialogCall& call) override {
+        if (!htmlEngine) return false;
+        lastDialog = d;
+        for (const auto& v : d.data.items)
+            if (v.kind == jsp::DialogValue::Kind::Function) call(v.fn, dialogAnswer);
+        return true;
+    }
+    int recycler_count() override { return (int)recycler.size(); }
+    std::string recycler_name(int i) override { return i >= 0 && i < (int)recycler.size() ? recycler[i].first : std::string(); }
+    jsp::Tracks recycler_items(int i) override { return i >= 0 && i < (int)recycler.size() ? recycler[i].second : jsp::Tracks{}; }
+    void recycler_purge(const std::vector<int>& indexes) override {
+        for (auto it = indexes.rbegin(); it != indexes.rend(); ++it)
+            if (*it >= 0 && *it < (int)recycler.size()) recycler.erase(recycler.begin() + *it);
+    }
+    void recycler_restore(int i) override {
+        if (i < 0 || i >= (int)recycler.size()) return;
+        actions.push_back("restore " + recycler[i].first);
+        recycler.erase(recycler.begin() + i);
+    }
+    bool audio_chunk(double duration, double offset, jsp::AudioChunk& out) override {
+        if (duration <= 0) return false;
+        out = { 2, 44100, 3, { 0.5f, -0.5f, 0.25f, -0.25f } };
+        return offset == 0;
+    }
     int window_state() override { return winState; }
     void set_window_state(int s) override { winState = s; windowCalls.push_back("state " + std::to_string(s)); }
     bool fullscreen() override { return full; }
     void set_fullscreen(bool f) override { full = f; windowCalls.push_back(std::string("full ") + (f ? "1" : "0")); }
     void set_caption(const pui::gfx::Rect& r) override {
         windowCalls.push_back("caption " + std::to_string(r.x) + "," + std::to_string(r.y) + "," + std::to_string(r.w) + "," + std::to_string(r.h));
+    }
+    bool window_rect(pui::gfx::Rect& content, pui::gfx::Rect& work) override {
+        content = winRect;
+        work = { 0, 0, 1920, 1080 };
+        return true;
+    }
+    void set_window_rect(const pui::gfx::Rect& r) override {
+        winRect = r;
+        windowCalls.push_back("rect " + std::to_string(r.x) + "," + std::to_string(r.y) + "," + std::to_string(r.w) + "," + std::to_string(r.h));
     }
     void set_window_limits(int a, int b, int c, int d) override {
         windowCalls.push_back("limits " + std::to_string(a) + "," + std::to_string(b) + "," + std::to_string(c) + "," + std::to_string(d));

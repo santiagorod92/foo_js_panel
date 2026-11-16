@@ -41,7 +41,11 @@ public:
     virtual bool pick_colour(uint32_t& argb) = 0;
     virtual void set_always_on_top(bool on) = 0;
     virtual void set_window_limits(int minW, int minH, int maxW, int maxH) = 0;
+    virtual bool window_rect(pui::gfx::Rect& content, pui::gfx::Rect& work) { return false; }
+    virtual void set_window_rect(const pui::gfx::Rect& content) {}
     virtual void set_caption(const pui::gfx::Rect& r) = 0;
+    virtual bool caption_drag(bool double_click) { return false; }
+    virtual bool html_dialog(const HtmlDialog& dialog, const DialogCall& call) { return false; }
     virtual void open_editor(const std::string& title, const std::string& text, EditorHooks hooks) = 0;
     virtual bool key_pressed(int vk) = 0;
     virtual void* native() = 0;
@@ -212,10 +216,20 @@ public:
     void set_window_state(int state) override { m_surface.set_window_state(state); }
     bool fullscreen() override { return m_surface.fullscreen(); }
     bool visible() override { return m_surface.visible(); }
+    bool dark_mode() override;
     void set_fullscreen(bool on) override { m_surface.set_fullscreen(on); }
     void set_window_limits(int minW, int minH, int maxW, int maxH) override { m_surface.set_window_limits(minW, minH, maxW, maxH); }
+    bool window_rect(pui::gfx::Rect& content, pui::gfx::Rect& work) override { return m_surface.window_rect(content, work); }
+    void set_window_rect(const pui::gfx::Rect& content) override { m_surface.set_window_rect(content); }
     void set_caption(const pui::gfx::Rect& r) override { m_surface.set_caption(r); }
     Tracks get_ui_selection() override;
+    int recycler_count() override;
+    std::string recycler_name(int index) override;
+    Tracks recycler_items(int index) override;
+    void recycler_purge(const std::vector<int>& indexes) override;
+    void recycler_restore(int index) override;
+    bool audio_chunk(double duration, double offset, AudioChunk& out) override;
+    bool html_dialog(const HtmlDialog& dialog, const DialogCall& call) override { return m_surface.html_dialog(dialog, call); }
     int replaygain_mode() override;
     void set_replaygain_mode(int mode) override;
     std::vector<OutputDevice> output_devices() override;
@@ -270,6 +284,7 @@ private:
     int m_w = 0, m_h = 0;
     std::shared_ptr<abort_callback_impl> m_abort = std::make_shared<abort_callback_impl>();
     now_playing_album_art_notify* m_artNotify = nullptr;
+    visualisation_stream::ptr m_vis;
     struct ArtWait {
         TrackPtr track;
         int artId;

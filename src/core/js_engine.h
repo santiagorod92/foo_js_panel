@@ -106,8 +106,32 @@ struct HttpRequest {
 struct HttpResponse {
     int status = 0;
     std::string text, error;
+    std::vector<std::pair<std::string, std::string>> headers;
 };
 using HttpDone = std::function<void(HttpResponse)>;
+
+struct DialogValue {
+    enum class Kind { Null, Bool, Number, String, Array, Object, Function } kind = Kind::Null;
+    double number = 0;
+    std::string text;
+    std::vector<DialogValue> items;
+    std::vector<std::string> keys;
+    int fn = -1;
+};
+
+struct HtmlDialog {
+    std::string html, baseDir;
+    int width = 250, height = 100, x = 0, y = 0;
+    bool center = true, resizable = false, scroll = false, contextMenu = false, selection = false;
+    DialogValue data;
+};
+using DialogCall = std::function<void(int fn, const std::vector<DialogValue>& args)>;
+
+struct AudioChunk {
+    int channels = 0, sampleRate = 0;
+    unsigned channelConfig = 0;
+    std::vector<float> data;
+};
 
 enum class LibraryState { Missing, NotConfigured, Ready };
 using AlbumsDone = std::function<void(std::vector<LibraryAlbum> albums, std::string error)>;
@@ -235,8 +259,8 @@ public:
     virtual pui::gfx::ImagePtr album_art_sync(const TrackPtr&, int, std::string&) { return nullptr; }
     virtual void load_image_async(const std::string& path, ArtDone done) { done(load_image(path), path); }
 
-    virtual void http_request(const HttpRequest&, HttpDone done) { done({ 0, {}, "no network" }); }
-    virtual HttpResponse http_request_sync(const HttpRequest&) { return { 0, {}, "no network" }; }
+    virtual void http_request(const HttpRequest&, HttpDone done) { done({ 0, {}, "no network", {} }); }
+    virtual HttpResponse http_request_sync(const HttpRequest&) { return { 0, {}, "no network", {} }; }
     virtual bool shell_run(const std::string&) { return false; }
     virtual std::string clipboard_text() { return {}; }
     virtual bool set_clipboard_text(const std::string&) { return false; }
@@ -254,17 +278,27 @@ public:
     virtual bool panels_ui_transparent() { return false; }
     virtual bool paint_backdrop(pui::gfx::Canvas&) { return false; }
     virtual bool visible() { return true; }
+    virtual bool dark_mode() { return false; }
     virtual int window_state() { return 0; }
     virtual void set_window_state(int) {}
     virtual bool fullscreen() { return false; }
     virtual void set_fullscreen(bool) {}
     virtual void set_window_limits(int, int, int, int) {}
+    virtual bool window_rect(pui::gfx::Rect&, pui::gfx::Rect&) { return false; }
+    virtual void set_window_rect(const pui::gfx::Rect&) {}
     virtual void set_caption(const pui::gfx::Rect&) {}
     using TagSet = std::vector<std::pair<std::string, std::vector<std::string>>>;
     virtual bool update_tags(const Tracks&, const std::vector<TagSet>&) { return false; }
     enum class SelectionMode { Tracks, PlaylistSelection, Playlist, Released };
     virtual void ui_selection(SelectionMode, const Tracks&) {}
     virtual Tracks get_ui_selection() { return {}; }
+    virtual int recycler_count() { return 0; }
+    virtual std::string recycler_name(int) { return {}; }
+    virtual Tracks recycler_items(int) { return {}; }
+    virtual void recycler_purge(const std::vector<int>&) {}
+    virtual void recycler_restore(int) {}
+    virtual bool audio_chunk(double, double, AudioChunk&) { return false; }
+    virtual bool html_dialog(const HtmlDialog&, const DialogCall&) { return false; }
     virtual int replaygain_mode() { return 0; }
     virtual void set_replaygain_mode(int) {}
     virtual std::vector<OutputDevice> output_devices() { return {}; }

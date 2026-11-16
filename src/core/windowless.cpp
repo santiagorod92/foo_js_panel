@@ -57,7 +57,7 @@ public:
     bool fullscreen() override { return m_owner->fullscreen(); }
     void set_fullscreen(bool on) override { m_owner->set_fullscreen(on); }
     bool always_on_top() override { return m_owner->always_on_top(); }
-    int drag_tracks(metadb_handle_list_cref, int) override { return 0; }
+    int drag_tracks(metadb_handle_list_cref tracks, int effects) override { return m_owner->drag_tracks(tracks, effects); }
     void set_tooltip(const std::string& text, bool active, int) override {
         if (m_host) m_host->set_tooltip(active ? text.c_str() : "");
     }
@@ -67,7 +67,11 @@ public:
     bool pick_colour(uint32_t& argb) override { return m_owner->pick_colour(argb); }
     void set_always_on_top(bool on) override { m_owner->set_always_on_top(on); }
     void set_window_limits(int minW, int minH, int maxW, int maxH) override { m_owner->set_window_limits(minW, minH, maxW, maxH); }
+    bool window_rect(pui::gfx::Rect& content, pui::gfx::Rect& work) override { return m_owner->window_rect(content, work); }
+    void set_window_rect(const pui::gfx::Rect& content) override { m_owner->set_window_rect(content); }
     void set_caption(const pui::gfx::Rect& r) override { m_owner->set_caption(r); }
+    bool caption_drag(bool double_click) override { return m_owner->caption_drag(double_click); }
+    bool html_dialog(const HtmlDialog& dialog, const DialogCall& call) override { return m_owner->html_dialog(dialog, call); }
     void open_editor(const std::string& title, const std::string& text, EditorHooks hooks) override {
         m_owner->open_editor(title, text, std::move(hooks));
     }
@@ -88,7 +92,7 @@ const Mouse kMouseKinds[] = { Mouse::Move,      Mouse::Leave,       Mouse::LeftD
                               Mouse::LeftDouble, Mouse::RightDown,  Mouse::RightUp,     Mouse::RightDouble,
                               Mouse::MiddleDown, Mouse::MiddleUp,   Mouse::MiddleDouble };
 
-class WindowlessPanel : public js_panel::js_panel_windowless {
+class WindowlessPanel : public js_panel::js_panel_windowless_v2 {
 public:
     WindowlessPanel(const char* name, const char* script, js_panel::js_panel_windowless_host* host) {
         const std::string fixed = script ? script : "";
@@ -124,6 +128,7 @@ public:
     }
     void mouse(int kind, int x, int y, unsigned mask) override {
         if (!m_panel || kind < 0 || kind >= (int)std::size(kMouseKinds)) return;
+        if ((kind == mouse_left_down || kind == mouse_left_double) && m_surface->caption_drag(kind == mouse_left_double)) return;
         log::guarded("js", "windowless mouse", [&] { m_panel->mouse(kMouseKinds[kind], x, y, mask); });
     }
     void wheel(int step, bool horizontal) override {
@@ -137,6 +142,15 @@ public:
     void focus(bool focused) override {
         if (m_panel) m_panel->focus(focused);
     }
+    int drag(int kind, int x, int y, unsigned keys, int effects, const void* native_data) override {
+        static const Drag kinds[] = { Drag::Enter, Drag::Over, Drag::Leave, Drag::Drop };
+        if (!m_panel || kind < 0 || kind >= (int)std::size(kinds)) return 0;
+        int effect = 0;
+        log::guarded("js", "windowless drag", [&] {
+            effect = windowless_drag(*m_panel, m_dropAllowed, kinds[kind], x, y, keys, effects, native_data, m_surface->native());
+        });
+        return effect;
+    }
     void detach() override {
         if (m_surface) m_surface->detach();
         m_panel.reset();
@@ -146,6 +160,7 @@ public:
 private:
     std::unique_ptr<WindowlessSurface> m_surface;
     std::unique_ptr<Panel> m_panel;
+    int m_dropAllowed = 0;
 };
 
 class WindowlessApi : public js_panel::js_panel_windowless_api {

@@ -1149,8 +1149,8 @@ TEST("packages: a script that includes a package's main.js runs as that package,
 
 TEST("fetch: Response text/json, headers sent, HTTP errors resolve, network errors reject") {
     t::FakeHost host;
-    host.web["https://api.example/j"] = { 200, "{\"a\":1}", {} };
-    host.web["https://api.example/down"] = { 0, "", "host not found" };
+    host.web["https://api.example/j"] = { 200, "{\"a\":1}", {}, {} };
+    host.web["https://api.example/down"] = { 0, "", "host not found", {} };
     JsEngine e(host);
     CHECK(e.load("fetch('https://api.example/j', { headers: { 'X-Key': 'k' } }).then(r => r.json().then(j => console.log('json', r.ok, r.status, j.a, r.bodyUsed)));"
                  "fetch('https://api.example/nope', { method: 'post', body: 'b' }).then(r => console.log('miss', r.ok, r.status));"
@@ -1165,6 +1165,71 @@ TEST("fetch: Response text/json, headers sent, HTTP errors resolve, network erro
     CHECK_EQ(host.requests[0], std::string("GET https://api.example/j [x-key: k]"));
     CHECK_EQ(host.requests[1], std::string("POST https://api.example/nope body=b"));
     CHECK(!e.failed());
+}
+
+TEST("http: response headers reach fetch, XMLHTTP and SMP's utils.HTTPRequestAsync; window.IsDark is the host's dark mode") {
+    t::FakeHost host;
+    host.dark = true;
+    host.web["https://api.example/h"] = { 200, "ok", {}, { { "content-type", "text/plain" }, { "etag", "\"e1\"" } } };
+    JsEngine e(host);
+    CHECK(e.load("function on_http_request_done(id, ok, text, status, headers) { console.log('done', id, ok, text, status, JSON.parse(headers).etag); }\n"
+                 "fetch('https://api.example/h').then(r => console.log('fetch', r.headers.get('Content-Type')));\n"
+                 "const x = new ActiveXObject('Microsoft.XMLHTTP'); x.open('GET', 'https://api.example/h', true);\n"
+                 "x.onreadystatechange = () => console.log('xhr', x.getResponseHeader('ETag'), JSON.stringify(x.getAllResponseHeaders()));\n"
+                 "x.send();\n"
+                 "const a = utils.HTTPRequestAsync(0, 'https://api.example/h', JSON.stringify({ 'X-Key': 'k' }));\n"
+                 "const b = utils.HTTPRequestAsync(1, 'https://api.example/p', 'agent/1', 'body');\n"
+                 "console.log('dark', window.IsDark, a, b);", "/s/h.js"));
+    CHECK_EQ(host.console_lines.back(), std::string("dark true 1 2"));
+    host.finish_http();
+    const auto& out = host.console_lines;
+    CHECK(std::find(out.begin(), out.end(), "fetch text/plain") != out.end());
+    CHECK(std::find(out.begin(), out.end(), "xhr \"e1\" \"content-type: text/plain\\r\\netag: \\\"e1\\\"\\r\\n\"") != out.end());
+    CHECK(std::find(out.begin(), out.end(), "done 1 true ok 200 \"e1\"") != out.end());
+    CHECK(std::find(out.begin(), out.end(), "done 2 true not found 404 undefined") != out.end());
+    CHECK_EQ(host.requests[2], std::string("GET https://api.example/h [X-Key: k]"));
+    CHECK_EQ(host.requests[3], std::string("POST https://api.example/p [User-Agent: agent/1] body=body"));
+    CHECK(!e.failed());
+}
+
+TEST("ShowHtmlDialog: with an HTML engine the host gets the page, options and data, and its callbacks reach the script") {
+    t::FakeHost host;
+    host.htmlEngine = true;
+    jsp::DialogValue ok;
+    ok.kind = jsp::DialogValue::Kind::String;
+    ok.text = "ok";
+    jsp::DialogValue values;
+    values.kind = jsp::DialogValue::Kind::String;
+    values.text = "a##b";
+    host.dialogAnswer = { ok, values };
+    JsEngine e(host);
+    CHECK(e.load("utils.ShowHtmlDialog(window.ID, '<p id=input_container>x</p>', { width: 358, resizable: true,"
+                 " data: ['Title', 'Message', 'Cancel', (status, v) => console.log('cb', status, v), [1, true], { k: 'v' }] });", "/s/d.js"));
+    if (e.failed()) printf("%s\n", e.error().c_str());
+    CHECK_EQ(host.console_lines.back(), std::string("cb ok a##b"));
+    CHECK_EQ(host.lastDialog.html, std::string("<p id=input_container>x</p>"));
+    CHECK_EQ(host.lastDialog.width, 358);
+    CHECK_EQ(host.lastDialog.height, 100);
+    CHECK(host.lastDialog.resizable && host.lastDialog.center && !host.lastDialog.scroll);
+    const auto& items = host.lastDialog.data.items;
+    CHECK_EQ(items.size(), (size_t)6);
+    CHECK(items[3].kind == jsp::DialogValue::Kind::Function && items[3].fn == 0);
+    CHECK(items[4].kind == jsp::DialogValue::Kind::Array && items[4].items[1].kind == jsp::DialogValue::Kind::Bool);
+    CHECK(items[5].kind == jsp::DialogValue::Kind::Object && items[5].keys[0] == "k" && items[5].items[0].text == "v");
+}
+
+TEST("dialog_html: MSHTML gets window.dialogArguments and a resizeTo shim after the X-UA meta, WebKit a base URL") {
+    const std::string page = "<!DOCTYPE html><html><HEAD><meta http-equiv=\"x-ua-compatible\" content=\"IE=8\"/></HEAD>"
+                             "<body><script>var a = window.external.dialogArguments.toArray();</script></body></html>";
+    const std::string ie = jsp::dialog_html(page, "C:/t", true);
+    CHECK(ie.find("window.external") == std::string::npos);
+    CHECK(ie.find("window.dialogArguments.toArray()") != std::string::npos);
+    CHECK(ie.find("content=\"IE=8\"/><script>window.resizeTo=") != std::string::npos);
+    const std::string wk = jsp::dialog_html(page, "/Users/me/My Themes/eole/html", false);
+    CHECK(wk.find("<HEAD><base href=\"file:///Users/me/My%20Themes/eole/html/\"><meta") != std::string::npos);
+    CHECK(wk.find("window.external.dialogArguments") != std::string::npos);
+    CHECK_EQ(jsp::dialog_html("<p>x</p>", "", false), std::string("<p>x</p>"));
+    CHECK_EQ(jsp::file_url("C:\\a b\\c.html"), std::string("file:///C:/a%20b/c.html"));
 }
 
 TEST("modules: a module script imports relative files, exports its callbacks, records the files for hot reload") {
@@ -1578,7 +1643,7 @@ TEST("ActiveX: Scripting.FileSystemObject creates, writes, reads, lists, moves a
 
 TEST("ActiveX: XMLHTTP runs async through the host and calls onreadystatechange; WinHttp works synchronously") {
     t::FakeHost host;
-    host.web["https://api.example/x"] = { 200, "{\"a\":1}", {} };
+    host.web["https://api.example/x"] = { 200, "{\"a\":1}", {}, {} };
     JsEngine e(host);
     CHECK(e.load("const x = new ActiveXObject('Microsoft.XMLHTTP');"
                  "x.open('GET', 'https://api.example/x', true); x.setRequestHeader('User-Agent', 'jsp');"
@@ -1634,7 +1699,7 @@ TEST("ActiveX: WScript.Shell.Run of a cscript download VBS fetches the URL into 
     const std::string vbs = (dir / "img.vbs").generic_string(), out = (dir / "art" / "a.jpg").generic_string();
     std::ofstream(vbs) << "Set x = CreateObject(\"MSXML2.XMLHTTP\")\ns.SaveToFile file\n";
     t::FakeHost host;
-    host.web["https://img.example/a.jpg"] = { 200, std::string("\xff\xd8\x00jpg", 6), {} };
+    host.web["https://img.example/a.jpg"] = { 200, std::string("\xff\xd8\x00jpg", 6), {}, {} };
     JsEngine e(host);
     CHECK(e.load("new ActiveXObject('WScript.Shell').Run('cscript //nologo \"" + vbs + "\" \"https://img.example/a.jpg\" \"" + out + "\"', 0);", ""));
     CHECK(host.runs.empty());
@@ -1667,7 +1732,7 @@ TEST("ActiveX: WScript.Shell, htmlfile clipboard, UIHacks, ESLyric, Georgia-ReBO
                  "let vbs = ''; try { const s = new ActiveXObject('ScriptControl'); s.Language = 'VBScript'; s.Eval('MsgBox(1)'); } catch (x) { vbs = 'no vbs'; }"
                  "console.log(v, reg, answer, was, ui.FrameStyle, ui.DisableSizing, ui.MaxSize.Enabled, typeof panel,"
                  " JSON.parse(aw.GetWaveformDataInfo()).metricsPerChannel, aw.GetWaveformTrackCount(), aw.PeakmeterAdjustedLeftRMS, unknown, vbs);", ""));
-    CHECK_EQ(host.console_lines.back(), std::string("10 threw 6 copied 0 true false function 5 0 -100 Automation server can't create object (Some.Thing) no vbs"));
+    CHECK_EQ(host.console_lines.back(), std::string("10 threw 6 copied 3 true false function 5 0 -100 Automation server can't create object (Some.Thing) no vbs"));
     CHECK(host.runs == (std::vector<std::string>{ "\"https://last.fm/x\"", "shutdown.exe /h" }));
     CHECK_EQ(host.boxes[0], std::string("Biography: Delete? (4)"));
     CHECK_EQ(host.clip, std::string("new text"));
@@ -1851,6 +1916,23 @@ TEST("UIHacks drives the main window: state, fullscreen, size limits and the pse
     const std::vector<std::string> want = { "state 2", "full 1", "limits 0,0,0,0", "limits 0,0,0,0", "limits 0,0,400,300",
                                             "limits 0,0,400,300", "limits 200,0,400,300", "limits 200,0,0,0",
                                             "caption 40,8,900,28" };
+    CHECK(host.windowCalls == want);
+}
+
+TEST("UIWizard (Georgia-ReBORN) drives the main window like UIHacks: state, geometry, grid, limits, caption") {
+    t::FakeHost host;
+    JsEngine e(host);
+    CHECK(e.load("const uw = new ActiveXObject('UIWizard');"
+                 "console.log(uw.WindowState, uw.WindowX, uw.WindowY, uw.WindowWidth, uw.WindowHeight);"
+                 "uw.SetWindowSize(1000, 700); uw.SetWindowPosition(10, 20); uw.SetWindowPositionInGrid('center');"
+                 "uw.SetWindowPositionInGrid('bottom-right'); uw.WindowMinSize = true; uw.SetWindowSizeLimits(400, 300, 1200, 900);"
+                 "uw.SetCaptionAreaSize(0, 0, 500, 30); uw.ToggleMaximize(); const max = uw.WindowState; uw.ExitMaximize();"
+                 "uw.ToggleFullscreen(); console.log(max, uw.WindowState, uw.FrameStyle, uw.WindowMinWidth); uw.ExitFullscreen(); uw.WindowMinimize();", ""));
+    CHECK_EQ(host.console_lines[host.console_lines.size() - 2], std::string("0 100 50 800 600"));
+    CHECK_EQ(host.console_lines.back(), std::string("1 2 0 400"));
+    const std::vector<std::string> want = { "rect 100,50,1000,700", "rect 10,20,1000,700", "rect 460,190,1000,700", "rect 920,380,1000,700",
+                                            "limits 0,0,0,0", "limits 400,300,0,0", "caption 0,0,500,30", "state 2", "state 0", "full 1",
+                                            "full 0", "state 1" };
     CHECK(host.windowCalls == want);
 }
 
@@ -2334,7 +2416,7 @@ TEST("jsp3: playlist, title format, hash and request helpers") {
     t::FakeHost host;
     host.playlistItems[0] = { t::track("/a/x"), t::track("/b/y"), t::track("/a/z") };
     JsEngine e(host);
-    CHECK(e.load("// ==PREPROCESSOR==\n// ==/PREPROCESSOR==\nwindow.IsDark;\n"
+    CHECK(e.load("// ==PREPROCESSOR==\n// ==/PREPROCESSOR==\nif (0) utils.ListFiles('');\n"
                  "plman.SelectQueryItems(0, '/a/');\n"
                  "plman.InvertSelection(0);\n"
                  "console.log(plman.GetPlaylistSelectedIndexes(0).toArray().join(','), plman.FindPlaylist('Default'), plman.GetPlaylistItemCount(0),"
@@ -2343,6 +2425,22 @@ TEST("jsp3: playlist, title format, hash and request helpers") {
     if (e.failed()) printf("%s\n", e.error().c_str());
     CHECK(!e.failed());
     CHECK_EQ(host.console_lines.back(), std::string("1 0 3 e71fa2190541574b true function number null"));
+}
+
+TEST("jsp3: the playlist recycler and fb.GetAudioChunk come from the host") {
+    t::FakeHost host;
+    host.recycler = { { "Old", { t::track("/a"), t::track("/b") } }, { "Older", { t::track("/c") } }, { "Oldest", {} } };
+    JsEngine e(host);
+    CHECK(e.load("// ==PREPROCESSOR==\n// ==/PREPROCESSOR==\nif (0) utils.ListFiles('');\n"
+                 "console.log(plman.RecyclerCount, plman.GetRecyclerName(1), plman.GetRecyclerItems(0).Count);"
+                 "plman.RecyclerRestore(0); plman.RecyclerPurge([1]);"
+                 "const c = fb.GetAudioChunk(0.1);"
+                 "console.log(plman.RecyclerCount, plman.GetRecyclerName(0), c.ChannelCount, c.ChannelConfig, c.SampleRate, c.SampleCount, c.Data.join(','),"
+                 " fb.GetAudioChunk(0.1, 1), fb.GetAudioChunk(0));", "/s/m.js"));
+    if (e.failed()) printf("%s\n", e.error().c_str());
+    CHECK_EQ(host.console_lines[host.console_lines.size() - 2], std::string("3 Older 2"));
+    CHECK_EQ(host.console_lines.back(), std::string("1 Older 2 3 44100 2 0.5,-0.5,0.25,-0.25 null null"));
+    CHECK(std::find(host.actions.begin(), host.actions.end(), "restore Old") != host.actions.end());
 }
 
 TEST("jsp3: lodash 3 names, CreateImage, Dispose and GetOtherInfo") {
