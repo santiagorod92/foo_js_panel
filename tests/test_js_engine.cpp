@@ -948,6 +948,27 @@ TEST("window: instance info, script info, sizes, colours, fonts, tooltip and pro
     CHECK_EQ(host.console_lines.back(), std::string("false"));
 }
 
+TEST("callbacks: a playback callback sent while the script runs waits until it returns, as SMP's posted messages do") {
+    t::FakeHost host;
+    JsEngine* engine = nullptr;
+    host.on_command = [&](const std::string& path) {
+        if (path == "Playback/Play") engine->playback_starting(0, false);
+        if (path == "Playback/Stop") engine->playback_stop(1);
+    };
+    JsEngine e(host);
+    engine = &e;
+    CHECK(e.load("const log = [];"
+                 "function on_playback_starting() { log.push('start ' + typeof panel); }"
+                 "function on_playback_stop(r) { log.push('stop ' + r); console.log(log.join(', ')); }"
+                 "fb.RunMainMenuCommand('Playback/Play'); fb.RunMainMenuCommand('Playback/Stop');"
+                 "log.push('top');"
+                 "var panel = {};", ""));
+    CHECK(!e.failed());
+    CHECK_EQ(host.console_lines.back(), std::string("top, start object, stop 1"));
+    e.playback_starting(0, false);
+    CHECK_EQ(host.console_lines.back(), std::string("top, start object, stop 1"));
+}
+
 TEST("fb: paths, volume, flags, menu and context commands, queries, components") {
     t::FakeHost host;
     host.libraryTracks = { t::track("/a/1"), t::track("/b/2") };
@@ -957,9 +978,9 @@ TEST("fb: paths, volume, flags, menu and context commands, queries, components")
                  "console.log(fb.ProfilePath, fb.Volume, fb.StopAfterCurrent, fb.CursorFollowPlayback,"
                  " fb.RunMainMenuCommand('View/Console'), fb.RunMainMenuCommand('Nope'),"
                  " fb.RunContextCommandWithMetadb('Properties', lib), fb.GetQueryItems(lib, '/b/').Count,"
-                 " utils.CheckComponent('foo_playcount', true), utils.CheckComponent('foo_uie_eslyric'));"
+                 " utils.CheckComponent('foo_playcount', true), utils.CheckComponent('foo_uie_eslyric'), fb.IsLibraryEnabled());"
                  "try { fb.GetQueryItems(lib, 'bad('); } catch (e) { console.log(e.name); }", ""));
-    CHECK_EQ(host.console_lines[host.console_lines.size() - 2], std::string("/profile/ -12 true false true false true 1 true false"));
+    CHECK_EQ(host.console_lines[host.console_lines.size() - 2], std::string("/profile/ -12 true false true false true 1 true false false"));
     CHECK_EQ(host.console_lines.back(), std::string("SyntaxError"));
     const std::vector<std::string> want = { "main View/Console", "main Nope", "context Properties 2" };
     CHECK(host.commands_run == want);
@@ -1450,13 +1471,14 @@ TEST("gr: outlines, polygons from flat or paired points, line wrapping and measu
            " gr.DrawPolygon(0xffff0000, 2, [0, 0, 10, 0, 5, 8]);"
            " const l = gr.EstimateLineWrap('aaa bbb ccc\\ndd', f, 50);"
            " const m = gr.MeasureString('aaa bbb ccc', f, 1, 2, 50, 100, 0);"
-           " console.log(l.join('|'), m.X, m.Y, m.Width, m.Height, m.Lines, m.Chars); }", "");
+           " const u = gr.MeasureString('aaa bbb', f, 0, 0, 0, 0);"
+           " console.log(l.join('|'), m.X, m.Y, m.Width, m.Height, m.Lines, m.Chars, u.Width, u.Lines); }", "");
     t::RecordingCanvas c;
     e.paint(c);
     CHECK(!e.failed());
     CHECK(std::count(c.ops.begin(), c.ops.end(), std::string("polygon")) >= 16 + 36 + 2 + 3);
     CHECK(has_prefix(c, "round_rect"));
-    CHECK_EQ(host.console_lines.back(), std::string("aaa bbb|49|ccc|21|dd|14 1 2 49 24 2 11"));
+    CHECK_EQ(host.console_lines.back(), std::string("aaa bbb|49|ccc|21|dd|14 1 2 49 24 2 11 49 1"));
 }
 
 TEST("images: LoadImageAsync calls on_load_image_done later with its task id; LoadImageAsyncV2 and GetAlbumArtAsyncV2 resolve") {
@@ -2413,6 +2435,21 @@ TEST("editor: error_line reads the syntax check's line and a runtime stack's") {
     CHECK_EQ(line_start(text, 1), (std::size_t)0);
     CHECK_EQ(line_start(text, 3), (std::size_t)8);
     CHECK_EQ(line_start(text, 9), text.size());
+}
+
+TEST("themes: Georgia-ReBORN's CleanFilePath keeps forward slashes as separators") {
+    t::FakeHost host;
+    host.files["/p/georgia-reborn/scripts/Base/gr-helpers.js"] =
+        "function CleanFilePath(pathWithoutDisk) {\n"
+        "\tconst cleanedParts = pathWithoutDisk.split('\\\\').map(part => part\n"
+        "\t\t.replace(/[\\/:*?\"<>|]/g, '_')\n"
+        "\t);\n"
+        "\treturn cleanedParts.join('\\\\');\n"
+        "}\n";
+    JsEngine e(host);
+    CHECK(e.load("include('/p/georgia-reborn/scripts/Base/gr-helpers.js'); console.log(CleanFilePath('/Users/a/b:c'));", "/p/panel.js"));
+    CHECK(!e.failed());
+    CHECK_EQ(host.console_lines.back(), std::string("\\Users\\a\\b_c"));
 }
 
 TEST("themes: Eole's files are patched in memory, once, and only Eole's") {

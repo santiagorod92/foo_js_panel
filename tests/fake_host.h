@@ -199,6 +199,8 @@ struct FakeHost : jsp::JsHost {
     }
     jsp::TrackPtr now_playing() override { return playingTrack; }
     jsp::Tracks library_items() override { return libraryTracks; }
+    bool libraryEnabled = false;
+    bool library_enabled() override { return libraryEnabled; }
     std::string track_path(const jsp::TrackPtr& t) override {
         auto* f = dynamic_cast<FakeTrack*>(t.get());
         return f ? f->path : std::string();
@@ -268,8 +270,10 @@ struct FakeHost : jsp::JsHost {
     void set_volume(double v) override { vol = v; }
     bool flag(jsp::Flag f) override { return flags[f]; }
     void set_flag(jsp::Flag f, bool v) override { flags[f] = v; }
+    std::function<void(const std::string&)> on_command;
     bool run_main_menu_command(const std::string& path) override {
         commands_run.push_back("main " + path);
+        if (on_command) on_command(path);
         return path == "View/Console";
     }
     bool main_menu_command_checked(const std::string& path) override { return path == "Playback/Stop after current"; }

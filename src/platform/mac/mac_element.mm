@@ -1050,6 +1050,11 @@ std::string app_dir() {
     return b.fileSystemRepresentation ? std::string(b.fileSystemRepresentation) + "/" : std::string();
 }
 
+bool register_font(const std::string& path) {
+    NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
+    return url && CTFontManagerRegisterFontsForURL((__bridge CFURLRef)url, kCTFontManagerScopeProcess, nullptr);
+}
+
 std::string clipboard_text() {
     NSString* s = [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString];
     return s.UTF8String ? s.UTF8String : "";

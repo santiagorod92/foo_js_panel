@@ -80,6 +80,8 @@ bool shell_run(const std::string& command) {
     return r > 32;
 }
 
+bool register_font(const std::string& path) { return AddFontResourceExW(widen(path).c_str(), FR_PRIVATE, nullptr) > 0; }
+
 bool copy_to_clipboard(const std::string& text) {
     const std::wstring w = widen(text);
     if (!OpenClipboard(nullptr)) return false;

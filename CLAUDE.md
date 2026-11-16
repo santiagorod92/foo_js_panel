@@ -243,7 +243,13 @@ anything repo-specific stays in the repo's own sections.
 - **Deferred dispatch:** `NotifyOthers` (info cloned as JSON), the playlist/metadb callbacks and
   `window.Reload`/`fb.Exit` go through `Panel::later` (`fb2k::inMainThread` + the panel's abort),
   like SMP's posted messages: scripts may modify playlists from them and never destroy the engine
-  they're running in. Playback callbacks stay synchronous.
+  they're running in. Playback callbacks are synchronous, but the engine itself never re-enters a
+  running script: `Impl::call` queues a callback that arrives while JS is on the stack
+  (`running > runningBase`, counted by `Budget`) and `drain_jobs` runs the queue once the outer code
+  returns. CaTRoX's `refresh_pss` plays and stops from its top-level code and its `on_playback_starting`
+  used a variable not set yet. `on_paint`/`on_size`/`on_script_unload` and callbacks that return a
+  value (keys) stay synchronous (SMP's sent messages re-enter too; `gr` can't wait), and `Impl::modal`
+  raises `runningBase`, so callbacks inside a menu, dialog or `DoDragDrop` run at once.
 - **Menus:** `MenuObject` keeps SMP's mutable tree (`AppendTo` links the child, so later edits
   show) and `flatten`s it to a `jsp::Menu` value tree for `Surface::popup_menu` (depth-capped, a
   menu appended to itself is fine). The managers are host `MenuSource`s: context = the
@@ -295,10 +301,18 @@ anything repo-specific stays in the repo's own sections.
   shrink it on every round trip.
 - **Eole without tools:** Panels UI's *Import Columns UI layout…* (`SKIN:IMPORT_FCL`) builds the
   skin and copies `themes/` + `wsh-data/` into the profile; JS Panel adapts Eole's files as it
-  evaluates them (`patch_theme_source` in `theme_patches.cpp`: only paths under `/eole/`, each
+  evaluates them (`patch_theme_source` in `theme_patches.cpp`: only paths under the theme's folder, each
   patch only when its anchor is found exactly once and its text isn't there yet, nothing written to
-  disk). Eole branches on `window.Name`, so panels keep their FCL names. `UIHacks.FrameStyle` ≥ 2
+  disk). Eole branches on `window.Name`, so panels keep their FCL names. `kThemes` maps a theme folder
+  (`/eole/`, `/georgia-reborn/`) to its patch table: Georgia's `CleanFilePath` split only at `\` and
+  replaced `/` with `_`, which flattened macOS paths. `UIHacks.FrameStyle` ≥ 2
   runs `WINDOWSTYLE:hidetitlebar` through `panelsui`.
+- **Theme fonts:** `Panel::reload` registers new font files in `<profile>/foo_js_panel/fonts/` for the
+  process (`ui::register_font`: `AddFontResourceExW(FR_PRIVATE)` / `CTFontManagerRegisterFontsForURL`
+  process scope), so the canvases of both components find them. Panels UI's import copies a theme's
+  `fonts/` there (as it copies packages to `foo_spider_monkey_panel/packages`); `render_script` loads
+  the same folder of its `--profile` and `themes-check` copies the theme's fonts into it. Marlett is
+  emulated in Panels UI's mac canvas (`CGCanvas::shown` maps its glyph letters to symbols).
 - **`window.IsVisible`** is the host window's visibility: Panels UI hides panels outside the
   current view without destroying them, and Eole only lets the visible one answer notifications.
 - **Theme checks run third-party code:** `make theme-check` executes a theme's scripts, so
@@ -515,9 +529,9 @@ anything repo-specific stays in the repo's own sections.
   `fb.GetLibraryItems()` and rebuilds on the library callbacks (the library is still loading
   when a panel starts with foobar2000).
 - `src/core/js_highlight.{h,cpp}` — the editors' JS tokenizer (UTF-16 spans), tested in `tests/test_js_highlight.cpp`.
-- `src/core/theme_patches.{h,cpp}` — Eole's in-memory patches, applied by `include()` and `JsEngine::load`.
+- `src/core/theme_patches.{h,cpp}` — Eole's and Georgia-ReBORN's in-memory patches, applied by `include()` and `JsEngine::load`.
 - `tools/fcl_extract.py` + `scripts/theme-check.sh` (`make theme-check`) — pull every Spider
-  Monkey Panel panel out of a Columns UI `.fcl` export and run each with `render_script`
+  Monkey Panel (and JScript WSH Panel Mod) panel out of a Columns UI `.fcl` export and run each with `render_script`
   (`--profile`, `--properties`). Two formats: SMP 1.x binary config (version, GUID, edge style,
   properties, window placement, script) and SMP 1.6 JSON settings (a length-prefixed
   `{"id":"settings","version":"1","scriptType":N,"payload":…}`; 1 in-memory script, 3 file by
@@ -554,6 +568,9 @@ anything repo-specific stays in the repo's own sections.
   `build/mac-local-backup/` and `--restore` puts it back: the user's own installs (e.g. a
   release Panels UI from the component updater) must survive a test run. Needs Panels UI as the
   mac UI module.
+- `make mac-vm-catrox` / `win11-arm-catrox ARCH=…`: push CaTRoX (from `make themes-check THEMES=catrox`)
+  to the VM, import it through Panels UI and assert its fonts, Menu/Top/SeekBar panels and a clean log;
+  the skin, packages, `theme_settings` and fonts it added are removed afterwards.
 - `make mac-vm-smoke` / `mac-vm-jsp3` / `mac-vm-wsh` / `mac-vm-reload`: the same scenarios in the terminal-mac VM
   (`ui-test.sh mac-vm`): `scripts/`, `tests/` and both bundles go to `~/jsp-test` in the guest and
   `mac-local.sh` runs there over ssh, so the restore logic is the same code. No `dragdrop` (see

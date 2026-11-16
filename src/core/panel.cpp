@@ -116,6 +116,22 @@ std::string native_dir(const char* path) {
     return p;
 }
 
+void load_fonts() {
+    static std::unordered_set<std::string> done;
+    const std::string dir = native_dir(core_api::pathInProfile("foo_js_panel")) + "fonts";
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(fs_path(dir), ec), end; !ec && it != end; it.increment(ec)) {
+        std::string ext = it->path().extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+        if (ext != ".ttf" && ext != ".otf" && ext != ".ttc") continue;
+        const std::string file = (const char*)it->path().u8string().c_str();
+        if (!done.insert(file).second) continue;
+        const std::string name = (const char*)it->path().filename().u8string().c_str();
+        if (ui::register_font(file)) log::info("js", "font loaded: " + name);
+        else log::warn("js", "font not loaded: " + name);
+    }
+}
+
 std::string properties_file(const std::string& scriptPath) {
     unsigned long long h = 1469598103934665603ull;
     for (unsigned char c : scriptPath) {
@@ -579,6 +595,7 @@ void Panel::reload() {
     m_engine.reset();
     m_surface.set_tooltip({}, false, 0);
     m_tf.clear();
+    load_fonts();
     m_engine = std::make_unique<JsEngine>(*this);
     std::string source;
     if (m_path.empty()) source = sample_script();
@@ -1544,6 +1561,8 @@ Tracks Panel::query_items(const Tracks& tracks, const std::string& query, std::s
     }
     return {};
 }
+
+bool Panel::library_enabled() { return library_manager::get()->is_library_enabled() || navidrome_in_library(); }
 
 bool Panel::in_library(const TrackPtr& t) {
     auto h = handle_of(t);

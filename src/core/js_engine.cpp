@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <iterator>
+#include <string_view>
 #include <type_traits>
 #include <map>
 #include <set>
@@ -125,6 +126,14 @@ struct JsEngine::Impl {
     void image_loaded(int task, pui::gfx::ImagePtr image, const std::string& path);
 
     std::vector<std::string> includeDirs;
+    struct Deferred {
+        std::string name;
+        std::vector<JSValue> args;
+    };
+    std::vector<Deferred> deferred;
+    void run_deferred();
+    void free_deferred();
+    int running = 0, runningBase = 0;
     int modalDepth = 0;
     long long modalUs = 0;
     std::map<std::string, CallTiming> timings;
@@ -145,14 +154,23 @@ struct JsEngine::Impl {
     struct Budget {
         Impl& e;
         long long saved;
-        explicit Budget(Impl& impl) : e(impl), saved(impl.deadline) { e.deadline = now_ms() + e.budgetMs; }
-        ~Budget() { e.deadline = saved; }
+        explicit Budget(Impl& impl) : e(impl), saved(impl.deadline) {
+            e.deadline = now_ms() + e.budgetMs;
+            ++e.running;
+        }
+        ~Budget() {
+            e.deadline = saved;
+            --e.running;
+        }
     };
     template <typename F>
     auto modal(F&& f) {
         ++modalDepth;
+        const int base = runningBase;
+        runningBase = running;
         const long long t0 = now_ms(), u0 = now_us();
         auto r = f();
+        runningBase = base;
         --modalDepth;
         modalUs += now_us() - u0;
         if (deadline) deadline += now_ms() - t0;
@@ -670,7 +688,7 @@ JSValue gr_MeasureString(JSContext* ctx, JSValueConst self, int argc, JSValueCon
     c->set_font(*f);
     const std::string text = arg_str(ctx, argc, argv, 0);
     const double x = arg_num(ctx, argc, argv, 2), y = arg_num(ctx, argc, argv, 3);
-    const int w = std::max(1, arg_int(ctx, argc, argv, 4, 1 << 20));
+    const int asked = arg_int(ctx, argc, argv, 4, 0), w = asked > 0 ? asked : 1 << 20;
     const auto lines = wrap_lines(*c, text, w);
     const int lineH = c->text_height("Ag", 1 << 20, pui::gfx::kSingleLine);
     int width = 0;
@@ -1792,6 +1810,8 @@ JSValue fb_IsMetadbInMediaLibrary(JSContext* ctx, JSValueConst, int argc, JSValu
     return JS_NewBool(ctx, I(ctx)->host.in_library(t));
 }
 
+JSValue fb_IsLibraryEnabled(JSContext* ctx, JSValueConst, int, JSValueConst*) { return JS_NewBool(ctx, I(ctx)->host.library_enabled()); }
+
 JSValue fb_GetLibraryRelativePath(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     TrackPtr t = arg_track(ctx, argc, argv, 0);
     if (!t) return JS_EXCEPTION;
@@ -1930,6 +1950,7 @@ const JSCFunctionListEntry kFbFuncs[] = {
     JS_CFUNC_DEF("GetFocusItem", 0, fb_GetFocusItem),
     JS_CFUNC_DEF("GetQueryItems", 2, fb_GetQueryItems),
     JS_CFUNC_DEF("IsMetadbInMediaLibrary", 1, fb_IsMetadbInMediaLibrary),
+    JS_CFUNC_DEF("IsLibraryEnabled", 0, fb_IsLibraryEnabled),
     JS_CFUNC_DEF("GetLibraryRelativePath", 1, fb_GetLibraryRelativePath),
     JS_CFUNC_DEF("Exit", 0, fb_Exit),
     JS_CFUNC_DEF("CreateContextMenuManager", 0, fb_CreateMenuManager<false>),
@@ -4178,7 +4199,6 @@ const char* const kJsp3Prelude = R"JS(
     Object.defineProperty(fb, 'VersionString', { get: () => 'foobar2000 v' + fb.Version });
     Object.defineProperty(fb, 'CustomVolume', { get: () => -1 });
     fb.CheckComponent = name => utils.CheckComponent(name, true);
-    fb.IsLibraryEnabled = () => true;
     fb.IsLibraryInitialised = () => true;
     fb.ShowPictureViewer = path => utils.Run(path);
     const smpInputBox = utils.InputBox, smpPicker = utils.ColourPicker;
@@ -4697,6 +4717,7 @@ JsEngine::Impl::~Impl() {
     JS_FreeValue(ctx, props);
     free_pending();
     free_timers();
+    free_deferred();
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
 }
@@ -4739,6 +4760,22 @@ void JsEngine::Impl::drain_jobs() {
         }
     }
     flush_properties();
+    run_deferred();
+}
+
+void JsEngine::Impl::run_deferred() {
+    while (running == runningBase && !deferred.empty() && error.empty()) {
+        Deferred d = std::move(deferred.front());
+        deferred.erase(deferred.begin());
+        call(d.name.c_str(), (int)d.args.size(), d.args.data());
+        for (JSValue v : d.args) JS_FreeValue(ctx, v);
+    }
+}
+
+void JsEngine::Impl::free_deferred() {
+    for (Deferred& d : deferred)
+        for (JSValue v : d.args) JS_FreeValue(ctx, v);
+    deferred.clear();
 }
 
 JSValueConst JsEngine::Impl::properties() {
@@ -4824,6 +4861,13 @@ bool JsEngine::Impl::eval_module(const std::string& source, const std::string& f
 bool JsEngine::Impl::call(const char* name, int argc, JSValue* argv, bool* truthy) {
     if (truthy) *truthy = false;
     if (!error.empty()) return false;
+    const std::string_view sync[] = { "on_paint", "on_size", "on_script_unload" };
+    if (running > runningBase && !truthy && std::find(std::begin(sync), std::end(sync), name) == std::end(sync)) {
+        Deferred d{ name, {} };
+        for (int i = 0; i < argc; ++i) d.args.push_back(JS_DupValue(ctx, argv[i]));
+        deferred.push_back(std::move(d));
+        return false;
+    }
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue fn = JS_GetPropertyStr(ctx, global, name);
     bool called = false;

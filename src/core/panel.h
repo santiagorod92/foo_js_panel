@@ -140,6 +140,7 @@ public:
     TrackPtr focus_item() override;
     Tracks query_items(const Tracks& tracks, const std::string& query, std::string& error) override;
     bool in_library(const TrackPtr& t) override;
+    bool library_enabled() override;
     std::string library_relative_path(const TrackPtr& t) override;
     std::string path_sort_key(const TrackPtr& t) override;
     bool has_component(const std::string& name, bool dll) override;

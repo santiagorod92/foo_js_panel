@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 usage() {
   cat <<'USAGE'
-Usage: scripts/ui-test.sh <mac|mac-vm|win11-arm> smoke|dragdrop|jsp3|wsh|reload|import|editor|windowless (mac-vm: smoke|jsp3|wsh|reload|editor|windowless)
+Usage: scripts/ui-test.sh <mac|mac-vm|win11-arm> smoke|dragdrop|jsp3|wsh|reload|import|editor|windowless (mac-vm: smoke|jsp3|wsh|reload|editor|windowless|catrox)
+       scripts/ui-test.sh win11-arm catrox
        scripts/ui-test.sh win11-arm menus|images|editor
 Runs tests/scripts/smoke.js in a real foobar2000, hosted by Panels UI through the
 tests/skins/panels-ui-embed skin, and asserts on foo_js_panel.log: the session banner, the
@@ -26,6 +27,10 @@ import runs tests/scripts/import.js, which asks Panels UI (SKIN:IMPORT_FCL:<path
 columnsUI_eole.fcl: on mac the copy in the profile, in the VM an unzipped copy outside it (so its
 themes/ and wsh-data/ are copied in); it asserts that the new skin runs Eole's panels, then
 removes the skins it made. Needs Eole in this Mac's profile.
+catrox (mac-vm, win11-arm) pushes CaTRoX (build/themes/src/catrox, fetched by make themes-check THEMES=catrox)
+to the guest and runs a copy of tests/scripts/catrox.js that imports its layout/theme.fcl: it asserts
+that the theme's fonts load, that its Panel Stack Splitter panels run (Menu, the top panel, the
+seekbar) without errors, takes a screenshot, then removes the skin, packages and fonts it added.
 reload runs a copy of tests/scripts/reload.js, changes it on disk while foobar2000 runs and asserts
 that the panels reload it by themselves (Reload scripts when their files change).
 jsp3 runs tests/scripts/jsp3.js, a JScript Panel 3 style script (preprocessor header, the bundled
@@ -59,7 +64,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PLATFORM="$1"
 SCENARIO="${2:-smoke}"
-case "$PLATFORM:$SCENARIO" in mac-vm:import|mac-vm:dragdrop) usage >&2; exit 2 ;; *:smoke|*:dragdrop|*:jsp3|*:wsh|*:reload|*:import|win11-arm:menus|win11-arm:images|*:editor|*:windowless) ;; *) usage >&2; exit 2 ;; esac
+case "$PLATFORM:$SCENARIO" in mac-vm:import|mac-vm:dragdrop) usage >&2; exit 2 ;; mac-vm:catrox|win11-arm:catrox|*:smoke|*:dragdrop|*:jsp3|*:wsh|*:reload|*:import|win11-arm:menus|win11-arm:images|*:editor|*:windowless) ;; *) usage >&2; exit 2 ;; esac
 SHOTS="$REPO/build/ui-test"
 mkdir -p "$SHOTS"
 ACTIVE_SKIN='cfg_var.2A7E4C11-8B3F-4D6A-9E52-1C8F3A6B0D24'
@@ -99,6 +104,9 @@ check_log() {
 }
 
 IMPORT_EXPECT=('foo_js_panel .* QuickJS' 'import: layout found' 'import: requested' 'loaded .*foo_ui_panels-skins.Eole[^/\\]*.js.titlebar[.]js')
+CATROX_EXPECT=('foo_js_panel .* QuickJS' 'catrox: layout found' 'catrox: requested' 'font loaded: fontawesome[.]ttf'
+               'font loaded: Guifx v2 Transports[.]ttf' 'loaded .*foo_ui_panels-skins.Theme.js.Menu[.]js'
+               'loaded .*foo_ui_panels-skins.Theme.js.Top_Panel[.]js' 'loaded .*foo_ui_panels-skins.Theme.js.SeekBar(_2)?[.]js')
 RELOAD_EXPECT=('foo_js_panel .* QuickJS' 'reload: generation 1' 'reload: generation 2')
 JSP3_EXPECT=('foo_js_panel .* QuickJS' 'jsp3: loaded lodash=function chunks=2 dui=true dark=boolean files=number now=true' 'jsp3: paint w=[1-9][0-9]*')
 WSH_EXPECT=('foo_js_panel .* QuickJS' 'wsh: loaded colour=number sys=number playlists=true glob=number enum=6 vb=2 height=true match=true'
@@ -148,6 +156,8 @@ mac_restore() {
   fi
   m "rm -rf '$MAC_PROFILE/foo_ui_panels-skins/$SKIN' '$MAC_LOCAL_STATE'"
   [ -n "${MAC_CLIP:-}" ] && { m pbcopy < "$MAC_CLIP"; rm -f "$MAC_CLIP"; }
+  local dir
+  for dir in ${MAC_NEW_DIRS:-}; do m "rm -rf '$MAC_PROFILE/$dir'"; done
   [ "$PLATFORM" = mac-vm ] && m 'rm -rf ~/jsp-test'
   return 0
 }
@@ -162,7 +172,16 @@ mac_smoke() {
   MAC_PREV_VERBOSE="$(m "sqlite3 '$MAC_DB' \"select value from configInts where name='$VERBOSE'\"")"
   local crashes_before; crashes_before="$(mac_crashes)"
   trap mac_restore EXIT
-  if [ "$SCENARIO" = import ]; then
+  if [ "$SCENARIO" = catrox ]; then
+    [ -f "$REPO/build/themes/src/catrox/layout/theme.fcl" ] || fail "no build/themes/src/catrox (make themes-check THEMES=catrox)"
+    local dir
+    for dir in foo_spider_monkey_panel theme_settings foo_js_panel/fonts; do
+      m "[ -e '$MAC_PROFILE/$dir' ]" || MAC_NEW_DIRS="${MAC_NEW_DIRS:-} $dir"
+    done
+    m 'mkdir -p ~/jsp-test/catrox'
+    tar -C "$REPO/build/themes/src/catrox" -cf - layout packages fonts | m 'tar -xf - -C ~/jsp-test/catrox'
+  fi
+  if [ "$SCENARIO" = import ] || [ "$SCENARIO" = catrox ]; then
     MAC_SKINS_BEFORE="$(mktemp)"
     m "ls '$MAC_PROFILE/foo_ui_panels-skins'" > "$MAC_SKINS_BEFORE"
   fi
@@ -172,6 +191,10 @@ mac_smoke() {
   fi
   local script="$MAC_REPO/tests/scripts/$SCENARIO.js"
   [ "$SCENARIO" = editor ] && script="$MAC_REPO/tests/scripts/editor-open.js"
+  if [ "$SCENARIO" = catrox ]; then
+    script="$MAC_LOCAL_STATE/catrox.js"
+    m "sed \"s|CATROX_FCL|\$HOME/jsp-test/catrox/layout/theme.fcl|\" '$MAC_REPO/tests/scripts/catrox.js' > '$script'"
+  fi
   if [ "$SCENARIO" = reload ]; then
     script="$MAC_LOCAL_STATE/reload.js"
     m "cp '$MAC_REPO/tests/scripts/reload.js' '$script'"
@@ -191,6 +214,7 @@ mac_smoke() {
   [ "$SCENARIO" = editor ] && ready='editor: open' && EXPECT=('foo_js_panel .* QuickJS' 'editor: open editor 42 true')
   [ "$SCENARIO" = import ] && ready='titlebar[.]js'
   [ "$SCENARIO" = import ] && EXPECT=("${IMPORT_EXPECT[@]}")
+  [ "$SCENARIO" = catrox ] && ready='Theme.js.Menu[.]js' && EXPECT=("${CATROX_EXPECT[@]}")
   [ "$SCENARIO" = reload ] && EXPECT=("${RELOAD_EXPECT[@]}")
   [ "$SCENARIO" = jsp3 ] && EXPECT=("${JSP3_EXPECT[@]}")
   [ "$SCENARIO" = wsh ] && EXPECT=("${WSH_EXPECT[@]}")
@@ -279,12 +303,14 @@ win11_arm_smoke() {
     skins='C:/fb2k-x86/profile/foo_ui_panels-skins'
     skins_win='C:\fb2k-x86\profile\foo_ui_panels-skins'
     crashes_win='C:\fb2k-x86\profile\crash reports'
+    profile_win='C:\fb2k-x86\profile'
     VM_DIRS=('C:\fb2k-x86\profile\user-components\foo_js_panel' "C:\\fb2k-x86\\profile\\foo_ui_panels-skins\\$SKIN")
   else
     export FB2K_ARCH=arm64ec
     skins='AppData/Roaming/foobar2000-v2/foo_ui_panels-skins'
     skins_win='%APPDATA%\foobar2000-v2\foo_ui_panels-skins'
     crashes_win='%APPDATA%\foobar2000-v2\crash reports'
+    profile_win='%APPDATA%\foobar2000-v2'
     VM_DIRS=('%APPDATA%\foobar2000-v2\user-components-arm64ec\foo_js_panel' "%APPDATA%\\foobar2000-v2\\foo_ui_panels-skins\\$SKIN")
   fi
   VM_DIRS+=('%LOCALAPPDATA%\Temp\jsp-scripts')
@@ -295,6 +321,12 @@ win11_arm_smoke() {
   VM_PREV="$("$vm" cfg "select value from configStrings where name='$ACTIVE_SKIN'" 2>/dev/null | tail -1 | tr -d '\r')"
   trap win11_arm_restore EXIT
   cp -R "$REPO/tests/scripts" "$stage/jsp-scripts"
+  if [ "$SCENARIO" = catrox ]; then
+    [ -f "$REPO/build/themes/src/catrox/layout/theme.fcl" ] || fail "no build/themes/src/catrox (make themes-check THEMES=catrox)"
+    mkdir -p "$stage/CatroxImport"
+    cp -R "$REPO/build/themes/src/catrox/layout" "$REPO/build/themes/src/catrox/packages" "$REPO/build/themes/src/catrox/fonts" "$stage/CatroxImport/"
+    sed -i '' 's|CATROX_FCL|C:\\\\Users\\\\tester\\\\AppData\\\\Local\\\\Temp\\\\CatroxImport\\\\layout\\\\theme.fcl|' "$stage/jsp-scripts/catrox.js"
+  fi
   say "push skin + scripts"
   "$vm" push "$REPO/tests/skins/$SKIN" "$skins" >/dev/null
   "$vm" push "$stage/jsp-scripts" AppData/Local/Temp >/dev/null
@@ -308,7 +340,17 @@ win11_arm_smoke() {
     VM_DIRS+=('%LOCALAPPDATA%\Temp\EoleImport')
     VM_SKINS_BEFORE="$("$vm" ssh "dir /b \"$skins_win\"" 2>/dev/null | tr -d '\r')"
   fi
-  if [ "$SCENARIO" = import ] || [ "$SCENARIO" = smoke ] || [ "$SCENARIO" = windowless ]; then
+  if [ "$SCENARIO" = catrox ]; then
+    say "push CaTRoX"
+    "$vm" push "$stage/CatroxImport" AppData/Local/Temp >/dev/null
+    VM_DIRS+=('%LOCALAPPDATA%\Temp\CatroxImport')
+    local d
+    for d in foo_spider_monkey_panel theme_settings 'foo_js_panel\fonts'; do
+      "$vm" ssh "if exist \"$profile_win\\$d\" (echo yes)" 2>/dev/null | grep -q yes || VM_DIRS+=("$profile_win\\$d")
+    done
+    VM_SKINS_BEFORE="$("$vm" ssh "dir /b \"$skins_win\"" 2>/dev/null | tr -d '\r')"
+  fi
+  if [ "$SCENARIO" = import ] || [ "$SCENARIO" = catrox ] || [ "$SCENARIO" = smoke ] || [ "$SCENARIO" = windowless ]; then
     local pui="$REPO/../foo_ui_panels/build-$arch/foo_ui_panels.dll"
     [ "$arch" = x64 ] && pui="$REPO/../foo_ui_panels/build/foo_ui_panels.dll"
     [ -f "$pui" ] || fail "no $pui (build foo_ui_panels for $arch)"
@@ -365,11 +407,16 @@ win11_arm_smoke() {
     "$vm" tap '50%,40%,right;wait,800;53%,43%;wait,2500' >/dev/null
     "$vm" shot "$SHOTS/win11-arm-$arch-editor.png" >/dev/null 2>&1 && say "screenshot $SHOTS/win11-arm-$arch-editor.png"
     "$vm" key esc >/dev/null
-  elif [ "$SCENARIO" = import ]; then
-    EXPECT=("${IMPORT_EXPECT[@]}")
-    wait_log 'titlebar[.]js' || true
+  elif [ "$SCENARIO" = import ] || [ "$SCENARIO" = catrox ]; then
+    if [ "$SCENARIO" = catrox ]; then
+      EXPECT=("${CATROX_EXPECT[@]}")
+      wait_log 'Theme.js.Menu[.]js' || true
+    else
+      EXPECT=("${IMPORT_EXPECT[@]}")
+      wait_log 'titlebar[.]js' || true
+    fi
     sleep 4
-    "$vm" shot "$SHOTS/win11-arm-$arch-import.png" >/dev/null 2>&1 && say "screenshot $SHOTS/win11-arm-$arch-import.png"
+    "$vm" shot "$SHOTS/win11-arm-$arch-$SCENARIO.png" >/dev/null 2>&1 && say "screenshot $SHOTS/win11-arm-$arch-$SCENARIO.png"
     local now d; now="$("$vm" ssh "dir /b \"$skins_win\"" 2>/dev/null | tr -d '\r')"
     while IFS= read -r d; do
       [ -n "$d" ] && ! grep -qxF "$d" <<<"$VM_SKINS_BEFORE" && VM_DIRS+=("$skins_win\\$d")

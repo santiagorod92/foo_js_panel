@@ -10,5 +10,6 @@ std::string app_dir();
 bool copy_to_clipboard(const std::string& text);
 std::string clipboard_text();
 bool shell_run(const std::string& command);
+bool register_font(const std::string& path);
 
 }

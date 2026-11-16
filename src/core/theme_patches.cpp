@@ -1,6 +1,7 @@
 #include "theme_patches.h"
 #include <algorithm>
 #include <cctype>
+#include <iterator>
 
 namespace jsp {
 
@@ -92,6 +93,21 @@ const Patch kEole[] = {
 )PATCH" },
 };
 
+const Patch kGeorgia[] = {
+    { "scripts/base/gr-helpers.js", R"PATCH(pathWithoutDisk.split('\\').map(part => part)PATCH", R"PATCH(pathWithoutDisk.split(/[\\/]/).map(part => part)PATCH" },
+};
+
+struct Theme {
+    const char* folder;
+    const Patch* begin;
+    const Patch* end;
+};
+
+const Theme kThemes[] = {
+    { "/eole/", std::begin(kEole), std::end(kEole) },
+    { "/georgia-reborn/", std::begin(kGeorgia), std::end(kGeorgia) },
+};
+
 bool ends_with(const std::string& path, const std::string& tail) {
     if (path.size() < tail.size()) return false;
     for (std::size_t i = 0; i < tail.size(); ++i) {
@@ -101,28 +117,33 @@ bool ends_with(const std::string& path, const std::string& tail) {
     return true;
 }
 
-bool in_eole(const std::string& path) {
+bool in_folder(const std::string& path, const char* folder) {
     std::string low(path);
     std::transform(low.begin(), low.end(), low.begin(), [](unsigned char c) { return (char)std::tolower(c == '\\' ? '/' : c); });
-    return low.find("/eole/") != std::string::npos;
+    return low.find(folder) != std::string::npos;
+}
+
+std::string apply(const std::string& path, std::string text, const Patch& p, std::vector<std::string>* applied) {
+    if (!ends_with(path, std::string("/") + p.file)) return text;
+    const std::string from = p.from, to = p.to;
+    if (text.find(to) != std::string::npos) return text;
+    if (from.empty()) {
+        text += "\n" + to;
+    } else {
+        const std::size_t at = text.find(from);
+        if (at == std::string::npos || text.find(from, at + 1) != std::string::npos) return text;
+        text.replace(at, from.size(), to);
+    }
+    if (applied) applied->push_back(p.file);
+    return text;
 }
 
 }
 
 std::string patch_theme_source(const std::string& path, std::string text, std::vector<std::string>* applied) {
-    if (!in_eole(path)) return text;
-    for (const Patch& p : kEole) {
-        if (!ends_with(path, std::string("/") + p.file)) continue;
-        const std::string from = p.from, to = p.to;
-        if (text.find(to) != std::string::npos) continue;
-        if (from.empty()) {
-            text += "\n" + to;
-        } else {
-            const std::size_t at = text.find(from);
-            if (at == std::string::npos || text.find(from, at + 1) != std::string::npos) continue;
-            text.replace(at, from.size(), to);
-        }
-        if (applied) applied->push_back(p.file);
+    for (const Theme& theme : kThemes) {
+        if (!in_folder(path, theme.folder)) continue;
+        for (const Patch* p = theme.begin; p != theme.end; ++p) text = apply(path, std::move(text), *p, applied);
     }
     return text;
 }

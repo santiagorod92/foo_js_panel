@@ -183,6 +183,7 @@ public:
         return {};
     }
     virtual bool in_library(const TrackPtr&) { return false; }
+    virtual bool library_enabled() { return true; }
     virtual std::string library_relative_path(const TrackPtr&) { return {}; }
     virtual std::string path_sort_key(const TrackPtr& t) { return track_path(t); }
     virtual bool has_component(const std::string&, bool) { return false; }

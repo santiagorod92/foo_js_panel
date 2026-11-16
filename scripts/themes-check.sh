@@ -82,6 +82,10 @@ while IFS=$'\t' read -r name repo commit kind entry packages sparse; do
       if [ "$packages" != - ]; then
         for pkg in "$dir/$packages"/*/\{*\}; do install_package "$pkg" "$profile" >/dev/null; done
       fi
+      if [ -d "$dir/fonts" ]; then
+        mkdir -p "$profile/foo_js_panel/fonts"
+        cp "$dir/fonts"/* "$profile/foo_js_panel/fonts/"
+      fi
       "$REPO/scripts/theme-check.sh" "$dir/$entry" "$profile" "$out/panels" | tee "$out/result.txt"
       cat "$out"/panels/*.log >"$out/all.log" 2>/dev/null || true
       ;;

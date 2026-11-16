@@ -2,6 +2,8 @@
 #include "core/js_api_util.h"
 #include "core/js_engine.h"
 #include "platform/mac/mac_canvas.h"
+#import <Foundation/Foundation.h>
+#import <CoreText/CoreText.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -80,7 +82,8 @@ struct StillHost : jsp::JsHost {
     bool save_png(const pui::gfx::Image& img, const std::string& path) override {
         return may_write(path) && pui::gfx::encode_png_file(img, path, std::max(1, img.width()));
     }
-    void repaint() override {}
+    bool repainted = false;
+    void repaint() override { repainted = true; }
     void repaint_rect(const pui::gfx::Rect&) override {}
     void set_timer(int id, int ms) override { timers[id] = ms; }
     void kill_timer(int id) override { timers.erase(id); }
@@ -246,6 +249,13 @@ int main(int argc, char** argv) {
         t->fields = host.fields;
         if (t->path.empty()) t->path = "now-playing";
     }
+    if (!host.profile.empty()) {
+        NSString* dir = [NSString stringWithUTF8String:(host.profile + "foo_js_panel/fonts").c_str()];
+        for (NSString* f in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil]) {
+            NSURL* url = [NSURL fileURLWithPath:[dir stringByAppendingPathComponent:f]];
+            if (CTFontManagerRegisterFontsForURL((__bridge CFURLRef)url, kCTFontManagerScopeProcess, nullptr)) std::fprintf(stderr, "font loaded: %s\n", f.UTF8String);
+        }
+    }
     std::unique_ptr<jsp::JsEngine> owner;
     for (int load = 0; load < 4 && (load == 0 || host.reloadAsked); ++load) {
         if (load > 0) std::fprintf(stderr, "window.Reload: loading the script again\n");
@@ -266,13 +276,18 @@ int main(int argc, char** argv) {
         engine.mouse(jsp::Mouse::LeftDown, x, y, 1);
         engine.mouse(jsp::Mouse::LeftUp, x, y, 0);
     }
-    pui::gfx::CGCanvas canvas(w, h, scale);
-    engine.paint(canvas);
+    host.repainted = false;
+    auto canvas = std::make_unique<pui::gfx::CGCanvas>(w, h, scale);
+    engine.paint(*canvas);
+    if (host.repainted && !engine.failed()) {
+        canvas = std::make_unique<pui::gfx::CGCanvas>(w, h, scale);
+        engine.paint(*canvas);
+    }
     if (engine.failed()) {
         std::fprintf(stderr, "script error: %s\n", engine.error().c_str());
         return 1;
     }
-    CGImageRef img = canvas.copy_image();
+    CGImageRef img = canvas->copy_image();
     pui::gfx::ImagePtr image = pui::gfx::image_from_cgimage(img, scale);
     if (!image || !pui::gfx::encode_png_file(*image, out, (int)(w * scale))) {
         std::fprintf(stderr, "can't write %s\n", out.c_str());

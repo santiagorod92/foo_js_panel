@@ -3,6 +3,29 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.8.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.7.2...v1.8.0) (2026-11-16)
+
+### Highlights
+- **CaTRoX runs whole**: imported with Panels UI 1.25.0, the CaTRoX theme's 16 panels load and
+  paint on macOS and Windows, menu bar and icons included.
+- **Theme fonts without installing them**: the fonts in `<profile>/foo_js_panel/fonts/` are
+  loaded for foobar2000 alone when a panel starts. Panels UI's *Import Columns UI layout…* copies a
+  theme's `fonts/` folder there.
+
+### Added
+- `fb.IsLibraryEnabled()` (it only existed for JScript Panel 3 scripts, always true).
+- macOS: Marlett, the Windows caption-button font, draws its minimize, maximize, restore, close,
+  arrow and check glyphs as symbols, and `utils.CheckFont('Marlett')` is true.
+
+### Fixed
+- A playback callback set off by the script's own code (`fb.RunMainMenuCommand('Playback/Play')`
+  while it loads, as CaTRoX's panels do) no longer runs in the middle of that code: it waits until
+  the code returns, as Spider Monkey Panel's posted messages do. CaTRoX's seekbar failed on it.
+- `gr.MeasureString` with a width of 0 measures without wrapping, as GDI+ does (it measured each
+  letter on its own line, so CaTRoX's menu showed "Fil Ed Vi").
+- Georgia-ReBORN on macOS: its cache and settings folders are made where it expects them (its file
+  name cleaner turned the path's `/` into `_`).
+
 ## [1.7.2](https://github.com/santiagorod92/foo_js_panel/compare/v1.7.1...v1.7.2) (2026-11-15)
 
 ### Fixed
