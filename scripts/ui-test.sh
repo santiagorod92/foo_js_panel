@@ -77,7 +77,7 @@ SKIN=panels-ui-embed
 EXPECT=('foo_js_panel .* QuickJS' 'smoke: loaded, include ok' 'smoke: size ' 'smoke: paint .* ticks=0'
         'smoke: timeout ok' 'smoke: timer ok' 'smoke: paint .* ticks=3' 'smoke: navidrome available='
         'smoke: properties runs=[0-9]+' 'smoke: paths profile=true foobar=true version=[0-9]' 'smoke: menu Playback/Stop=true nope=false'
-        'smoke: library=[0-9]+ tracks=[0-9]+ query=[0-9]+' 'smoke: plman playlists=[0-9]+' 'smoke: notify from [0-9]+ to [0-9]+' 'smoke: menus built' 'smoke: pixels ff386898 fff80808:1$' 'smoke: activex fso=hello files=1 gone=true reg=10 ui=0 timers=function'
+        'smoke: library=[0-9]+ tracks=[0-9]+ query=[0-9]+' 'smoke: plman playlists=[0-9]+ .* guid=true noguid=-1' 'smoke: notify from [0-9]+ to [0-9]+' 'smoke: menus built' 'smoke: pixels ff386898 fff80808:1$' 'smoke: activex fso=hello files=1 gone=true reg=10 ui=0 timers=function'
         'smoke: state outputs=[1-9][0-9]* active=1 dsp=[0-9]+ rg=true lock=AddItems\+RenamePlaylist/JS Panel unlocked=0 charset=0 map=AB' 'smoke: state-cb top=(true|false)'
         'smoke: script command run=true' 'smoke: main menu 2' 'smoke: tooltip smoke tooltip [0-9]+'
         'smoke: theme dui=ff[0-9a-f]{6},ff[0-9a-f]{6} cui=ff[0-9a-f]{6} font=.+ [0-9]+ sys=ff[0-9a-f]{6}'

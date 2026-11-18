@@ -236,6 +236,12 @@ struct FakeHost : jsp::JsHost {
     void set_active_playlist(int p) override { active = p; actions.push_back("activate " + std::to_string(p)); }
     int playing_playlist() override { return -1; }
     std::string playlist_name(int p) override { return p >= 0 && p < (int)playlists.size() ? playlists[(size_t)p] : std::string(); }
+    std::string playlist_guid(int p) override { return p >= 0 && p < (int)playlists.size() ? "guid-" + playlists[(size_t)p] : std::string(); }
+    int find_playlist_by_guid(const std::string& guid) override {
+        for (size_t i = 0; i < playlists.size(); ++i)
+            if ("guid-" + playlists[i] == guid) return (int)i;
+        return -1;
+    }
     int find_or_create_playlist(const std::string& name, bool) override {
         for (size_t i = 0; i < playlists.size(); ++i)
             if (playlists[i] == name) return (int)i;

@@ -118,6 +118,8 @@ public:
     void set_active_playlist(int p) override;
     int playing_playlist() override;
     std::string playlist_name(int p) override;
+    std::string playlist_guid(int p) override;
+    int find_playlist_by_guid(const std::string& guid) override;
     int find_or_create_playlist(const std::string& name, bool unlocked) override;
     void clear_playlist(int p) override;
     void insert_playlist_items(int p, int base, const Tracks& tracks, bool select) override;

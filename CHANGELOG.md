@@ -3,6 +3,12 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.9.1](https://github.com/santiagorod92/foo_js_panel/compare/v1.9.0...v1.9.1) (2026-11-18)
+
+### Fixed
+- JScript Panel 3 scripts that track playlists by GUID load again: `plman.GetGUID(p)` and
+  `plman.FindByGUID(guid)` are implemented (Playlist Organizer stopped at `plman.GetGUID`).
+
 ## [1.9.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.8.0...v1.9.0) (2026-11-16)
 
 ### Highlights

@@ -1425,6 +1425,20 @@ std::string Panel::playlist_name(int p) {
     return n.c_str();
 }
 
+std::string Panel::playlist_guid(int p) {
+    playlist_manager_v5::ptr pm;
+    if (p < 0 || p >= playlist_count() || !playlist_manager_v5::tryGet(pm)) return {};
+    return pfc::print_guid(pm->playlist_get_guid((size_t)p)).c_str();
+}
+
+int Panel::find_playlist_by_guid(const std::string& guid) {
+    playlist_manager_v5::ptr pm;
+    const GUID g = pfc::GUID_from_text(guid.c_str());
+    if (g == pfc::guid_null || !playlist_manager_v5::tryGet(pm)) return -1;
+    const size_t p = pm->find_playlist_by_guid(g);
+    return p == pfc_infinite ? -1 : (int)p;
+}
+
 int Panel::find_or_create_playlist(const std::string& name, bool unlocked) {
     auto pm = playlist_manager::get();
     const size_t p = unlocked ? pm->find_or_create_playlist_unlocked(name.c_str()) : pm->find_or_create_playlist(name.c_str());

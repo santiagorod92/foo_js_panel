@@ -2284,8 +2284,9 @@ TEST("wsh: @feature lines and WSH Panel Mod-only names mark a script, JScript Pa
     CHECK_EQ(e.dialect(), std::string("JScript Panel 3"));
     JsEngine smp(host);
     CHECK(smp.load("console.log(plman.FindPlaylist('Default'), plman.FindPlaylist('Nope'), gdi.Font('Segoe UI', 12).Height > 0,"
-                   " fb.IsMainMenuCommandChecked('Playback/Stop after current'), fb.IsMainMenuCommandChecked('Playback/Stop'));", "/s/smp.js"));
-    CHECK_EQ(host.console_lines.back(), std::string("0 -1 true true false"));
+                   " fb.IsMainMenuCommandChecked('Playback/Stop after current'), fb.IsMainMenuCommandChecked('Playback/Stop'),"
+                   " plman.GetGUID(0), plman.FindByGUID(plman.GetGUID(0)), plman.FindByGUID('nope'), plman.GetGUID(5) === '');", "/s/smp.js"));
+    CHECK_EQ(host.console_lines.back(), std::string("0 -1 true true false guid-Default 0 -1 true"));
     CHECK(smp.dialect().empty());
     CHECK(smp.missing_api().empty());
 }

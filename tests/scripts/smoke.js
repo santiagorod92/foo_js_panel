@@ -41,7 +41,8 @@ const lib = fb.GetLibraryItems(), pool = lib.Count ? lib : plman.GetPlaylistItem
 const tagged = fb.GetQueryItems(pool, 'TITLE PRESENT');
 const first = pool.Count ? pool.Item(0) : null;
 console.log('smoke: library=' + lib.Count + ' tracks=' + pool.Count + ' query=' + tagged.Count + ' meta=' + (first ? first.GetFileInfo().MetaCount : -1) + ' length=' + (first ? first.Length : -1));
-console.log('smoke: plman playlists=' + plman.PlaylistCount + ' items=' + plman.PlaylistItemCount(ap) + ' selected=' + plman.GetPlaylistSelectedItems(ap).Count + ' order=' + plman.PlaybackOrder);
+console.log('smoke: plman playlists=' + plman.PlaylistCount + ' items=' + plman.PlaylistItemCount(ap) + ' selected=' + plman.GetPlaylistSelectedItems(ap).Count + ' order=' + plman.PlaybackOrder +
+    ' guid=' + (/^[0-9a-f-]{36}$/i.test(plman.GetGUID(ap)) && plman.FindByGUID(plman.GetGUID(ap)) === ap) + ' noguid=' + plman.FindByGUID('x'));
 window.NotifyOthers('smoke', { from: window.ID });
 function on_notify_data(name, info) { if (name === 'smoke') console.log('smoke: notify from ' + info.from + ' to ' + window.ID); }
 window.SetCursor(32649);

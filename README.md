@@ -209,7 +209,8 @@ when it calls JScript Panel 3-only drawing (`gr.WriteText`, `FillRectangle`…):
   `SampleCount`, `Data`; `null` while nothing plays); `GetAlbumArtStub` answers `null`.
 - `plman`: `GetPlaylistItemCount`, `FindPlaylist`, `GetPlaylistSelectedIndexes`, `InvertSelection`,
   `RemovePlaylists`, `GetPlaybackOrders`, the lock-mask functions, `SelectQueryItems`,
-  `SortPlaylistsByName`, `MovePlaylistSelectionV2`, the playlist recycler (`RecyclerCount`,
+  `SortPlaylistsByName`, `MovePlaylistSelectionV2`, `GetGUID(p)` / `FindByGUID(guid)` (-1 when there's
+  none), the playlist recycler (`RecyclerCount`,
   `GetRecyclerName`, `GetRecyclerItems`, `RecyclerRestore`, `RecyclerPurge`).
 - Handles and lists: `GetAlbumArtAsync`/`GetAlbumArtThumbAsync`/`GetAlbumArtEmbedded`, `IsInLibrary`,
   `AddItem(s)`, `GetItem`, `InsertItem(s)`, `RemoveByIdx`, `Reverse`, `Randomise`, `SortByPath`…;

@@ -2444,6 +2444,15 @@ JSValue plman_GetPlaylistName(JSContext* ctx, JSValueConst, int argc, JSValueCon
     return JS_NewStringLen(ctx, n.data(), n.size());
 }
 
+JSValue plman_GetGUID(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    const std::string g = I(ctx)->host.playlist_guid(arg_int(ctx, argc, argv, 0, -1));
+    return JS_NewStringLen(ctx, g.data(), g.size());
+}
+
+JSValue plman_FindByGUID(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    return JS_NewInt32(ctx, I(ctx)->host.find_playlist_by_guid(arg_str(ctx, argc, argv, 0)));
+}
+
 JSValue plman_FindOrCreatePlaylist(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     const bool unlocked = argc > 1 && JS_ToBool(ctx, argv[1]) > 0;
     return JS_NewInt32(ctx, I(ctx)->host.find_or_create_playlist(arg_str(ctx, argc, argv, 0), unlocked));
@@ -2699,6 +2708,8 @@ const JSCFunctionListEntry kPlmanFuncs[] = {
     JS_CGETSET_DEF("ActivePlaylist", plman_ActivePlaylist, plman_SetActivePlaylist),
     JS_CGETSET_DEF("PlayingPlaylist", plman_PlayingPlaylist, nullptr),
     JS_CFUNC_DEF("GetPlaylistName", 1, plman_GetPlaylistName),
+    JS_CFUNC_DEF("GetGUID", 1, plman_GetGUID),
+    JS_CFUNC_DEF("FindByGUID", 1, plman_FindByGUID),
     JS_CFUNC_DEF("FindOrCreatePlaylist", 2, plman_FindOrCreatePlaylist),
     JS_CFUNC_DEF("ClearPlaylist", 1, plman_ClearPlaylist),
     JS_CFUNC_DEF("InsertPlaylistItems", 4, plman_InsertPlaylistItems),

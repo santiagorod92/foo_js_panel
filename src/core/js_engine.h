@@ -173,6 +173,8 @@ public:
     virtual void set_active_playlist(int) {}
     virtual int playing_playlist() { return -1; }
     virtual std::string playlist_name(int) { return {}; }
+    virtual std::string playlist_guid(int) { return {}; }
+    virtual int find_playlist_by_guid(const std::string&) { return -1; }
     virtual int find_or_create_playlist(const std::string&, bool) { return -1; }
     virtual void clear_playlist(int) {}
     virtual void insert_playlist_items(int, int, const Tracks&, bool) {}
