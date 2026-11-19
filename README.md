@@ -13,6 +13,33 @@ component. Nothing else needs installing.
 > Panel API work, and the Eole theme runs as a Panels UI skin ([how](#running-the-eole-theme)).
 > See [Roadmap](#roadmap) for what's left.
 
+## Start here
+
+New to foobar2000 scripting? The pieces, in plain words:
+
+- **foobar2000** is the music player; its window is made of *panels* (the playlist, the album
+  art, the seek bar…).
+- **JS Panel** (this component) is a panel whose contents are a small program written in
+  JavaScript (the "JS" in its name): the script draws the panel and decides what clicks do. A
+  "theme" such as Eole or CaTRoX is a set of those scripts plus a layout that places them.
+- **[Panels UI](https://github.com/santiagorod92/foo_ui_panels)** is a separate component, from a
+  separate repository: it replaces foobar2000's whole window with a skin. To use a full theme
+  like Eole you install both: Panels UI rebuilds the theme's layout as a skin, and JS Panel runs
+  each of its scripts. Old Panels UI skins like fooAvA are Panels UI only and don't need JS Panel
+  ([Setting up fooAvA](https://github.com/santiagorod92/foo_ui_panels#setting-up-fooava)).
+- **[foo_navidrome](https://github.com/santiagorod92/foo_navidrome)** is optional: it brings the
+  music of your own Navidrome (Subsonic) server, and scripts see it like local files.
+
+Every piece is a `.fb2k-component` file: double-click it (or drag it onto foobar2000) and restart
+foobar2000. No Python, no command line.
+
+| I want to… | Install | Follow |
+|---|---|---|
+| Run **Eole**, **CaTRoX** or another Columns UI + Spider Monkey Panel theme | JS Panel + Panels UI | [Running the Eole theme](#running-the-eole-theme) (CaTRoX and others: the same steps with their `.fcl`) |
+| Add one scripted panel to foobar2000's Default UI | JS Panel | [Installation](#installation) |
+| Run a script written for JScript Panel 3 or WSH Panel Mod | JS Panel | [JScript Panel 3 scripts](#jscript-panel-3-scripts), [WSH Panel Mod scripts](#wsh-panel-mod-scripts) |
+| Bring back **fooAvA** | Panels UI only | [Setting up fooAvA](https://github.com/santiagorod92/foo_ui_panels#setting-up-fooava) |
+
 ## Screenshots
 
 [Eole](https://github.com/Ottodix/Eole-foobar-theme) by Ottodix, imported from its Columns UI layout
@@ -139,12 +166,18 @@ as the user interface and Eole itself. Optional:
 tracks, ratings and artist photos. Columns UI, Spider Monkey Panel and Eole's other components
 aren't needed.
 
-1. **Get Eole:** download it from its GitHub page and unzip it anywhere.
-2. **Import it:** *View › Panels UI › Import Columns UI layout…* and pick
-   `themes/eole/columnsUI_eole.fcl` in the unzipped folder. Eole's `themes` and `wsh-data` folders
-   are copied into your foobar2000 profile folder, the **Eole** skin is written and Panels UI
-   switches to it.
-3. **Set it up:**
+1. **Install the components:** JS Panel and
+   [Panels UI](https://github.com/santiagorod92/foo_ui_panels/releases/latest) (and foo_navidrome
+   if you want it): double-click each `.fb2k-component` and restart foobar2000. Then
+   *Preferences › Display › User interface module* → **Panels UI (reborn)** and restart
+   foobar2000 again (close the layout wizard if it opens).
+2. **Get Eole:** download it from its GitHub page (green *Code* button › *Download ZIP*) and
+   unzip it anywhere.
+3. **Import it:** *View › Panels UI › Import Columns UI layout…* and pick
+   `themes/eole/columnsUI_eole.fcl` in the unzipped folder (the `.fcl` file is the layout Eole
+   exported from Columns UI). Eole's `themes` and `wsh-data` folders are copied into your
+   foobar2000 profile folder, the **Eole** skin is written and Panels UI switches to it.
+4. **Set it up:**
    - **Dark theme:** Eole's ☰ menu (top left) › *Dark theme*, once in each view (Library,
      Playlists, Now playing…). If a panel shown later (such as the Library Tree) is still light,
      toggle it off and on while that panel is visible.
