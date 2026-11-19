@@ -111,7 +111,7 @@ CATROX_EXPECT=('foo_js_panel .* QuickJS' 'catrox: layout found' 'catrox: request
                'font loaded: Guifx v2 Transports[.]ttf' 'loaded .*foo_ui_panels-skins.Theme.js.Menu[.]js'
                'loaded .*foo_ui_panels-skins.Theme.js.Top_Panel[.]js' 'loaded .*foo_ui_panels-skins.Theme.js.SeekBar(_2)?[.]js')
 RELOAD_EXPECT=('foo_js_panel .* QuickJS' 'reload: generation 1' 'reload: generation 2')
-JSP3_EXPECT=('foo_js_panel .* QuickJS' 'jsp3: loaded lodash=function chunks=2 dui=true dark=boolean files=number now=true' 'jsp3: paint w=[1-9][0-9]*')
+JSP3_EXPECT=('foo_js_panel .* QuickJS' 'jsp3: loaded lodash=function chunks=2 dui=true dark=boolean files=number now=true caseless=function' 'jsp3: paint w=[1-9][0-9]*')
 WSH_EXPECT=('foo_js_panel .* QuickJS' 'wsh: loaded colour=number sys=number playlists=true glob=number enum=6 vb=2 height=true match=true'
             'uses fb[.]NoSuchWshApi, which JS Panel doesn.t implement' 'wsh: paint lines=1 chars=20' 'wsh: timer ticks=2')
 WINDOWLESS_EXPECT=('foo_js_panel .* QuickJS' 'windowless panel WL runs' 'windowless: loaded name=WL transparent=true'

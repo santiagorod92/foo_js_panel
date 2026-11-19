@@ -192,6 +192,8 @@ when it calls JScript Panel 3-only drawing (`gr.WriteText`, `FillRectangle`…):
   is `<profile>/foo_js_panel/jsp3/` and `%fb2k_profile_path%` the profile folder. JScript Panel 3's
   own `helpers.txt` and `samples` folder aren't included: copy them there from its
   `.fb2k-component` (it's a zip) to run scripts that import them.
+- Names are found whatever their case, as JScript Panel 3 found them (`window.repaint()`,
+  `gr.fillrectangle`), for reading and for setting.
 - `gr`: `Clear`, `FillRectangle`, `DrawRectangle`, `Fill/DrawRoundedRectangle`, `Fill/DrawEllipse`
   (centre and radii), `DrawImage`/`DrawBitmap` (opacity 0–1), `DrawImageWithMask`, `WriteText`,
   `WriteText2`, `WriteTextSimple`, `WriteTextLayout` with JSON font strings and the DirectWrite

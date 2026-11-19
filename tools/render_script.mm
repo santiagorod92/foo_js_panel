@@ -39,6 +39,13 @@ struct StillHost : jsp::JsHost {
     std::string jsp3_path() override { return profile.empty() ? std::string() : profile + "foo_js_panel/jsp3/"; }
     std::string load_properties() override { return properties; }
     std::vector<std::string> playlists = { "Default" };
+    std::vector<std::string> guids = { guid_text(0) };
+    int guidSerial = 0;
+    static std::string guid_text(int n) {
+        char out[40];
+        snprintf(out, sizeof out, "%08X-0000-0000-0000-000000000000", n);
+        return out;
+    }
     std::map<int, jsp::Tracks> items;
     int active = 0;
     int playlist_count() override { return (int)playlists.size(); }
@@ -47,9 +54,16 @@ struct StillHost : jsp::JsHost {
         if (p >= 0 && p < (int)playlists.size()) active = p;
     }
     std::string playlist_name(int p) override { return p >= 0 && p < (int)playlists.size() ? playlists[(size_t)p] : std::string(); }
+    std::string playlist_guid(int p) override { return p >= 0 && p < (int)guids.size() ? guids[(size_t)p] : std::string(); }
+    int find_playlist_by_guid(const std::string& guid) override {
+        for (size_t i = 0; i < guids.size(); ++i)
+            if (guids[i] == guid) return (int)i;
+        return -1;
+    }
     int create_playlist(int p, const std::string& name) override {
         const int at = p < 0 || p > (int)playlists.size() ? (int)playlists.size() : p;
         playlists.insert(playlists.begin() + at, name.empty() ? "New Playlist" : name);
+        guids.insert(guids.begin() + at, guid_text(++guidSerial));
         return at;
     }
     int find_or_create_playlist(const std::string& name, bool) override {
@@ -65,6 +79,7 @@ struct StillHost : jsp::JsHost {
     bool remove_playlist(int p, bool) override {
         if (p < 0 || p >= (int)playlists.size()) return false;
         playlists.erase(playlists.begin() + p);
+        guids.erase(guids.begin() + p);
         return true;
     }
     int playlist_item_count(int p) override { return (int)items[p].size(); }

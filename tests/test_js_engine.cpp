@@ -2280,13 +2280,20 @@ TEST("wsh: @feature lines and WSH Panel Mod-only names mark a script, JScript Pa
     CHECK_EQ(resolve_import("%fb2k_path%x.js", "/s/", "/c/", "/p/", "/fb/"), std::string("/fb/x.js"));
     t::FakeHost host;
     JsEngine e(host);
-    CHECK(e.load("var a = [1].toArray(); function on_paint(gr) { gr.WriteText('a', '', 0, 0, 0, 9, 9); }", "/s/jsp3.js"));
+    CHECK(e.load("var a = [1].toArray(); function on_paint(gr) { gr.WriteText('a', '', 0, 0, 0, 9, 9); gr.fillrectangle(0, 0, 1, 1, 0); }"
+                 " window.repaint(); console.log(typeof window.repaintRect, typeof plman.getguid);", "/s/jsp3.js"));
     CHECK_EQ(e.dialect(), std::string("JScript Panel 3"));
+    CHECK_EQ(host.console_lines.back(), std::string("function function"));
+    e.resize(10, 10);
+    t::RecordingCanvas c;
+    e.paint(c);
+    CHECK(e.error().empty());
+    CHECK(e.missing_api().empty());
     JsEngine smp(host);
     CHECK(smp.load("console.log(plman.FindPlaylist('Default'), plman.FindPlaylist('Nope'), gdi.Font('Segoe UI', 12).Height > 0,"
                    " fb.IsMainMenuCommandChecked('Playback/Stop after current'), fb.IsMainMenuCommandChecked('Playback/Stop'),"
-                   " plman.GetGUID(0), plman.FindByGUID(plman.GetGUID(0)), plman.FindByGUID('nope'), plman.GetGUID(5) === '');", "/s/smp.js"));
-    CHECK_EQ(host.console_lines.back(), std::string("0 -1 true true false guid-Default 0 -1 true"));
+                   " plman.GetGUID(0), plman.FindByGUID(plman.GetGUID(0)), plman.FindByGUID('nope'), plman.GetGUID(5) === '', typeof window.repaint);", "/s/smp.js"));
+    CHECK_EQ(host.console_lines.back(), std::string("0 -1 true true false guid-Default 0 -1 true undefined"));
     CHECK(smp.dialect().empty());
     CHECK(smp.missing_api().empty());
 }

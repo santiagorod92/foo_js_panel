@@ -5,7 +5,8 @@
 var font = JSON.stringify({ Name: 'Segoe UI', Size: 22, Weight: 700 });
 var painted = 0;
 console.log('jsp3: loaded lodash=' + (typeof _.chunk) + ' chunks=' + _.chunk([1, 2, 3, 4], 2).length + ' dui=' + (JSON.parse(window.GetFontDUI(0)).Name.length > 0) +
-            ' dark=' + (typeof window.IsDark) + ' files=' + (typeof utils.ListFiles(fb.ProfilePath).toArray().length) + ' now=' + (utils.Now() > 0));
+            ' dark=' + (typeof window.IsDark) + ' files=' + (typeof utils.ListFiles(fb.ProfilePath).toArray().length) + ' now=' + (utils.Now() > 0) +
+            ' caseless=' + (typeof window.repaint) + (window.repaint(), ''));
 function on_paint(gr) {
     gr.Clear(0xff202830);
     gr.FillRoundedRectangle(10, 10, window.Width - 20, 40, 8, 8, 0xff3a6ea5);

@@ -395,7 +395,9 @@ anything repo-specific stays in the repo's own sections.
   `on_colours_changed`/`on_font_changed`; macOS also sends the first on an appearance change.
 - **JScript Panel 3 layer:** `is_jsp3_script` (a `==PREPROCESSOR==` import of `lodash` or
   `%fb2k_component_path%`, or a JSP3-only call) makes `JsEngine::load` eval `kJsp3Prelude`, then the
-  `@import`s, then the script. The playlist recycler is `playlist_manager_v3`'s and
+  `@import`s, then the script. It sets `__jsp.caseless` like the WSH layer: JSP3's IDispatch resolved
+  names case-insensitively and Playlist Organizer calls `window.repaint()`. The playlist recycler is
+  `playlist_manager_v3`'s and
   `fb.GetAudioChunk` reads a `visualisation_stream` each `Panel` creates on first use. The prelude
   adds names to the class prototypes (`__jsp.proto`) and
   replaces the few that clash with SMP (`FillEllipse`/`DrawEllipse` take centre + radii,

@@ -4287,6 +4287,7 @@ _.mixin({
 const char* const kJsp3Prelude = R"JS(
 (function () {
     const native = __jsp;
+    native.caseless = true;
     const gp = native.proto('gr'), hp = native.proto('handle'), lp = native.proto('list');
     const smp = { FillEllipse: gp.FillEllipse, DrawEllipse: gp.DrawEllipse, DrawImage: gp.DrawImage };
     const fonts = new Map();

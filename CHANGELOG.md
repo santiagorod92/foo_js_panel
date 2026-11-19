@@ -3,6 +3,13 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.9.2](https://github.com/santiagorod92/foo_js_panel/compare/v1.9.1...v1.9.2) (2026-11-19)
+
+### Fixed
+- JScript Panel 3 scripts find API names whatever their case, as JScript Panel 3 did:
+  `window.repaint()` and `gr.fillrectangle` work (Playlist Organizer stopped when releasing its
+  scrollbar).
+
 ## [1.9.1](https://github.com/santiagorod92/foo_js_panel/compare/v1.9.0...v1.9.1) (2026-11-18)
 
 ### Fixed
