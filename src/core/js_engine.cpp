@@ -5426,7 +5426,8 @@ bool JsEngine::load(const std::string& source, const std::string& path) {
     if (jsp3 || wsh) {
         const std::string component = jsp3 ? m->host.jsp3_path() : m->host.component_path(), profile = m->host.profile_path();
         for (const std::string& spec : header.imports) {
-            const std::string bundled = jsp3 ? m->host.bundled_import(spec) : std::string();
+            const std::string name = jsp3 ? jsp3_import_name(spec) : spec;
+            const std::string bundled = jsp3 ? m->host.bundled_import(name) : std::string();
             const std::string file = bundled.empty() ? fix_path(resolve_import(spec, m->dir, component, profile, m->host.foobar_path()))
                                                      : "<" + spec + ">";
             std::string text = bundled;
@@ -5444,7 +5445,7 @@ bool JsEngine::load(const std::string& source, const std::string& path) {
             m->recordMissing = false;
             m->includeDirs.pop_back();
             if (!ok) return false;
-            if (spec == "lodash" && !m->eval(kLodashMixins, "<lodash mixins>")) return false;
+            if (name == "lodash" && !m->eval(kLodashMixins, "<lodash mixins>")) return false;
         }
     }
     m->recordMissing = true;

@@ -224,7 +224,8 @@ when it calls JScript Panel 3-only drawing (`gr.WriteText`, `FillRectangle`…):
   scripts are written for, plus its `nest`), `%fb2k_component_path%`
   is `<profile>/foo_js_panel/jsp3/` and `%fb2k_profile_path%` the profile folder. JScript Panel 3's
   own `helpers.txt` and `samples` folder aren't included: copy them there from its
-  `.fb2k-component` (it's a zip) to run scripts that import them.
+  `.fb2k-component` (it's a zip) to run scripts that import them. An import of
+  `%fb2k_component_path%samples\js\lodash.min.js` gets the built-in lodash, whatever copy is there.
 - Names are found whatever their case, as JScript Panel 3 found them (`window.repaint()`,
   `gr.fillrectangle`), for reading and for setting.
 - `gr`: `Clear`, `FillRectangle`, `DrawRectangle`, `Fill/DrawRoundedRectangle`, `Fill/DrawEllipse`

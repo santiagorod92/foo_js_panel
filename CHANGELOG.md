@@ -3,6 +3,14 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.9.3](https://github.com/santiagorod92/foo_js_panel/compare/v1.9.2...v1.9.3) (2026-11-23)
+
+### Fixed
+- JScript Panel 3 scripts that import `%fb2k_component_path%samples\js\lodash.min.js` get the
+  built-in lodash 3, the version JScript Panel 3 shipped there, even when a lodash 4 copy sits in
+  that folder: lodash 4 drops `_.forEach`'s `this` argument (Playlist Organizer's context menu
+  stopped with "cannot read property 'AppendMenuItem' of undefined").
+
 ## [1.9.2](https://github.com/santiagorod92/foo_js_panel/compare/v1.9.1...v1.9.2) (2026-11-19)
 
 ### Fixed

@@ -317,6 +317,15 @@ inline bool is_jsp3_script(const std::string& src, const ScriptHeader& h) {
     return false;
 }
 
+inline std::string jsp3_import_name(const std::string& spec) {
+    std::string lower(spec);
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+    const size_t slash = lower.find_last_of("/\\");
+    const std::string file = slash == std::string::npos ? lower : lower.substr(slash + 1);
+    if (lower.find("%fb2k_component_path%") != std::string::npos && (file == "lodash.min.js" || file == "lodash.js")) return "lodash";
+    return spec;
+}
+
 inline bool is_wsh_script(const std::string& src, const ScriptHeader& h) {
     if (!h.features.empty()) return true;
     std::string lower(src);

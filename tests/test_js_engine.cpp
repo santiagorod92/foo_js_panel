@@ -2467,6 +2467,21 @@ TEST("jsp3: lodash 3 names, CreateImage, Dispose and GetOtherInfo") {
     CHECK(e.missing_api().empty());
 }
 
+TEST("jsp3: an import of JScript Panel 3's samples lodash gets the built-in lodash 3") {
+    CHECK_EQ(jsp3_import_name("%fb2k_component_path%samples\\js\\lodash.min.js"), std::string("lodash"));
+    CHECK_EQ(jsp3_import_name("%FB2K_COMPONENT_PATH%samples/js/Lodash.js"), std::string("lodash"));
+    CHECK_EQ(jsp3_import_name("%fb2k_component_path%samples\\js\\common.js"), std::string("%fb2k_component_path%samples\\js\\common.js"));
+    CHECK_EQ(jsp3_import_name("%fb2k_profile_path%lodash.min.js"), std::string("%fb2k_profile_path%lodash.min.js"));
+    t::FakeHost host;
+    host.bundledLodash = "var _ = { mixin(o) { Object.assign(_, o); }, forEach(c, f, t) { c.forEach(f, t); } };";
+    host.files["/jsp3/samples/js/lodash.min.js"] = "var _ = { forEach(c, f) { c.forEach(x => f(x)); } };";
+    JsEngine e(host);
+    CHECK(e.load("// ==PREPROCESSOR==\n// @import \"%fb2k_component_path%samples\\js\\lodash.min.js\"\n// ==/PREPROCESSOR==\n"
+                 "var o = { n: 0 }; _.forEach([1, 2], function (x) { this.n += x; }, o); console.log(o.n, typeof _.nest);", "/s/m.js"));
+    CHECK(!e.failed());
+    CHECK_EQ(host.console_lines.back(), std::string("3 function"));
+}
+
 TEST("engine: the preprocessor header names the script") {
     t::FakeHost host;
     JsEngine e(host);

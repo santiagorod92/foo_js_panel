@@ -406,8 +406,10 @@ anything repo-specific stays in the repo's own sections.
   `lodash_js()`, handed out by `JsHost::bundled_import`). `%fb2k_component_path%` is
   `<profile>/foo_js_panel/jsp3/`; JSP3's own helpers and samples (marc2003's) are never shipped.
   lodash is **3.10.1**, not 4: JSP3 scripts rely on 3.x (`forEach(list, fn, thisArg)`,
-  `sortByOrder`); `kLodashMixins` adds JSP3's `nest`. `PushLayer`/`PopLayer` are
-  `Canvas::push_clip`/`pop_clip` (shared canvas, both backends; GDI's `RestoreDC` also drops the
+  `sortByOrder`); `kLodashMixins` adds JSP3's `nest`. JSP3 3.8.5 no longer ships
+  `samples/js/lodash.min.js` (older JSP3s shipped 3.10.2) and users copy in a lodash 4, so
+  `jsp3_import_name` maps a `%fb2k_component_path%…/lodash[.min].js` import to the built-in one.
+  `PushLayer`/`PopLayer` are `Canvas::push_clip`/`pop_clip` (shared canvas, both backends; GDI's `RestoreDC` also drops the
   selected font, so `pop_clip` re-selects it), and clips left open are popped after `on_paint`.
   `make jsp3-check JSP3=<unzipped component>` runs every JSP3 sample in `render_script --sandbox`
   (37/37 for 3.8.5).
