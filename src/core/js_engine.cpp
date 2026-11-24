@@ -38,9 +38,11 @@ long long now_us() {
 JSClassID g_grClass = 0, g_fontClass = 0, g_tfClass = 0, g_handleClass = 0, g_listClass = 0, g_bitmapClass = 0, g_infoClass = 0,
           g_menuClass = 0, g_menuManagerClass = 0;
 int g_nextWindowId = 1;
+struct Graphics;
 struct Bitmap {
     pui::gfx::ImagePtr image;
     std::shared_ptr<pui::gfx::Pixels> px;
+    Graphics* open = nullptr;
 };
 using BitmapPtr = std::shared_ptr<Bitmap>;
 BitmapPtr* bitmap_of(JSValueConst v);
@@ -48,9 +50,11 @@ BitmapPtr* bitmap_of(JSValueConst v);
 struct Graphics {
     Canvas* canvas = nullptr;
     int clips = 0;
-    std::unique_ptr<Canvas> own;
     BitmapPtr target;
+    std::unique_ptr<Canvas> own;
+    ~Graphics();
 };
+void release_graphics(Graphics* g);
 const pui::gfx::ImagePtr& drawable(JSContext* ctx, Bitmap& b);
 
 constexpr std::size_t kSyntaxCheckMemory = 64u * 1024 * 1024;
@@ -1289,11 +1293,13 @@ JSValue bitmap_GetGraphics(JSContext* ctx, JSValueConst self, int, JSValueConst*
     if (!bp || !*bp) return JS_ThrowTypeError(ctx, "the GdiBitmap was disposed");
     pui::gfx::Pixels* px = pixels_of(ctx, **bp);
     if (!px) return JS_EXCEPTION;
+    release_graphics((*bp)->open);
     auto g = std::make_unique<Graphics>();
     g->own = I(ctx)->host.pixels_canvas(*px, 1.0);
     if (!g->own) return JS_ThrowInternalError(ctx, "GetGraphics: can't draw on this bitmap");
     g->canvas = g->own.get();
     g->target = *bp;
+    (*bp)->open = g.get();
     (*bp)->image.reset();
     JSValue obj = JS_NewObjectClass(ctx, (int)g_grClass);
     if (!JS_IsException(obj)) JS_SetOpaque(obj, g.release());
@@ -1304,12 +1310,22 @@ void release_graphics(Graphics* g) {
     if (!g || !g->own) return;
     g->canvas = nullptr;
     g->own.reset();
-    if (g->target) g->target->image.reset();
+    if (g->target) {
+        g->target->image.reset();
+        if (g->target->open == g) g->target->open = nullptr;
+    }
     g->target.reset();
 }
 
-JSValue bitmap_ReleaseGraphics(JSContext*, JSValueConst, int argc, JSValueConst* argv) {
-    if (argc > 0) release_graphics(graphics_of(argv[0]));
+Graphics::~Graphics() { release_graphics(this); }
+
+JSValue bitmap_ReleaseGraphics(JSContext*, JSValueConst self, int argc, JSValueConst* argv) {
+    Graphics* g = argc > 0 ? graphics_of(argv[0]) : nullptr;
+    if (!g) {
+        BitmapPtr* bp = bitmap_of(self);
+        if (bp && *bp) g = (*bp)->open;
+    }
+    release_graphics(g);
     return JS_UNDEFINED;
 }
 

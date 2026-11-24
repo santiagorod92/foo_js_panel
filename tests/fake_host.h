@@ -378,11 +378,17 @@ struct FakeHost : jsp::JsHost {
     pui::gfx::ImagePtr image_from_pixels(const pui::gfx::Pixels& px) override { return std::make_shared<FakeImage>(px); }
     struct LoggingSoftCanvas : SoftCanvas {
         std::vector<std::string>& sink;
-        LoggingSoftCanvas(pui::gfx::Pixels& p, std::vector<std::string>& s) : SoftCanvas(p), sink(s) {}
-        ~LoggingSoftCanvas() override { sink.insert(sink.end(), ops.begin(), ops.end()); }
+        pui::gfx::Pixels& target;
+        long long& flushed;
+        LoggingSoftCanvas(pui::gfx::Pixels& p, std::vector<std::string>& s, long long& f) : SoftCanvas(p), sink(s), target(p), flushed(f) {}
+        ~LoggingSoftCanvas() override {
+            sink.insert(sink.end(), ops.begin(), ops.end());
+            flushed += (long long)target.w * target.h;
+        }
     };
+    long long flushedPixels = 0;
     std::unique_ptr<pui::gfx::Canvas> pixels_canvas(pui::gfx::Pixels& px, double) override {
-        auto c = std::make_unique<LoggingSoftCanvas>(px, canvasOps);
+        auto c = std::make_unique<LoggingSoftCanvas>(px, canvasOps, flushedPixels);
         c->missingFonts = missingFonts;
         return c;
     }

@@ -272,7 +272,11 @@ anything repo-specific stays in the repo's own sections.
   into the buffer. A `GdiBitmap` holds a drawable image and/or pixels (`pixels_of` reads them on
   first use, `drawable` rebuilds the image after an edit); the pixel operations are SDK-free in
   `image_ops.cpp`. Each `gr` carries its canvas (`Graphics`): `on_paint`'s is cleared after the
-  call, `GetGraphics`' writes back on `ReleaseGraphics` or when collected.
+  call, `GetGraphics`' writes back on `ReleaseGraphics` or when collected. `Graphics::~Graphics` runs
+  `release_graphics` (canvas first, then the bitmap): the Windows `PixelsCanvas` writes its pixels
+  in its destructor, and with the bitmap freed first a `gr` collected at shutdown wrote into freed
+  memory. `Bitmap::open` is the bitmap's live `gr`, so JSP3's argument-less `ReleaseGraphics()`
+  finds it and a new `GetGraphics` closes the previous one.
 - **Alpha:** `Canvas` only has alpha for rectangles and images, so `with_alpha` draws a
   translucent shape or `DrawString` opaque into a box-sized pixel canvas (at the device scale)
   and composites it with the colour's alpha. `GdiDrawText` stays opaque, as in SMP.

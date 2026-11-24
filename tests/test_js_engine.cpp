@@ -2482,6 +2482,21 @@ TEST("jsp3: an import of JScript Panel 3's samples lodash gets the built-in loda
     CHECK_EQ(host.console_lines.back(), std::string("3 function"));
 }
 
+TEST("engine: GetGraphics canvases write back before their bitmap goes, and ReleaseGraphics() releases the open one") {
+    t::FakeHost host;
+    {
+        JsEngine e(host);
+        CHECK(e.load("var img = gdi.CreateImage(4, 3), g = img.GetGraphics(); g.FillSolidRect(0, 0, 4, 3, 0xffff0000); img.ReleaseGraphics();"
+                     "var err = ''; try { g.FillSolidRect(0, 0, 1, 1, 0); } catch (x) { err = x.message; }"
+                     "var again = img.GetGraphics(); img.GetGraphics(); console.log(err.indexOf('ReleaseGraphics') >= 0, img.Width);"
+                     "var leak = gdi.CreateImage(5, 5).GetGraphics(); leak.FillSolidRect(0, 0, 5, 5, 0xff00ff00);", ""));
+        CHECK(!e.failed());
+        CHECK_EQ(host.console_lines.back(), std::string("true 4"));
+        CHECK_EQ(host.flushedPixels, 36LL);
+    }
+    CHECK_EQ(host.flushedPixels, 61LL);
+}
+
 TEST("engine: the preprocessor header names the script") {
     t::FakeHost host;
     JsEngine e(host);

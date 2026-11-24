@@ -3,6 +3,14 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.9.4](https://github.com/santiagorod92/foo_js_panel/compare/v1.9.3...v1.9.4) (2026-11-24)
+
+### Fixed
+- foobar2000 no longer crashes on exit, on Windows, when a script left an image's `GetGraphics()`
+  open: the drawing was written back after the image had been freed (Playlist Organizer).
+- `img.ReleaseGraphics()` without an argument, as JScript Panel 3 scripts call it, releases the
+  image's open `gr` and writes its drawing to the image right away.
+
 ## [1.9.3](https://github.com/santiagorod92/foo_js_panel/compare/v1.9.2...v1.9.3) (2026-11-23)
 
 ### Fixed
