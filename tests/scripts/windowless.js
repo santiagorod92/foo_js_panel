@@ -1,6 +1,9 @@
 include('lib/colours.js');
 const font = gdi.Font('Segoe UI', 16, 1);
-let paints = 0, ticks = 0, focused = false, lastKey = 0, moved = false;
+let paints = 0, ticks = 0, focused = false, lastKey = 0, moved = false, startPos = '';
+const hacks = new ActiveXObject('UIHacks');
+const wizard = new ActiveXObject('UIWizard');
+const windowPos = () => wizard.WindowX + ',' + wizard.WindowY;
 console.log('windowless: loaded name=' + panelsui.PanelName + ' transparent=' + window.IsTransparent);
 const iv = window.SetInterval(() => {
     if (++ticks === 2) {
@@ -9,7 +12,37 @@ const iv = window.SetInterval(() => {
     }
     window.Repaint();
 }, 150);
-function on_size(w, h) { console.log('windowless: size ' + w + 'x' + h); }
+function on_size(w, h) {
+    console.log('windowless: size ' + w + 'x' + h);
+    hacks.SetPseudoCaption(12, 40, w, 30);
+}
+function watch_caption() {
+    const state = hacks.MainWindowState, x0 = wizard.WindowX, y0 = wizard.WindowY;
+    startPos = windowPos();
+    console.log('windowless: caption at ' + (x0 + 12 + Math.floor(window.Width / 2)) + ',' + (y0 + 55) + ' state ' + state);
+    let last = startPos, still = 0;
+    const watch = window.SetInterval(() => {
+        const pos = windowPos();
+        still = pos === last ? still + 1 : 0;
+        last = pos;
+        if (pos === startPos || still < 3) return;
+        window.ClearInterval(watch);
+        console.log('windowless: caption moved ' + startPos + ' -> ' + pos);
+        if (state === 0) wizard.SetWindowPosition(x0, y0);
+        else hacks.MainWindowState = state;
+        console.log('windowless: restored ' + (hacks.MainWindowState === state));
+    }, 200);
+}
+function on_mouse_rbtn_up(x, y) {
+    const menu = window.CreatePopupMenu();
+    menu.AppendMenuItem(0, 1, 'First');
+    menu.AppendMenuItem(0, 2, 'Second');
+    console.log('windowless: menu open at ' + x + ',' + y);
+    const id = menu.TrackPopupMenu(x, y);
+    console.log('windowless: menu id=' + id);
+    watch_caption();
+    return true;
+}
 function on_paint(gr) {
     gr.FillSolidRect(0, 0, Math.floor(window.Width / 2), window.Height, RGB(30, 90, 160));
     gr.GdiDrawText('windowless ' + ticks + (focused ? ' focused' : '') + (lastKey ? ' key ' + lastKey : ''), font, RGB(255, 255, 255),

@@ -8,6 +8,12 @@ tests/themes.tsv names a GitHub repository at a pinned commit and how to run it:
            with the repository's packages/*/{GUID} installed as Spider Monkey Panel packages
   script   one script; fb.ProfilePath is the checkout's profile/ folder when it has one
   package  the checkout is a Spider Monkey Panel package: it's installed and its main.js runs
+  samples  ENTRY is a component folder (fb.ComponentPath): every samples/*/*.js in it runs
+  jsp3     JScript Panel 3 scripts: the checkout is copied into the profile at PACKAGES (. = the
+           profile itself), JSP3's helpers.txt and samples/ go where %fb2k_component_path% points, and
+           every file matching ENTRY (a glob from the profile) runs. A theme that ships its own
+           foo_jscript_panel3 folder uses it; otherwise JSP3=DIR is an unzipped foo_jscript_panel3
+           (default: the copy make jsp3-check left in build/jsp3-check)
 The checkouts land in build/themes/src (fetched once, never committed); every panel's PNG and
 log in build/themes/<name>/, and build/themes/report.md sums up each theme (panels that load and
 paint, the first error) and the API names the themes used that JS Panel doesn't implement.
@@ -19,6 +25,7 @@ case "${1:-}" in -h|--help) usage; exit 0 ;; esac
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$REPO/build/themes"
+JSP3_DIR="${JSP3:-$REPO/build/jsp3-check/profile/foo_js_panel/jsp3}"
 SRC="$OUT/src"
 RENDER="$REPO/build/tools/render_script"
 make -C "$REPO" build/tools/render_script >/dev/null
@@ -51,7 +58,8 @@ install_package() {
 
 run_one() {
   local js="$1" profile="$2" out="$3" name="$4"
-  if "$RENDER" "$js" "$out/$name.png" --size 1280x720 --rounds 300 --profile "$profile/" --sandbox "$profile" >"$out/$name.log" 2>&1; then
+  shift 4
+  if "$RENDER" "$js" "$out/$name.png" --size 1280x720 --rounds 300 --profile "$profile/" --sandbox "$profile" "$@" >"$out/$name.log" 2>&1; then
     printf '%s  ok\n' "$name"
   else
     printf '%s  FAIL  %s\n' "$name" "$(grep -m1 -E 'error' "$out/$name.log" | cut -c1-160)"
@@ -100,6 +108,33 @@ while IFS=$'\t' read -r name repo commit kind entry packages sparse; do
       installed="$(install_package "$dir/$entry" "$profile")"
       run_one "$installed/main.js" "$profile" "$out" main | tee "$out/result.txt"
       cat "$out/main.log" >"$out/all.log"
+      ;;
+    samples)
+      profile="$out/profile"
+      mkdir -p "$profile"
+      for js in "$dir/$entry"/samples/*/*.js; do
+        sample="$(basename "$(dirname "$js")")-$(basename "$js" .js | tr ' ()' '_--')"
+        run_one "$js" "$profile" "$out" "$sample" --component "$dir/$entry"
+      done | tee "$out/result.txt"
+      cat "$out"/*.log >"$out/all.log" 2>/dev/null || true
+      ;;
+    jsp3)
+      jsp3="$JSP3_DIR"
+      bundled="$(find "$dir" -path '*/foo_jscript_panel3/helpers.txt' | head -1)"
+      [ -n "$bundled" ] && jsp3="$(dirname "$bundled")"
+      [ -f "$jsp3/helpers.txt" ] || { echo "$name  FAIL  no JSP3 helpers.txt in $jsp3 (JSP3=DIR or make jsp3-check)" | tee "$out/result.txt"; continue; }
+      profile="$out/profile"
+      mount="$profile"
+      [ "$packages" != - ] && [ "$packages" != . ] && mount="$profile/$packages"
+      mkdir -p "$mount" "$profile/foo_js_panel/jsp3"
+      cp -R "$dir"/. "$mount"/
+      rm -rf "$mount/.git"
+      cp -R "$jsp3/helpers.txt" "$jsp3/samples" "$profile/foo_js_panel/jsp3/"
+      for js in "$profile"/$entry; do
+        script="$(printf '%s' "${js#"$profile"/}" | tr ' /()' '__--')"
+        run_one "$js" "$profile" "$out" "$script"
+      done | tee "$out/result.txt"
+      cat "$out"/*.log >"$out/all.log" 2>/dev/null || true
       ;;
     *) echo "unknown kind $kind for $name" >&2; exit 2 ;;
   esac

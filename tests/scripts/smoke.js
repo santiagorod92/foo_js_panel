@@ -76,6 +76,10 @@ fso.DeleteFolder(fsoDir);
 const shellVersion = new ActiveXObject('WScript.Shell').RegRead('HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\CurrentMajorVersionNumber');
 console.log('smoke: activex fso=' + back + ' files=' + files + ' gone=' + !fso.FolderExists(fsoDir) + ' reg=' + shellVersion +
             ' ui=' + new ActiveXObject('UIHacks').FrameStyle + ' timers=' + (typeof setTimeout));
+const trashDir = fso.BuildPath(fb.ProfilePath + 'foo_js_panel', 'smoke-trash-' + window.ID);
+if (!fso.FolderExists(trashDir)) fso.CreateFolder(trashDir);
+new ActiveXObject('Shell.Application').NameSpace(10).MoveHere(trashDir);
+console.log('smoke: recycle gone=' + !fso.FolderExists(trashDir));
 const outputs = JSON.parse(fb.GetOutputDevices()), presets = JSON.parse(fb.GetDSPPresets());
 const rg = fb.ReplaygainMode;
 fb.ReplaygainMode = (rg + 1) % 4;
@@ -90,6 +94,8 @@ plman.RemovePlaylist(lockP);
 console.log('smoke: state outputs=' + outputs.length + ' active=' + outputs.filter(o => o.active).length + ' dsp=' + presets.length +
             ' rg=' + (rgSet === (rg + 1) % 4) + ' lock=' + lockInfo + ' unlocked=' + unlocked + ' charset=' + utils.DetectCharset(fb.ComponentPath + 'nope') +
             ' map=' + utils.MapString('Ab', 0, 0x200));
+console.log('smoke: zh simp=' + (utils.MapString('\u570b', 0, 0x2000000) === '\u56fd') + ' trad=' + (utils.MapString('\u56fd', 0, 0x4000000) === '\u570b') +
+            ' sel=' + typeof fb.GetSelectionType() + ' scrollbar=' + (utils.GetSystemMetrics(2) > 0));
 const top = fb.AlwaysOnTop;
 let topSeen = 0;
 function on_always_on_top_changed(state) {
@@ -152,4 +158,11 @@ window.SetTimeout(() => {
         'setTimeout(function () { a[1]("ok", document.title, a.length); window.close(); }, 2500);</script></body></html>',
         { width: 320, height: 140, data: ['shown by the smoke test', (s, t, n) => console.log('smoke: html dialog ' + s + ' ' + t + ' ' + n)] });
     console.log('smoke: html dialog closed');
+    dialogDone = true;
 }, 800);
+let dialogDone = false, hoverSeen = false;
+function on_mouse_move() {
+    if (!dialogDone || hoverSeen) return;
+    hoverSeen = true;
+    console.log('smoke: hover after dialog');
+}

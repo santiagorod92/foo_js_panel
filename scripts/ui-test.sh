@@ -68,7 +68,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PLATFORM="$1"
 SCENARIO="${2:-smoke}"
-case "$PLATFORM:$SCENARIO" in mac-vm:import|mac-vm:dragdrop) usage >&2; exit 2 ;; mac-vm:catrox|win11-arm:catrox|*:smoke|*:dragdrop|*:jsp3|*:wsh|*:reload|*:import|win11-arm:menus|win11-arm:images|win11-arm:wheel|*:editor|*:windowless) ;; *) usage >&2; exit 2 ;; esac
+case "$PLATFORM:$SCENARIO" in mac-vm:import|mac-vm:dragdrop) usage >&2; exit 2 ;; mac-vm:catrox|win11-arm:catrox|*:smoke|*:dragdrop|*:jsp3|*:wsh|*:reload|*:import|*:menus|*:audio|mac:layout|mac-vm:layout|win11-arm:images|win11-arm:wheel|*:editor|*:windowless) ;; *) usage >&2; exit 2 ;; esac
 SHOTS="$REPO/build/ui-test"
 mkdir -p "$SHOTS"
 ACTIVE_SKIN='cfg_var.2A7E4C11-8B3F-4D6A-9E52-1C8F3A6B0D24'
@@ -83,7 +83,7 @@ EXPECT=('foo_js_panel .* QuickJS' 'smoke: loaded, include ok' 'smoke: size ' 'sm
         'smoke: properties runs=[0-9]+' 'smoke: paths profile=true foobar=true version=[0-9]' 'smoke: menu Playback/Stop=true nope=false'
         'smoke: library=[0-9]+ tracks=[0-9]+ query=[0-9]+' 'smoke: plman playlists=[0-9]+ .* guid=true noguid=-1' 'smoke: notify from [0-9]+ to [0-9]+' 'smoke: menus built' 'smoke: pixels ff386898 fff80808:1$' 'smoke: activex fso=hello files=1 gone=true reg=10 ui=0 timers=function'
         'smoke: state outputs=[1-9][0-9]* active=1 dsp=[0-9]+ rg=true lock=AddItems\+RenamePlaylist/JS Panel unlocked=0 charset=0 map=AB' 'smoke: state-cb top=(true|false)'
-        'smoke: script command run=true' 'smoke: main menu 2' 'smoke: tooltip smoke tooltip [0-9]+'
+        'smoke: script command run=true' 'smoke: main menu 2' 'smoke: tooltip smoke tooltip [0-9]+' 'smoke: zh simp=true trad=true sel=number scrollbar=true' 'smoke: recycle gone=true'
         'smoke: theme dui=ff[0-9a-f]{6},ff[0-9a-f]{6} cui=ff[0-9a-f]{6} font=.+ [0-9]+ sys=ff[0-9a-f]{6}'
         'smoke: fonts segoe=true semibold=true nope=false'
         'smoke: ini write=true read=[0-9]+,js panel missing=def package=null' 'smoke: queue found=true contents=[1-9][0-9]* removed=true'
@@ -115,7 +115,7 @@ CATROX_EXPECT=('foo_js_panel .* QuickJS' 'catrox: layout found' 'catrox: request
                'font loaded: Guifx v2 Transports[.]ttf' 'loaded .*foo_ui_panels-skins.Theme.js.Menu[.]js'
                'loaded .*foo_ui_panels-skins.Theme.js.Top_Panel[.]js' 'loaded .*foo_ui_panels-skins.Theme.js.SeekBar(_2)?[.]js')
 RELOAD_EXPECT=('foo_js_panel .* QuickJS' 'reload: generation 1' 'reload: generation 2')
-JSP3_EXPECT=('foo_js_panel .* QuickJS' 'jsp3: loaded lodash=function chunks=2 dui=true dark=boolean files=number now=true caseless=function release=true' 'jsp3: paint w=[1-9][0-9]*')
+JSP3_EXPECT=('foo_js_panel .* QuickJS' 'jsp3: stub=(image|null)' 'jsp3: loaded lodash=function chunks=2 dui=true dark=boolean files=number now=true caseless=function release=true' 'jsp3: paint w=[1-9][0-9]*')
 WSH_EXPECT=('foo_js_panel .* QuickJS' 'wsh: loaded colour=number sys=number playlists=true glob=number enum=6 vb=2 height=true match=true'
             'uses fb[.]NoSuchWshApi, which JS Panel doesn.t implement' 'wsh: paint lines=1 chars=20' 'wsh: timer ticks=2')
 WINDOWLESS_EXPECT=('foo_js_panel .* QuickJS' 'windowless panel WL runs' 'windowless: loaded name=WL transparent=true'
@@ -123,6 +123,11 @@ WINDOWLESS_EXPECT=('foo_js_panel .* QuickJS' 'windowless panel WL runs' 'windowl
                    'windowless: move' 'windowless: focus true' 'windowless: down [0-9]+,[0-9]+' 'windowless: up [0-9]+,[0-9]+' 'windowless: key 65')
 DRAGDROP_EXPECT=('foo_js_panel .* QuickJS' 'dragdrop: clipboard copied=true has=true count=2' 'dragdrop: ready source'
                  'dragdrop: ready target' 'dragdrop: enter effect=[1-3]' 'dragdrop: drop at ' 'dragdrop: added 2')
+MENUS_EXPECT=('foo_js_panel .* QuickJS' 'menus: showing' 'menus: picked 0' 'inputbox: showing' 'inputbox: value=hi$'
+              'menus: focus true' 'menus: char a' 'menus: key_up 65' 'picker: showing' 'picker: colour=ff123456' 'properties: showing')
+DEFAULT_UI_MODULE='6EBCE8DE-A55C-4E09-9EFE-A8B6A66D69FD'
+CUSTOM_LAYOUT_ID='93759692-3FF5-4301-8E1A-237D98BCB38F'
+AUDIO_EXPECT=('foo_js_panel .* QuickJS' 'audio: play' 'audio: level -([0-9]|[1-8][0-9])[.][0-9] lufs -?[0-9]+[.][0-9] corr -?[0-9][.][0-9]{2}')
 MAC_PROFILE="$HOME/Library/foobar2000-v2"
 MAC_VM="${MAC_VM:-$REPO/../foo_navidrome/scripts/terminal-mac.sh}"
 MAC_REPO="$REPO"
@@ -151,6 +156,13 @@ mac_launch() {
 mac_crashes() { m 'ls ~/Library/Logs/DiagnosticReports 2>/dev/null | grep -c "^foobar2000" || true'; }
 mac_restore() {
   mac_quit
+  if [ -n "${MAC_LAYOUT_SAVED:-}" ]; then
+    m "sqlite3 '$MAC_DB' \"insert or replace into configStrings(name,value) values('ui.module','$MAC_PREV_MODULE');\""
+    if [ -n "$MAC_PREV_LAYOUT_ID" ]; then m "sqlite3 '$MAC_DB' \"insert or replace into configStrings(name,value) values('Mac.UI.layoutID','$MAC_PREV_LAYOUT_ID');\""
+    else m "sqlite3 '$MAC_DB' \"delete from configStrings where name='Mac.UI.layoutID';\""; fi
+    m "if [ -f '$MAC_LAYOUT_SAVED' ]; then cp '$MAC_LAYOUT_SAVED' '$MAC_PROFILE/UI-Layout.txt'; else rm -f '$MAC_PROFILE/UI-Layout.txt'; fi"
+    say "restored the UI module and the layout"
+  fi
   m "MAC_LOCAL_STATE='$MAC_LOCAL_STATE' '$MAC_REPO/scripts/mac-local.sh' --restore"
   if [ -n "$MAC_PREV_VERBOSE" ]; then m "sqlite3 '$MAC_DB' \"insert or replace into configInts(name,value) values('$VERBOSE',$MAC_PREV_VERBOSE);\""
   else m "sqlite3 '$MAC_DB' \"delete from configInts where name='$VERBOSE';\""; fi
@@ -209,6 +221,14 @@ mac_smoke() {
   mac_quit
   m "MAC_LOCAL_STATE='$MAC_LOCAL_STATE' '$MAC_REPO/scripts/mac-local.sh' --panels-ui --skin '$MAC_REPO/tests/skins/$SKIN' --script '$script'"
   m "sqlite3 '$MAC_DB' \"insert or replace into configInts(name,value) values('$VERBOSE',1);\""
+  if [ "$SCENARIO" = layout ]; then
+    MAC_PREV_MODULE="$(m "sqlite3 '$MAC_DB' \"select value from configStrings where name='ui.module'\"")"
+    MAC_PREV_LAYOUT_ID="$(m "sqlite3 '$MAC_DB' \"select value from configStrings where name='Mac.UI.layoutID'\"")"
+    MAC_LAYOUT_SAVED="$MAC_LOCAL_STATE/UI-Layout.txt"
+    m "[ -f '$MAC_PROFILE/UI-Layout.txt' ] && cp '$MAC_PROFILE/UI-Layout.txt' '$MAC_LAYOUT_SAVED'; true"
+    m "printf '%s\\n' 'splitter horizontal style=thin' ' splitter vertical style=thin' '  foo_js_panel script=\"$MAC_REPO/tests/scripts/layout-a.js\"' '  foo_js_panel script=\"$MAC_REPO/tests/scripts/layout-b.js\"' '  foo_js_panel' ' playback-controls' > '$MAC_PROFILE/UI-Layout.txt'"
+    m "sqlite3 '$MAC_DB' \"insert or replace into configStrings(name,value) values('ui.module','$DEFAULT_UI_MODULE'); insert or replace into configStrings(name,value) values('Mac.UI.layoutID','$CUSTOM_LAYOUT_ID');\""
+  fi
   local start; start=$(( $(m "wc -c < '$MAC_LOG' 2>/dev/null || echo 0") + 1 ))
   mac_log() { m "tail -c +$start '$MAC_LOG' 2>/dev/null" || true; }
   say "launch foobar2000"
@@ -226,6 +246,9 @@ mac_smoke() {
   [ "$SCENARIO" = jsp3 ] && EXPECT=("${JSP3_EXPECT[@]}")
   [ "$SCENARIO" = wsh ] && EXPECT=("${WSH_EXPECT[@]}")
   [ "$SCENARIO" = windowless ] && ready='windowless: timer ok' && EXPECT=("${WINDOWLESS_EXPECT[@]}")
+  [ "$SCENARIO" = menus ] && ready='menus: showing' && EXPECT=("${MENUS_EXPECT[@]}")
+  [ "$SCENARIO" = audio ] && ready='audio: level' && EXPECT=("${AUDIO_EXPECT[@]}")
+  [ "$SCENARIO" = layout ] && ready='layout: default' && EXPECT=('foo_js_panel .* QuickJS' 'layout: A [0-9]+' 'layout: B [0-9]+' 'layout: default [0-9]+')
   for _ in $(seq 1 60); do
     log="$(mac_log)"
     grep -aq "$ready" <<<"$log" && break
@@ -239,6 +262,38 @@ mac_smoke() {
       grep -aq 'reload: generation 2' <<<"$log" && break
       sleep 1
     done
+  fi
+  if [ "$SCENARIO" = menus ]; then
+    mac_wait() {
+      for _ in $(seq 1 15); do
+        log="$(mac_log)"
+        grep -aEq "$1" <<<"$log" && return 0
+        sleep 1
+      done
+      return 1
+    }
+    sleep 2
+    "$MAC_VM" shot "$SHOTS/mac-vm-menu.png" >/dev/null 2>&1 || true
+    "$MAC_VM" key esc >/dev/null
+    mac_wait 'inputbox: showing' || fail "the input box never opened"
+    sleep 2
+    "$MAC_VM" shot "$SHOTS/mac-vm-inputbox.png" >/dev/null 2>&1 || true
+    "$MAC_VM" type hi >/dev/null
+    "$MAC_VM" key ret >/dev/null
+    mac_wait 'inputbox: (value|cancelled)' || true
+    local mw mh
+    read -r mw mh < <(sips -g pixelWidth -g pixelHeight "$SHOTS/mac-vm-menu.png" 2>/dev/null | awk '/pixelWidth/{w=$2} /pixelHeight/{h=$2} END{print w, h}')
+    "$MAC_VM" click $(( mw / 2 )) $(( mh / 2 )) >/dev/null
+    sleep 1
+    "$MAC_VM" type a >/dev/null
+    mac_wait 'picker: showing' || true
+    sleep 2
+    "$MAC_VM" shot "$SHOTS/mac-vm-picker.png" >/dev/null 2>&1 || true
+    "$MAC_VM" key cmd+w >/dev/null
+    mac_wait 'properties: showing' || true
+    sleep 2
+    "$MAC_VM" shot "$SHOTS/mac-vm-properties.png" >/dev/null 2>&1 || true
+    "$MAC_VM" key cmd+w >/dev/null
   fi
   if [ "$SCENARIO" = windowless ]; then
     sleep 2
@@ -260,14 +315,40 @@ mac_smoke() {
       grep -aq 'windowless: key' <<<"$log" && break
       sleep 1
     done
+    if [ "$PLATFORM" = mac-vm ]; then
+      EXPECT+=('windowless: menu open at [0-9]+,[0-9]+' 'windowless: menu id=1' 'windowless: caption moved' 'windowless: restored true')
+      "$MAC_VM" click $(( cx + 60 )) $(( cy + 60 )) right >/dev/null
+      sleep 1
+      "$MAC_VM" shot "$SHOTS/mac-vm-windowless-menu.png" >/dev/null 2>&1 || true
+      "$MAC_VM" key return >/dev/null
+      local cap=""
+      for _ in $(seq 1 15); do
+        log="$(mac_log)"
+        cap="$(grep -aoE 'windowless: caption at [0-9]+,[0-9]+' <<<"$log" | tail -1 | awk '{print $4}' || true)"
+        [ -n "$cap" ] && break
+        sleep 1
+      done
+      [ -n "$cap" ] && "$MAC_VM" drag "${cap%,*}" "${cap#*,}" "${cap%,*}" $(( ${cap#*,} + 120 )) >/dev/null
+      for _ in $(seq 1 10); do
+        log="$(mac_log)"
+        grep -aq 'windowless: restored' <<<"$log" && break
+        sleep 1
+      done
+    fi
   fi
   if [ "$SCENARIO" = dragdrop ]; then
-    EXPECT=("${DRAGDROP_EXPECT[@]}" 'dragdrop: source effect=0')
+    EXPECT=("${DRAGDROP_EXPECT[@]}" 'dragdrop: source effect=1' 'dragdrop: source effect=0')
     sleep 2
     "$REPO/scripts/mac-click.sh" 200 200 drag 200 -40 || say "the drag couldn't be posted"
     for _ in $(seq 1 15); do
       log="$(mac_log)"
       grep -aq 'dragdrop: added' <<<"$log" && break
+      sleep 1
+    done
+    "$REPO/scripts/mac-click.sh" 200 200 drag 320 220 || say "the cancelled drag couldn't be posted"
+    for _ in $(seq 1 15); do
+      log="$(mac_log)"
+      grep -aq 'dragdrop: source effect=0' <<<"$log" && break
       sleep 1
     done
   fi
@@ -279,6 +360,33 @@ mac_smoke() {
   [ "$SCENARIO" = editor ] && sleep 2
   if [ "$PLATFORM" = mac-vm ]; then
     "$MAC_VM" shot "$SHOTS/mac-vm-$SCENARIO.png" >/dev/null 2>&1 && say "screenshot $SHOTS/mac-vm-$SCENARIO.png"
+    if [ "$SCENARIO" = editor ]; then
+      EXPECT+=('console: answer [*] 2 = 84' 'console: name[.]toUpperCase[(][)] = "EDITOR"')
+      "$MAC_VM" click 640 300 >/dev/null
+      sleep 0.5
+      "$MAC_VM" key f6 >/dev/null
+      "$MAC_VM" type 'answer * 2' >/dev/null
+      "$MAC_VM" key return >/dev/null
+      "$MAC_VM" type 'name.toUpperCase()' >/dev/null
+      "$MAC_VM" key return >/dev/null
+      "$MAC_VM" type ':watch window.Width' >/dev/null
+      "$MAC_VM" key return >/dev/null
+      sleep 1.5
+      "$MAC_VM" shot "$SHOTS/mac-vm-editor-console.png" >/dev/null 2>&1 && say "screenshot $SHOTS/mac-vm-editor-console.png"
+      log="$(mac_log)"
+    fi
+    if [ "$SCENARIO" = smoke ]; then
+      EXPECT+=('smoke: hover after dialog')
+      local tw th
+      read -r tw th < <(sips -g pixelWidth -g pixelHeight "$SHOTS/mac-vm-smoke.png" 2>/dev/null | awk '/pixelWidth/{w=$2} /pixelHeight/{h=$2} END{print w, h}')
+      local i
+      "$MAC_VM" move 20 $(( th / 2 )) >/dev/null
+      sleep 0.5
+      for i in 40 30 20 10 4 0; do "$MAC_VM" move $(( tw / 2 - i )) $(( th / 2 )) >/dev/null; sleep 0.2; done
+      sleep 3
+      "$MAC_VM" shot "$SHOTS/mac-vm-smoke-tooltip.png" >/dev/null 2>&1 && say "screenshot $SHOTS/mac-vm-smoke-tooltip.png"
+      log="$(mac_log)"
+    fi
   fi
   say "log"
   check_log "$log"
@@ -384,8 +492,7 @@ win11_arm_smoke() {
     return 1
   }
   if [ "$SCENARIO" = menus ]; then
-    EXPECT=('foo_js_panel .* QuickJS' 'menus: showing' 'menus: picked 0' 'inputbox: showing' 'inputbox: value=hi$'
-            'menus: focus true' 'menus: char a' 'menus: key_up 65' 'picker: showing' 'picker: colour=ff123456' 'properties: showing')
+    EXPECT=("${MENUS_EXPECT[@]}")
     wait_log 'menus: showing' || fail "the popup menu never opened"
     sleep 2
     "$vm" shot "$SHOTS/win11-arm-$arch-menu.png" >/dev/null 2>&1 && say "screenshot $SHOTS/win11-arm-$arch-menu.png"
@@ -408,6 +515,9 @@ win11_arm_smoke() {
     sleep 2
     "$vm" shot "$SHOTS/win11-arm-$arch-properties.png" >/dev/null 2>&1 && say "screenshot $SHOTS/win11-arm-$arch-properties.png"
     "$vm" key esc >/dev/null
+  elif [ "$SCENARIO" = audio ]; then
+    EXPECT=("${AUDIO_EXPECT[@]}")
+    wait_log 'audio: level' || true
   elif [ "$SCENARIO" = editor ]; then
     EXPECT=('foo_js_panel .* QuickJS' 'editor.js.*SyntaxError')
     EXPECTED_ERRORS='editor[.]js'
@@ -415,6 +525,12 @@ win11_arm_smoke() {
     sleep 2
     "$vm" tap '50%,40%,right;wait,800;53%,43%;wait,2500' >/dev/null
     "$vm" shot "$SHOTS/win11-arm-$arch-editor.png" >/dev/null 2>&1 && say "screenshot $SHOTS/win11-arm-$arch-editor.png"
+    EXPECT+=('console: window[.]ID = [0-9]+')
+    "$vm" key f6 w i n d o w dot shift-i shift-d ret >/dev/null
+    "$vm" key shift-semicolon w a t c h spc w i n d o w dot shift-w i d t h ret >/dev/null
+    sleep 1.5
+    wait_log 'console: window' || true
+    "$vm" shot "$SHOTS/win11-arm-$arch-editor-console.png" >/dev/null 2>&1 && say "screenshot $SHOTS/win11-arm-$arch-editor-console.png"
     "$vm" key esc >/dev/null
   elif [ "$SCENARIO" = import ] || [ "$SCENARIO" = catrox ]; then
     if [ "$SCENARIO" = catrox ]; then
@@ -437,12 +553,19 @@ win11_arm_smoke() {
     "$vm" ssh "powershell -NoProfile -Command \"\$f = \$env:LOCALAPPDATA + '\\Temp\\jsp-scripts\\reload.js'; (Get-Content \$f) -replace 'generation = 1','generation = 2' | Set-Content \$f\"" >/dev/null
     wait_log 'reload: generation 2' || true
   elif [ "$SCENARIO" = windowless ]; then
-    EXPECT=("${WINDOWLESS_EXPECT[@]}")
+    EXPECT=("${WINDOWLESS_EXPECT[@]}" 'windowless: menu open at [0-9]+,[0-9]+' 'windowless: menu id=1' 'windowless: caption moved' 'windowless: restored true')
     wait_log 'windowless: timer ok' || fail "the windowless panel never ran"
     sleep 2
     "$vm" tap '50%,50%;wait,800;key,65;wait,800' >/dev/null
     wait_log 'windowless: key' || true
     "$vm" shot "$SHOTS/win11-arm-$arch-windowless.png" >/dev/null 2>&1 && say "screenshot $SHOTS/win11-arm-$arch-windowless.png"
+    "$vm" tap '60%,60%,right;wait,800' >/dev/null
+    "$vm" shot "$SHOTS/win11-arm-$arch-windowless-menu.png" >/dev/null 2>&1 && say "screenshot $SHOTS/win11-arm-$arch-windowless-menu.png"
+    "$vm" tap 'key,40;key,13' >/dev/null
+    wait_log 'windowless: caption at' || true
+    local cap; cap="$(grep -aoE 'windowless: caption at [0-9]+,[0-9]+' <<<"$log" | tail -1 | awk '{print $4}' || true)"
+    [ -n "$cap" ] && "$vm" tap "drag,$cap,${cap%,*},$(( ${cap#*,} + 120 ))" >/dev/null
+    wait_log 'windowless: caption moved' || true
   elif [ "$SCENARIO" = jsp3 ]; then
     EXPECT=("${JSP3_EXPECT[@]}")
     wait_log 'jsp3: paint' || true
@@ -455,8 +578,7 @@ win11_arm_smoke() {
     EXPECT=("${DRAGDROP_EXPECT[@]}" 'dragdrop: source effect=1')
     wait_log 'dragdrop: ready target' || fail "the panels never loaded"
     sleep 2
-    local drop_y=96%; [ "$arch" = x86 ] && drop_y=85%
-    "$vm" tap "drag,50%,45%,50%,$drop_y" >/dev/null
+    "$vm" tap "drag,50%,45%,50%,85%" >/dev/null
     wait_log 'dragdrop: added' || true
     "$vm" shot "$SHOTS/win11-arm-$arch-dragdrop.png" >/dev/null 2>&1 && say "screenshot $SHOTS/win11-arm-$arch-dragdrop.png"
   elif [ "$SCENARIO" = images ]; then
@@ -475,6 +597,7 @@ win11_arm_smoke() {
     wait_log 'smoke: paint .* ticks=3' || true
     "$vm" shot "$SHOTS/win11-arm-$arch.png" >/dev/null 2>&1 && say "screenshot $SHOTS/win11-arm-$arch.png"
     "$vm" tap 'hover,50%,50%;wait,1500' >/dev/null
+    EXPECT+=('smoke: hover after dialog')
     "$vm" shot "$SHOTS/win11-arm-$arch-tooltip.png" >/dev/null 2>&1 && say "screenshot $SHOTS/win11-arm-$arch-tooltip.png"
   fi
   for _ in $(seq 1 8); do
