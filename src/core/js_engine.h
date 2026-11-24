@@ -264,6 +264,11 @@ public:
     virtual void http_request(const HttpRequest&, HttpDone done) { done({ 0, {}, "no network", {} }); }
     virtual HttpResponse http_request_sync(const HttpRequest&) { return { 0, {}, "no network", {} }; }
     virtual bool shell_run(const std::string&) { return false; }
+    virtual std::string map_chinese(const std::string& text, bool) { return text; }
+    virtual bool move_to_trash(const std::string&) { return false; }
+    virtual int selection_type() { return 0; }
+    virtual int system_metric(int index);
+    virtual pui::gfx::ImagePtr album_art_stub(int) { return nullptr; }
     virtual std::string clipboard_text() { return {}; }
     virtual bool set_clipboard_text(const std::string&) { return false; }
     virtual int message_box(const std::string&, const std::string&, int) { return 1; }
@@ -363,6 +368,7 @@ public:
     void playback_starting(int cmd, bool paused);
     bool invoke(const char* name, const std::vector<Arg>& args = {});
     bool in_modal() const;
+    std::string evaluate(const std::string& code);
     const std::vector<std::string>& source_files() const;
     std::vector<CallTiming> profile() const;
     size_t memory_used() const;

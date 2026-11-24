@@ -259,6 +259,48 @@ TEST("engine: include resolves relative to the script folder") {
     CHECK(missing.error().find("nope.js") != std::string::npos);
 }
 
+TEST("engine: include falls back to the component folder, as SMP's samples expect") {
+    t::FakeHost host;
+    host.componentPath = "/fb2k/components/";
+    host.files["/fb2k/components/docs/Flags.js"] = "var DT_CENTER = 1;";
+    host.files["/samples/basic/docs/Flags.js"] = "var DT_CENTER = 2;";
+    JsEngine e(host);
+    CHECK(e.load("include('docs/Flags.js'); console.log(DT_CENTER);", "/samples/other/Sample.js"));
+    CHECK_EQ(host.console_lines.back(), std::string("1"));
+    JsEngine near(host);
+    CHECK(near.load("include('docs/Flags.js'); console.log(DT_CENTER);", "/samples/basic/Sample.js"));
+    CHECK_EQ(host.console_lines.back(), std::string("2"));
+}
+
+TEST("engine: evaluate inspects values in the global scope and never stops the script") {
+    t::FakeHost host;
+    host.art["stub:0"] = std::make_shared<t::FakeImage>(40, 20);
+    JsEngine e(host);
+    CHECK(e.load("var state = { n: 2, list: [1, 'a', { deep: { deeper: 1 } }], f: function go() {} }; let hidden = 5;", "/s/main.js"));
+    CHECK_EQ(e.evaluate("state"), std::string("{n: 2, list: [1, \"a\", {\u2026}], f: [Function go]}"));
+    CHECK_EQ(e.evaluate("hidden * 2"), std::string("10"));
+    CHECK_EQ(e.evaluate("'x'"), std::string("\"x\""));
+    CHECK_EQ(e.evaluate("undefined"), std::string("undefined"));
+    CHECK_EQ(e.evaluate("var made = 7"), std::string("undefined"));
+    CHECK_EQ(e.evaluate("made"), std::string("7"));
+    CHECK_EQ(e.evaluate("nope.x"), std::string("Uncaught ReferenceError: nope is not defined"));
+    CHECK(!e.failed());
+    CHECK_EQ(e.evaluate("gdi.CreateImage(40, 20)").substr(0, 8), std::string("GdiBitma"));
+    CHECK(e.evaluate("gdi.CreateImage(40, 20)").find("Width: 40") != std::string::npos);
+    CHECK(e.evaluate("Array.from({ length: 30 }, (_, i) => i)").find("\u2026 10 more") != std::string::npos);
+    CHECK_EQ(e.evaluate("const loop = {}; loop.me = loop; loop"), std::string("{me: [Circular]}"));
+}
+
+TEST("engine: evaluate refuses while a modal call of the script is open") {
+    t::FakeHost host;
+    JsEngine e(host);
+    std::string inside;
+    host.onPopup = [&] { inside = e.evaluate("1 + 1"); };
+    CHECK(e.load("window.CreatePopupMenu().TrackPopupMenu(0, 0);", ""));
+    CHECK(inside.rfind("busy", 0) == 0);
+    CHECK_EQ(e.evaluate("1 + 1"), std::string("2"));
+}
+
 TEST("engine: promise jobs run after a callback") {
     t::FakeHost host;
     JsEngine e(host);
@@ -1744,7 +1786,7 @@ TEST("ActiveX: WScript.Shell, htmlfile clipboard, UIHacks, ESLyric, Georgia-ReBO
                  "const esl = new ActiveXObject('ESLyric'), panel = esl.GetAll(); panel.SetTextColor(1); panel.SetTextFont('Segoe UI', 12, 0);"
                  "const aw = new ActiveXObject('AudioWizard'), uw = new ActiveXObject('UIWizard'); aw.StartPeakmeterMonitoring(50, 50); uw.FrameStyle = 3;"
                  "let unknown = ''; try { new ActiveXObject('Some.Thing'); } catch (x) { unknown = x.message; }"
-                 "let vbs = ''; try { const s = new ActiveXObject('ScriptControl'); s.Language = 'VBScript'; s.Eval('MsgBox(1)'); } catch (x) { vbs = 'no vbs'; }"
+                 "let vbs = ''; try { const s = new ActiveXObject('ScriptControl'); s.Language = 'VBScript'; s.Eval('Dim x'); } catch (x) { vbs = 'no vbs'; }"
                  "console.log(v, reg, answer, was, ui.FrameStyle, ui.DisableSizing, ui.MaxSize.Enabled, typeof panel,"
                  " JSON.parse(aw.GetWaveformDataInfo()).metricsPerChannel, aw.GetWaveformTrackCount(), aw.PeakmeterAdjustedLeftRMS, unknown, vbs);", ""));
     CHECK_EQ(host.console_lines.back(), std::string("10 threw 6 copied 3 true false function 5 0 -100 Automation server can't create object (Some.Thing) no vbs"));
@@ -2064,6 +2106,52 @@ TEST("engine: utils.MapString and DetectCharset") {
     CHECK(!e.failed());
     CHECK_EQ(host.console_lines.back(), std::string("abc ABC true true 1252 0"));
     std::filesystem::remove_all(dir);
+}
+
+TEST("ActiveX: ScriptControl evaluates MsgBox and InputBox calls; Shell.Application's recycle bin") {
+    t::FakeHost host;
+    host.boxAnswer = 6;
+    host.inputOk = true;
+    host.inputValue = "typed";
+    JsEngine e(host);
+    CHECK(e.load("const vbe = new ActiveXObject('ScriptControl'); vbe.Language = 'VBScript';"
+                 "const yes = vbe.Eval('MsgBox(\"Say \" + Chr(34) + \"hi\" + Chr(34) + Chr(13) + \"now\", 4, \"Eole\")');"
+                 "const typed = vbe.Eval('InputBox(\"Name?\", \"Title\", \"def\")');"
+                 "const app = new ActiveXObject('Shell.Application'); app.NameSpace(10).MoveHere('/cache/dir');"
+                 "let locked = ''; try { app.NameSpace(10).MoveHere('/locked'); } catch (x) { locked = 'threw'; }"
+                 "console.log(yes, typed, app.NameSpace(17), locked);", ""));
+    CHECK(!e.failed());
+    CHECK_EQ(host.console_lines.back(), std::string("6 typed null threw"));
+    CHECK_EQ(host.boxes.back(), std::string("Eole: Say \"hi\"\nnow (4)"));
+    CHECK_EQ(host.inputPrompt, std::string("Name?"));
+    CHECK(host.trashed == (std::vector<std::string>{ "/cache/dir", "/locked" }));
+}
+
+TEST("engine: AudioWizard's real-time meters come from the visualisation stream") {
+    t::FakeHost host;
+    for (int i = 0; i < 1000; ++i) {
+        host.meterData.push_back(i % 2 ? 0.5f : -0.5f);
+        host.meterData.push_back(i % 2 ? 0.25f : -0.25f);
+    }
+    JsEngine e(host);
+    CHECK(e.load("const aw = new ActiveXObject('AudioWizard'); aw.StartPeakmeterMonitoring(10, 100); const r = x => Math.round(x * 10) / 10;"
+                 "const a = [r(aw.PeakmeterAdjustedLeftRMS), r(aw.PeakmeterAdjustedRightSamplePeak), r(aw.PhaseCorrelation), aw.RawAudioData.length > 0];"
+                 "aw.PeakmeterOffset = 3; console.log(a.join(' '), r(aw.PeakmeterAdjustedLeftRMS), r(aw.LeftRMS), aw.MomentaryLUFS < 0);", ""));
+    CHECK(!e.failed());
+    CHECK_EQ(host.console_lines.back(), std::string("-6 -12 1 true -3 -6 true"));
+}
+
+TEST("engine: MapString Chinese flags, GetSelectionType and GetAlbumArtStub go to the host") {
+    t::FakeHost host;
+    host.selection_type_value = 4;
+    host.art["stub:1"] = std::make_shared<t::FakeImage>(64, 32);
+    JsEngine e(host);
+    CHECK(e.load("if (false) utils.ListFiles('.');"
+                 "const s = fb.GetAlbumArtStub(1), none = fb.GetAlbumArtStub();"
+                 "console.log(utils.MapString('ab', 0, 0x2000000), utils.MapString('ab', 0, 0x4000000), fb.GetSelectionType(),"
+                 " s.Width + 'x' + s.Height, none, utils.GetSystemMetrics(2), utils.GetSystemMetrics(999));", ""));
+    CHECK(!e.failed());
+    CHECK_EQ(host.console_lines.back(), std::string("S:ab T:ab 4 64x32 null 17 0"));
 }
 
 TEST("engine: drag callbacks get a DropTargetAction and their changes come back") {

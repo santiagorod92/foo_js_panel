@@ -30,8 +30,9 @@ struct StillHost : jsp::JsHost {
     jsp::Tracks library;
     std::vector<jsp::LibraryAlbum> albums;
     std::map<int, int> timers;
-    std::string profile, properties;
+    std::string profile, properties, component;
     std::string profile_path() override { return profile; }
+    std::string component_path() override { return component; }
     std::string bundled_import(const std::string& name) override {
         std::string text;
         return name == "lodash" && read_text_file(JSP_LODASH_PATH, text) ? text : std::string();
@@ -150,14 +151,14 @@ int usage() {
                  "usage: render_script SCRIPT.js OUT.png [--size WxH] [--scale S] [--playing] [--paused]\n"
                  "                     [--time SECONDS] [--length SECONDS] [--field 'EXPR=VALUE']... [--art IMAGE]\n"
                  "                     [--library FILE.tsv] [--navidrome FILE.tsv] [--click X,Y]...\n"
-                 "                     [--profile DIR] [--properties FILE.json] [--sandbox DIR] [--new-track] [--rounds N]\n"
+                 "                     [--profile DIR] [--component DIR] [--properties FILE.json] [--sandbox DIR] [--new-track] [--rounds N]\n"
                  "Runs SCRIPT.js in the JS Panel engine (resize, N rounds of pending timers (3), clicks, then\n"
                  "on_paint) on a CoreGraphics canvas and writes the frame as a PNG. --field answers\n"
                  "fb.TitleFormat(EXPR).Eval();\n"
                  "--art is every album art request's image; --library is the Media Library, a TSV whose first\n"
                  "line holds titleformat expressions and each further line one track's values; --navidrome is\n"
                  "the server's albums, TSV lines id, name, artist, artist id, year, song count. --profile is\n"
-                 "fb.ProfilePath, --properties the panel's window.GetProperty values (JSON). --sandbox refuses\n"
+                 "fb.ProfilePath, --component fb.ComponentPath, --properties the panel's window.GetProperty values (JSON). --sandbox refuses\n"
                  "every file write, move or delete outside DIR (shell commands, the network and the clipboard\n"
                  "are never reached from this tool). --new-track sends on_playback_new_track after loading.\n");
     return 2;
@@ -239,6 +240,11 @@ int main(int argc, char** argv) {
             if (!v) return usage();
             host.profile = v;
             if (!host.profile.empty() && host.profile.back() != '/') host.profile += '/';
+        } else if (a == "--component") {
+            const char* v = next();
+            if (!v) return usage();
+            host.component = v;
+            if (!host.component.empty() && host.component.back() != '/') host.component += '/';
         } else if (a == "--new-track") {
             newTrack = true;
         } else if (a == "--sandbox") {

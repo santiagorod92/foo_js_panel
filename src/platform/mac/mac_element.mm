@@ -2,6 +2,7 @@
 #import <WebKit/WebKit.h>
 #include "../../fb2k.h"
 #include "platform/mac/mac_canvas.h"
+#include "../../core/editor_console.h"
 #include "../../core/js_api_util.h"
 #include "../../core/js_highlight.h"
 #include "../../core/js_panel_api.h"
@@ -187,6 +188,7 @@ std::string js_literal(const jsp::DialogValue& d) {
 @interface FooJsPanelHtmlDialog : NSObject <WKScriptMessageHandler, WKNavigationDelegate, NSWindowDelegate>
 @property (nonatomic, strong) NSPanel* panel;
 @property (nonatomic, assign) const jsp::DialogCall* call;
+@property (nonatomic, assign) BOOL done;
 @end
 
 @implementation FooJsPanelHtmlDialog
@@ -210,7 +212,7 @@ std::string js_literal(const jsp::DialogValue& d) {
 - (void)webView:(WKWebView*)w didFinishNavigation:(WKNavigation*)n {
     if (w.title.length) self.panel.title = w.title;
 }
-- (void)windowWillClose:(NSNotification*)n { [NSApp stopModal]; }
+- (void)windowWillClose:(NSNotification*)n { self.done = YES; }
 @end
 
 @interface FooJsPanelLineRuler : NSRulerView
@@ -256,6 +258,7 @@ std::string js_literal(const jsp::DialogValue& d) {
 @interface FooJsPanelEditorWindow : NSWindow
 @property (nonatomic, copy) void (^onApply)(BOOL close);
 @property (nonatomic, copy) void (^onGotoError)(void);
+@property (nonatomic, copy) void (^onSwitchPane)(void);
 @end
 
 @implementation FooJsPanelEditorWindow
@@ -272,6 +275,11 @@ std::string js_literal(const jsp::DialogValue& d) {
     if (e.type == NSEventTypeKeyDown && e.charactersIgnoringModifiers.length &&
         [e.charactersIgnoringModifiers characterAtIndex:0] == NSF8FunctionKey) {
         if (self.onGotoError) self.onGotoError();
+        return YES;
+    }
+    if (e.type == NSEventTypeKeyDown && e.charactersIgnoringModifiers.length &&
+        [e.charactersIgnoringModifiers characterAtIndex:0] == NSF6FunctionKey && self.onSwitchPane) {
+        self.onSwitchPane();
         return YES;
     }
     return [super performKeyEquivalent:e];
@@ -297,6 +305,11 @@ std::string js_literal(const jsp::DialogValue& d) {
     std::string _syntax;
     std::string _applied;
     NSTimer* _check;
+    jsp::EditorConsole _console;
+    NSTextView* _output;
+    NSTextField* _input;
+    NSTextField* _watches;
+    NSTimer* _poll;
 }
 
 - (NSButton*)button:(NSString*)title action:(SEL)action {
@@ -320,6 +333,7 @@ std::string js_literal(const jsp::DialogValue& d) {
     __weak FooJsPanelEditor* weakSelf = self;
     _window.onApply = ^(BOOL close) { [weakSelf apply:close]; };
     _window.onGotoError = ^{ [weakSelf gotoError]; };
+    _window.onSwitchPane = ^{ [weakSelf switchPane]; };
 
     NSScrollView* scroll = [NSTextView scrollableTextView];
     scroll.translatesAutoresizingMaskIntoConstraints = NO;
@@ -362,11 +376,48 @@ std::string js_literal(const jsp::DialogValue& d) {
 
     NSView* v = _window.contentView;
     for (NSView* c in @[ scroll, _status, revert, applyB, ok, cancel ]) [v addSubview:c];
+    NSView* above = scroll;
+    if (_hooks.evaluate) {
+        _watches = [NSTextField wrappingLabelWithString:@""];
+        _watches.translatesAutoresizingMaskIntoConstraints = NO;
+        _watches.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+        _watches.textColor = NSColor.secondaryLabelColor;
+        _watches.selectable = YES;
+        NSScrollView* out = [NSTextView scrollableTextView];
+        out.translatesAutoresizingMaskIntoConstraints = NO;
+        _output = (NSTextView*)out.documentView;
+        _output.editable = NO;
+        _output.richText = NO;
+        _output.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+        _output.string = @"Console: type an expression and press Enter (:help for the commands).\n";
+        _input = [NSTextField textFieldWithString:@""];
+        _input.translatesAutoresizingMaskIntoConstraints = NO;
+        _input.font = [NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular];
+        _input.placeholderString = @"expression, :watch EXPR, :unwatch N, :clear";
+        _input.target = self;
+        _input.action = @selector(submit:);
+        for (NSView* c in @[ _watches, out, _input ]) [v addSubview:c];
+        [NSLayoutConstraint activateConstraints:@[
+            [_watches.topAnchor constraintEqualToAnchor:scroll.bottomAnchor constant:6],
+            [_watches.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:10],
+            [_watches.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-10],
+            [out.topAnchor constraintEqualToAnchor:_watches.bottomAnchor constant:4],
+            [out.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:8],
+            [out.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-8],
+            [out.heightAnchor constraintEqualToConstant:140],
+            [_input.topAnchor constraintEqualToAnchor:out.bottomAnchor constant:4],
+            [_input.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:8],
+            [_input.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-8],
+        ]];
+        above = _input;
+        _poll = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer*) { [weakSelf poll]; }];
+        [self poll];
+    }
     [NSLayoutConstraint activateConstraints:@[
         [scroll.topAnchor constraintEqualToAnchor:v.topAnchor constant:8],
         [scroll.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:8],
         [scroll.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-8],
-        [_status.topAnchor constraintEqualToAnchor:scroll.bottomAnchor constant:6],
+        [_status.topAnchor constraintEqualToAnchor:above.bottomAnchor constant:6],
         [_status.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:10],
         [_status.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-10],
         [revert.topAnchor constraintEqualToAnchor:_status.bottomAnchor constant:8],
@@ -406,9 +457,44 @@ std::string js_literal(const jsp::DialogValue& d) {
     if (line > 0) [self gotoLine:line];
 }
 
+- (void)appendOutput:(const std::string&)text {
+    if (text.empty()) return;
+    [_output.textStorage appendAttributedString:[[NSAttributedString alloc] initWithString:ns(text) attributes:@{
+        NSFontAttributeName : _output.font, NSForegroundColorAttributeName : NSColor.textColor }]];
+    [_output scrollRangeToVisible:NSMakeRange(_output.string.length, 0)];
+}
+
+- (void)poll {
+    if (!_hooks.evaluate) return;
+    if (_hooks.console_lines)
+        for (const std::string& line : _hooks.console_lines()) [self appendOutput:line + "\n"];
+    const auto eval = _hooks.evaluate;
+    _watches.stringValue = ns(_console.watches(eval));
+}
+
+- (void)switchPane {
+    if (!_input) return;
+    NSResponder* r = _window.firstResponder;
+    const BOOL inConsole = r == _input || r == _input.currentEditor;
+    [_window makeFirstResponder:inConsole ? (NSResponder*)_text : (NSResponder*)_input];
+}
+
+- (void)submit:(id)sender {
+    if (!_hooks.evaluate) return;
+    [self poll];
+    const jsp::ConsoleReply reply = _console.submit(_input.stringValue.UTF8String ?: "", _hooks.run ? _hooks.run : _hooks.evaluate);
+    if (reply.clear) _output.string = @"";
+    _input.stringValue = @"";
+    [self appendOutput:reply.echo];
+    [self poll];
+    [self appendOutput:reply.text];
+}
+
 - (void)close {
     [_check invalidate];
     _check = nil;
+    [_poll invalidate];
+    _poll = nil;
     _hooks = {};
     [_window close];
 }
@@ -589,10 +675,16 @@ static bool mac_key(jsp::Panel& panel, NSEvent* e) {
 
 @interface FooJsPanelDragSource : NSObject <NSDraggingSource>
 @property (nonatomic, assign) NSDragOperation ops;
+@property (nonatomic, assign) BOOL ended;
+@property (nonatomic, assign) NSDragOperation result;
 @end
 
 @implementation FooJsPanelDragSource
 - (NSDragOperation)draggingSession:(NSDraggingSession*)s sourceOperationMaskForDraggingContext:(NSDraggingContext)c { return self.ops; }
+- (void)draggingSession:(NSDraggingSession*)s endedAtPoint:(NSPoint)p operation:(NSDragOperation)op {
+    self.result = op;
+    self.ended = YES;
+}
 @end
 
 namespace {
@@ -613,12 +705,22 @@ int start_drag(NSView* view, metadb_handle_list_cref tracks, int effects) {
         [d setDraggingFrame:frame contents:drag.count ? nil : image];
         [drag addObject:d];
     }
+    source.ended = NO;
+    source.result = NSDragOperationNone;
     @try {
         [view beginDraggingSessionWithItems:drag event:e source:source];
     } @catch (NSException* ex) {
         jsp::log::warn("js", std::string("DoDragDrop: ") + (ex.reason.UTF8String ?: "can't start the drag"));
+        return 0;
     }
-    return 0;
+    NSDate* limit = [NSDate dateWithTimeIntervalSinceNow:120];
+    while (!source.ended && [limit timeIntervalSinceNow] > 0) {
+        NSEvent* next = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]
+                                              inMode:NSEventTrackingRunLoopMode dequeue:YES];
+        if (next) [NSApp sendEvent:next];
+    }
+    const NSDragOperation op = source.result;
+    return (op & NSDragOperationMove) ? 2 : (op & NSDragOperationCopy) ? 1 : (op & NSDragOperationLink) ? 4 : 0;
 }
 
 int drag_event(jsp::Panel* panel, int& allowed, jsp::Drag kind, int x, int y, unsigned mask, id<NSDraggingInfo> s) {
@@ -1047,11 +1149,16 @@ bool MacSurface::html_dialog(const jsp::HtmlDialog& d, const jsp::DialogCall& ca
     if (d.center || !NSScreen.screens.count) [panel center];
     else [panel setFrameTopLeftPoint:NSMakePoint(d.x, NSMaxY(NSScreen.screens[0].frame) - d.y)];
     [web loadFileURL:[NSURL fileURLWithPath:file] allowingReadAccessToURL:[NSURL fileURLWithPath:@"/"]];
-    [NSApp runModalForWindow:panel];
+    NSWindow* previous = NSApp.keyWindow;
+    NSModalSession session = [NSApp beginModalSessionForWindow:panel];
+    while (!h.done && [NSApp runModalSession:session] == NSModalResponseContinue)
+        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+    [NSApp endModalSession:session];
     [cfg.userContentController removeScriptMessageHandlerForName:@"jsp"];
     web.navigationDelegate = nil;
     panel.delegate = nil;
     [panel orderOut:nil];
+    if (previous.isVisible && !previous.isKeyWindow) [previous makeKeyWindow];
     [[NSFileManager defaultManager] removeItemAtPath:file error:nil];
     return true;
 }
@@ -1232,6 +1339,25 @@ std::string home_dir() {
 std::string app_dir() {
     NSString* b = [NSBundle mainBundle].bundlePath;
     return b.fileSystemRepresentation ? std::string(b.fileSystemRepresentation) + "/" : std::string();
+}
+
+int system_metric(int index) {
+    if (index == 0 || index == 1) {
+        const NSRect f = NSScreen.mainScreen.frame;
+        return (int)(index == 0 ? f.size.width : f.size.height);
+    }
+    return default_system_metric(index);
+}
+
+bool move_to_trash(const std::string& path) {
+    NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
+    return url && [[NSFileManager defaultManager] trashItemAtURL:url resultingItemURL:nil error:nil];
+}
+
+std::string map_chinese(const std::string& text, bool traditional) {
+    NSString* s = [NSString stringWithUTF8String:text.c_str()];
+    NSString* out = [s stringByApplyingTransform:traditional ? @"Hans-Hant" : @"Hant-Hans" reverse:NO];
+    return out.UTF8String ? out.UTF8String : text;
 }
 
 bool register_font(const std::string& path) {

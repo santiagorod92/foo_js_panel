@@ -1,4 +1,5 @@
 #include "win_editor.h"
+#include "../../core/editor_console.h"
 #include "../../core/js_engine.h"
 #include "../../core/js_highlight.h"
 #include <richedit.h>
@@ -12,8 +13,8 @@ namespace jsp::win {
 
 namespace {
 
-enum { IDC_CODE = 100, IDC_STATUS, IDC_REVERT, IDC_APPLY, IDC_OK, IDC_CANCEL, IDC_GUTTER };
-enum { kTimerCheck = 1, kTimerHighlight };
+enum { IDC_CODE = 100, IDC_STATUS, IDC_REVERT, IDC_APPLY, IDC_OK, IDC_CANCEL, IDC_GUTTER, IDC_WATCHES, IDC_OUTPUT, IDC_INPUT };
+enum { kTimerCheck = 1, kTimerHighlight, kTimerPoll };
 constexpr wchar_t kClass[] = L"foo_js_panel_editor";
 constexpr char kKeys[] = "   ·   Ctrl+S: apply   Ctrl+Enter: apply and close   F8: go to the error   Esc: close";
 
@@ -48,6 +49,9 @@ struct State {
     int lineHeight = 16;
     ITextDocument* doc = nullptr;
     std::vector<Token> tokens;
+    EditorConsole console;
+    WNDPROC inputProc = nullptr;
+    int watchLines = 1;
 };
 
 State* state(HWND wnd) { return reinterpret_cast<State*>(GetWindowLongPtrW(wnd, GWLP_USERDATA)); }
@@ -204,12 +208,79 @@ void draw_gutter(HWND wnd, const DRAWITEMSTRUCT& di) {
     SelectObject(di.hDC, old);
 }
 
+void append_output(HWND wnd, const std::string& text) {
+    if (text.empty()) return;
+    HWND out = GetDlgItem(wnd, IDC_OUTPUT);
+    const int end = GetWindowTextLengthW(out);
+    SendMessageW(out, EM_SETSEL, (WPARAM)end, (LPARAM)end);
+    SendMessageW(out, EM_REPLACESEL, FALSE, (LPARAM)to_crlf(widen(text)).c_str());
+    SendMessageW(out, EM_SCROLLCARET, 0, 0);
+}
+
+void poll_console(HWND wnd) {
+    State* st = state(wnd);
+    if (!st || !st->hooks.evaluate) return;
+    if (st->hooks.console_lines)
+        for (const std::string& line : st->hooks.console_lines()) append_output(wnd, line + "\n");
+    const std::string watches = st->console.watches(st->hooks.evaluate);
+    const int lines = std::min(6, 1 + (int)std::count(watches.begin(), watches.end(), '\n'));
+    SetWindowTextW(GetDlgItem(wnd, IDC_WATCHES), to_crlf(widen(watches)).c_str());
+    if (lines != st->watchLines) {
+        st->watchLines = lines;
+        layout(wnd);
+    }
+}
+
+void submit_console(HWND wnd) {
+    State* st = state(wnd);
+    if (!st || !st->hooks.evaluate) return;
+    HWND in = GetDlgItem(wnd, IDC_INPUT);
+    std::wstring w((size_t)GetWindowTextLengthW(in) + 1, L'\0');
+    w.resize((size_t)GetWindowTextW(in, w.data(), (int)w.size()));
+    poll_console(wnd);
+    const ConsoleReply reply = st->console.submit(narrow(w), st->hooks.run ? st->hooks.run : st->hooks.evaluate);
+    if (reply.clear) SetWindowTextW(GetDlgItem(wnd, IDC_OUTPUT), L"");
+    SetWindowTextW(in, L"");
+    append_output(wnd, reply.echo);
+    poll_console(wnd);
+    append_output(wnd, reply.text);
+}
+
+LRESULT CALLBACK input_proc(HWND in, UINT msg, WPARAM wp, LPARAM lp) {
+    HWND wnd = GetParent(in);
+    State* st = state(wnd);
+    if (msg == WM_KEYDOWN && wp == VK_RETURN) {
+        submit_console(wnd);
+        return 0;
+    }
+    if (msg == WM_KEYDOWN && wp == VK_ESCAPE) {
+        DestroyWindow(wnd);
+        return 0;
+    }
+    if (msg == WM_KEYDOWN && wp == VK_F6) {
+        SetFocus(GetDlgItem(wnd, IDC_CODE));
+        return 0;
+    }
+    if (msg == WM_CHAR && (wp == '\r' || wp == 0x1B)) return 0;
+    return CallWindowProcW(st ? st->inputProc : DefWindowProcW, in, msg, wp, lp);
+}
+
 void layout(HWND wnd) {
     RECT rc{};
     GetClientRect(wnd, &rc);
+    State* st = state(wnd);
     const int w = rc.right, h = rc.bottom, bw = 84, bh = 28, pad = 8, sh = 20, gw = gutter_width(wnd);
-    MoveWindow(GetDlgItem(wnd, IDC_GUTTER), pad, pad, gw, h - 4 * pad - bh - sh, TRUE);
-    MoveWindow(GetDlgItem(wnd, IDC_CODE), pad + gw, pad, w - 2 * pad - gw, h - 4 * pad - bh - sh, TRUE);
+    int consoleH = 0;
+    if (st && st->hooks.evaluate) {
+        const int wh = st->watchLines * st->lineHeight + 4, oh = 140, ih = st->lineHeight + 10;
+        consoleH = wh + oh + ih + 3 * pad;
+        const int top = h - 3 * pad - bh - sh - consoleH + pad;
+        MoveWindow(GetDlgItem(wnd, IDC_WATCHES), pad, top, w - 2 * pad, wh, TRUE);
+        MoveWindow(GetDlgItem(wnd, IDC_OUTPUT), pad, top + wh + pad, w - 2 * pad, oh, TRUE);
+        MoveWindow(GetDlgItem(wnd, IDC_INPUT), pad, top + wh + oh + 2 * pad, w - 2 * pad, ih, TRUE);
+    }
+    MoveWindow(GetDlgItem(wnd, IDC_GUTTER), pad, pad, gw, h - 4 * pad - bh - sh - consoleH, TRUE);
+    MoveWindow(GetDlgItem(wnd, IDC_CODE), pad + gw, pad, w - 2 * pad - gw, h - 4 * pad - bh - sh - consoleH, TRUE);
     MoveWindow(GetDlgItem(wnd, IDC_STATUS), pad, h - 2 * pad - bh - sh, w - 2 * pad, sh, TRUE);
     int x = w - pad - bw;
     const int y = h - pad - bh;
@@ -236,6 +307,7 @@ LRESULT CALLBACK code_proc(HWND ed, UINT msg, WPARAM wp, LPARAM lp) {
         if (ctrl && (std::strchr("BEIJLRU125", (int)wp) || wp == VK_OEM_COMMA || wp == VK_OEM_PERIOD)) return 0;
         if (wp == VK_ESCAPE) { DestroyWindow(wnd); return 0; }
         if (wp == VK_F8) { goto_error(wnd); return 0; }
+        if (wp == VK_F6 && GetDlgItem(wnd, IDC_INPUT)) { SetFocus(GetDlgItem(wnd, IDC_INPUT)); return 0; }
     }
     if (msg == WM_CHAR && GetKeyState(VK_CONTROL) < 0 && (wp == 0x13 || wp == 0x01 || wp == '\n')) return 0;
     if (msg == WM_PASTE) {
@@ -289,6 +361,17 @@ LRESULT CALLBACK proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         child(wnd, L"BUTTON", L"Apply", BS_PUSHBUTTON, IDC_APPLY, st->ui);
         child(wnd, L"BUTTON", L"OK", BS_DEFPUSHBUTTON, IDC_OK, st->ui);
         child(wnd, L"BUTTON", L"Cancel", BS_PUSHBUTTON, IDC_CANCEL, st->ui);
+        if (st->hooks.evaluate) {
+            child(wnd, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, IDC_WATCHES, st->code);
+            HWND out = child(wnd, L"EDIT", L"Console: type an expression and press Enter (:help for the commands).\r\n",
+                             WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY, IDC_OUTPUT, st->code);
+            SendMessageW(out, EM_SETLIMITTEXT, 0x7FFFFFFE, 0);
+            HWND in = child(wnd, L"EDIT", L"", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, IDC_INPUT, st->code);
+            SendMessageW(in, EM_SETCUEBANNER, TRUE, (LPARAM)L"expression, :watch EXPR, :unwatch N, :clear");
+            st->inputProc = (WNDPROC)SetWindowLongPtrW(in, GWLP_WNDPROC, (LONG_PTR)input_proc);
+            SetTimer(wnd, kTimerPoll, 500, nullptr);
+            poll_console(wnd);
+        }
         SetFocus(ed);
         recheck(wnd);
         layout(wnd);
@@ -311,6 +394,8 @@ LRESULT CALLBACK proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         } else if (wp == kTimerHighlight) {
             KillTimer(wnd, kTimerHighlight);
             paint_tokens(wnd);
+        } else if (wp == kTimerPoll) {
+            poll_console(wnd);
         }
         return 0;
     case WM_COMMAND: {
@@ -343,6 +428,9 @@ LRESULT CALLBACK proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CLOSE:
         DestroyWindow(wnd);
         return 0;
+    case WM_DESTROY:
+        KillTimer(wnd, kTimerPoll);
+        break;
     case WM_NCDESTROY:
         if (st) {
             if (st->doc) st->doc->Release();

@@ -338,7 +338,10 @@ anything repo-specific stays in the repo's own sections.
   the dialog's `window.dialogArguments` (a `VT_ARRAY` VARIANT, so `.toArray()` works; functions are
   `IDispatch` objects) and adds a `resizeTo` shim after the X-UA-Compatible meta. macOS: a modal
   `NSPanel` with a `WKWebView` and a document-start script that defines `window.external`,
-  `close` and `resizeTo` over a `jsp` message handler; a `<base>` gives relative links. When no
+  `close` and `resizeTo` over a `jsp` message handler; a `<base>` gives relative links. Each dialog runs its own
+  modal session (`beginModalSessionForWindow` + a `done` flag, ended in LIFO order) and gives the key window back:
+  with `runModalForWindow`, two panels' dialogs nested and the first one's `stopModal` ended the other's session,
+  leaving an orphan modal session that blocked every mouse-moved event and tooltip in the app. When no
   engine answers (Wine without Gecko) the old fallback stays: the dialog kind from the element ids
   (`btn_cancel`, `btn_later`, `input_container`, `radio_container`) through `message_box`, or Cancel
   for forms.
@@ -347,7 +350,7 @@ anything repo-specific stays in the repo's own sections.
 - **`include` as in SMP 1.6:** a relative path is tried next to the calling function's file
   (`JS_GetScriptOrModuleName(ctx, 1)`: level 0 is the C function itself; SMP uses
   `DescribeScriptedCaller`), then next to the file being evaluated (`includeDirs`), then in the
-  running package's `scripts/` (`package_dir`: the main script sits in `…/packages/<id>/`). Paths are
+  running package's `scripts/` (`package_dir`: the main script sits in `…/packages/<id>/`), then in `fb.ComponentPath` (SMP's last search path; its samples `include('docs/Flags.js')`). Paths are
   `lexically_normal`ised before reading, and `Impl::included` makes each file run once unless
   `{ always_evaluate: true }` (CaTRoX includes shared files from several packages).
 - **Text decoding:** `decode_text` (`js_api_util.h`) strips a UTF-8 BOM and decodes UTF-16LE/BE with
@@ -357,7 +360,15 @@ anything repo-specific stays in the repo's own sections.
 - **Edit script:** `Surface::open_editor` (one editor window per panel, closed with it; Windows
   `win_editor.cpp` = RichEdit (see Editor colours), macOS `NSTextView` in `mac_element.mm`). Applying writes
   the file and reloads; the built-in sample is saved as `<profile>/foo_js_panel/script[-N].js`.
-  The syntax check is `check_syntax()` (QuickJS compile-only, own small runtime).
+  The syntax check is `check_syntax()` (QuickJS compile-only, own small runtime). The script editor (not the
+  properties one) has a console: `EditorHooks::evaluate` (silent, for watches) / `run` (typed lines, logged at
+  INFO as `console: EXPR = RESULT`) go to `JsEngine::evaluate` (`JS_Eval` global, under the call budget, an
+  exception never stops the script, `busy` while `running > 0` so a modal call is never re-entered, the value
+  formatted by `__jsp.inspect`, native objects named by `native.className` with their prototype getters), and
+  `console_lines` hands over the panel's buffered `console.log` lines (200 kept). QuickJS-ng has no debugger
+  API (no line hooks, breakpoints or locals), hence a console + watches instead of breakpoints. The commands
+  (`:watch`, `:unwatch`, `:clear`, `:help`) and the watch text are `EditorConsole` (`editor_console.cpp`,
+  SDK-free, tested); each platform polls it every 500 ms. F6 switches between the code and the console.
 - **foo_navidrome:** `navidrome` script object over the vendored `navidrome_library_api.h`
   (identical to Panels UI's copy). `list_albums[_v2]` blocks, so `Panel::navidrome_albums` runs it on
   a detached thread with the panel's `abort_callback` and hands the result back with
@@ -388,7 +399,9 @@ anything repo-specific stays in the repo's own sections.
   has no SDK pasteboard format, so the view writes our own type (`subsong\tpath` lines, any scheme,
   so `navidrome://` survives) plus file URLs, and reads ours back with `metadb::handle_create`
   (the SDK's synchronous `process_locations` crashes on macOS); Finder files go through
-  `process_locations_async`. `NSDraggingSession` is asynchronous, so `DoDragDrop` returns 0 there.
+  `process_locations_async`. `NSDraggingSession` is asynchronous, so `start_drag` pumps events
+  (`nextEventMatchingMask` in `NSEventTrackingRunLoopMode` + `sendEvent`, 120 s cap) until the source's
+  `endedAtPoint:operation:` and returns that operation as a `DROPEFFECT`, as Windows' modal `DoDragDrop` does.
   `make win11-arm-dragdrop` drives a real drag (`win11-arm.sh tap drag,…`); `make mac-dragdrop`
   does the same with `mac-click.sh … drag` and moves this Mac's pointer.
 - **UI colours and fonts:** the engine maps DUI and CUI kinds to `UiColour` (CUI kinds go to their DUI
@@ -470,6 +483,12 @@ anything repo-specific stays in the repo's own sections.
   it, only the visible lines ±40 (repainted on scroll), so big themes stay fast. RichEdit counts a line
   break as one character (CR), so the text is read with `EM_GETTEXTEX GT_DEFAULT` and CR → LF;
   Ctrl+V pastes plain text and its formatting shortcuts are swallowed.
+- **AudioWizard meters:** `compute_meters` (`audio_meters.cpp`, SDK-free, tested against BS.1770's reference
+  levels) reads the last 3 s of the panel's `visualisation_stream` once per refresh (`native.audioMeters`, cached in the
+  stand-in for the script's refresh rate): RMS, peaks and correlation over the chunk the script asked for, momentary
+  LUFS over the last 400 ms, short-term over the whole window, both K-weighted. Done in C++ because a 3 s window is
+  ~300k samples, too many for QuickJS each frame. `make win11-arm-audio` / `mac-vm-audio` play the active playlist
+  through Null Output (restored afterwards; the macOS VM has no audio device, so a real output stalls at 0.2 s).
 - **Hardening:** 5 s budget per call (interrupt handler), 512 MB runtime memory, 1 MB stack. A
   script error stops the script (timers killed) and the panel paints the error + stack, like SMP.
 - **Windowless panels** (`windowless.cpp`, see Shared conventions › Windowless panels):
@@ -565,6 +584,8 @@ anything repo-specific stays in the repo's own sections.
   `fb.GetLibraryItems()` and rebuilds on the library callbacks (the library is still loading
   when a panel starts with foobar2000).
 - `src/core/js_highlight.{h,cpp}` — the editors' JS tokenizer (UTF-16 spans), tested in `tests/test_js_highlight.cpp`.
+- `src/core/editor_console.{h,cpp}` — the editor console's commands and watch list, tested in `tests/test_editor_console.cpp`.
+- `src/core/audio_meters.{h,cpp}` — AudioWizard's real-time meters (BS.1770), tested in `tests/test_audio_meters.cpp`.
 - `src/core/theme_patches.{h,cpp}` — Eole's and Georgia-ReBORN's in-memory patches, applied by `include()` and `JsEngine::load`.
 - `tools/fcl_extract.py` + `scripts/theme-check.sh` (`make theme-check`) — pull every Spider
   Monkey Panel (and JScript WSH Panel Mod) panel out of a Columns UI `.fcl` export and run each with `render_script`
@@ -576,7 +597,11 @@ anything repo-specific stays in the repo's own sections.
   package's `main.js`, so `package_dir` is the first evaluated file sitting in `packages/<id>/`.
 - `tests/themes.tsv` + `scripts/themes-check.sh` (`make themes-check`) — other authors' themes at
   pinned commits, fetched into `build/themes/src` (never committed), run sandboxed (`fcl` through
-  theme-check with the repo's packages installed, `script`, `package`), report in
+  theme-check with the repo's packages installed, `script`, `package`, `samples` = every `samples/*/*.js` of a
+  component folder with `render_script --component` as `fb.ComponentPath`, `jsp3` = the checkout copied into a
+  profile, JSP3's `helpers.txt` + `samples/` (the theme's bundled `foo_jscript_panel3/` folder, else `JSP3=`, else
+  the copy `make jsp3-check` left) where `%fb2k_component_path%` points; JSP3 is no longer on GitHub or
+  foobar2000.org, so it's never fetched), report in
   `build/themes/report.md`. It runs third-party code, so the auto-mode classifier may stop it;
   each `render_script --sandbox` call on its own is allowed by `.claude/settings.local.json`.
 - `tools/render_script.mm` (`make render`, macOS) — runs a script once on a `CGCanvas` (`--rounds`
@@ -607,10 +632,13 @@ anything repo-specific stays in the repo's own sections.
 - `make mac-vm-catrox` / `win11-arm-catrox ARCH=…`: push CaTRoX (from `make themes-check THEMES=catrox`)
   to the VM, import it through Panels UI and assert its fonts, Menu/Top/SeekBar panels and a clean log;
   the skin, packages, `theme_settings` and fonts it added are removed afterwards.
-- `make mac-vm-smoke` / `mac-vm-jsp3` / `mac-vm-wsh` / `mac-vm-reload`: the same scenarios in the terminal-mac VM
-  (`ui-test.sh mac-vm`): `scripts/`, `tests/` and both bundles go to `~/jsp-test` in the guest and
-  `mac-local.sh` runs there over ssh, so the restore logic is the same code. No `dragdrop` (see
+- `make mac-vm-smoke` / `mac-vm-jsp3` / `mac-vm-wsh` / `mac-vm-reload` / `mac-vm-menus` / `mac-vm-layout`: the same
+  scenarios in the terminal-mac VM (`ui-test.sh mac-vm`): `scripts/`, `tests/` and both bundles go to `~/jsp-test` in
+  the guest and `mac-local.sh` runs there over ssh, so the restore logic is the same code. No `dragdrop` (see
   Test environments) and no `import` (no Eole in the guest).
+- **macOS Default UI layout:** *Edit Layout* writes `<profile>/UI-Layout.txt` and sets `Mac.UI.layoutID` to
+  `93759692-3FF5-4301-8E1A-237D98BCB38F` (absent = a built-in layout); `ui.module` `6EBCE8DE-…` is the Default UI.
+  The `layout` scenario writes those three and restores them, so per-panel `script=` is tested without the editor.
 - `make win11-arm-smoke ARCH=…`: same in the Windows 11 ARM VM (config via `win11-arm.sh cfg`,
   x86 in `C:\fb2k-x86`), screenshot in `build/ui-test/`.
 - Panels UI only saves a window capture (`foo_ui_panels-previews/`) 60 s after a skin loads when

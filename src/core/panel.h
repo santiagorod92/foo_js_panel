@@ -13,6 +13,9 @@ struct EditorHooks {
     std::function<std::string(const std::string&)> apply;
     std::function<std::string(const std::string&)> check;
     int line = 0;
+    std::function<std::string(const std::string&)> evaluate;
+    std::function<std::string(const std::string&)> run;
+    std::function<std::vector<std::string>()> console_lines;
 };
 
 class Surface {
@@ -198,6 +201,11 @@ public:
     void http_request(const HttpRequest& req, HttpDone done) override;
     HttpResponse http_request_sync(const HttpRequest& req) override;
     bool shell_run(const std::string& command) override;
+    std::string map_chinese(const std::string& text, bool traditional) override;
+    bool move_to_trash(const std::string& path) override;
+    int selection_type() override;
+    int system_metric(int index) override;
+    pui::gfx::ImagePtr album_art_stub(int artId) override;
     std::string clipboard_text() override;
     bool set_clipboard_text(const std::string& text) override;
     int message_box(const std::string& text, const std::string& caption, int type) override;
@@ -279,6 +287,7 @@ private:
     void load_navidrome_library();
 
     Surface& m_surface;
+    std::vector<std::string> m_consoleLines;
     std::string m_path;
     std::function<void(const std::string&)> m_onScriptChanged;
     std::unique_ptr<JsEngine> m_engine;

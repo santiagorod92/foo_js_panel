@@ -1,6 +1,7 @@
 #include "js_engine.h"
 #include "js_api_util.h"
 #include "fs_util.h"
+#include "audio_meters.h"
 #include "image_ops.h"
 #include "theme_patches.h"
 #include "quickjs.h"
@@ -17,6 +18,8 @@
 #include <vector>
 
 namespace jsp {
+
+int JsHost::system_metric(int index) { return default_system_metric(index); }
 
 using pui::gfx::Canvas;
 using pui::gfx::Color;
@@ -2361,8 +2364,6 @@ JSValue utils_FormatFileSize(JSContext* ctx, JSValueConst, int argc, JSValueCons
     return new_string(ctx, buf);
 }
 
-JSValue utils_zero(JSContext* ctx, JSValueConst, int, JSValueConst*) { return JS_NewInt32(ctx, 0); }
-
 JSValue utils_InputBox(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     JsEngine::Impl* e = I(ctx);
     const std::string prompt = arg_str(ctx, argc, argv, 1), caption = arg_str(ctx, argc, argv, 2);
@@ -2372,6 +2373,10 @@ JSValue utils_InputBox(JSContext* ctx, JSValueConst, int argc, JSValueConst* arg
     if (ok) return new_string(ctx, value);
     if (arg_bool(ctx, argc, argv, 4)) return JS_ThrowInternalError(ctx, "Dialog window was closed");
     return new_string(ctx, def);
+}
+
+JSValue utils_GetSystemMetrics(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    return JS_NewInt32(ctx, I(ctx)->host.system_metric(arg_int(ctx, argc, argv, 0)));
 }
 
 JSValue utils_GetAlbumArtV2(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
@@ -2441,7 +2446,7 @@ const JSCFunctionListEntry kUtilsFuncs[] = {
     JS_CFUNC_DEF("Glob", 3, utils_Glob),
     JS_CFUNC_DEF("FormatDuration", 1, utils_FormatDuration),
     JS_CFUNC_DEF("FormatFileSize", 1, utils_FormatFileSize),
-    JS_CFUNC_DEF("GetSystemMetrics", 1, utils_zero),
+    JS_CFUNC_DEF("GetSystemMetrics", 1, utils_GetSystemMetrics),
     JS_CFUNC_DEF("InputBox", 5, utils_InputBox),
     JS_PROP_STRING_DEF("Version", "1.6.1", 0),
 };
@@ -2886,6 +2891,19 @@ JSValue native_notify(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv
     return JS_UNDEFINED;
 }
 
+JSValue native_className(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    if (argc < 1 || !JS_IsObject(argv[0])) return new_string(ctx, "");
+    const JSClassID id = JS_GetClassID(argv[0]);
+    const std::pair<JSClassID, const char*> names[] = { { g_grClass, "GdiGraphics" }, { g_fontClass, "GdiFont" },
+                                                        { g_tfClass, "FbTitleFormat" }, { g_handleClass, "FbMetadbHandle" },
+                                                        { g_listClass, "FbMetadbHandleList" }, { g_bitmapClass, "GdiBitmap" },
+                                                        { g_infoClass, "FbFileInfo" }, { g_menuClass, "MenuObject" },
+                                                        { g_menuManagerClass, "MenuManager" } };
+    for (const auto& [cls, name] : names)
+        if (id == cls) return new_string(ctx, name);
+    return new_string(ctx, "");
+}
+
 JSValue native_kind(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 1) return new_string(ctx, "");
     return new_string(ctx, handle_of(argv[0]) ? "handle" : list_of(argv[0]) ? "list" : "");
@@ -3201,6 +3219,23 @@ JSValue native_audioChunk(JSContext* ctx, JSValueConst, int argc, JSValueConst* 
     return o;
 }
 
+JSValue native_audioMeters(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    const double chunk = std::clamp(arg_num(ctx, argc, argv, 0), 0.01, 1.0);
+    AudioChunk c;
+    bool ok = false;
+    for (const double span : { 3.0, 0.4, chunk })
+        if ((ok = I(ctx)->host.audio_chunk(span, -span, c) && c.channels > 0)) break;
+    if (!ok) return JS_NULL;
+    const AudioMeters m = compute_meters(c.data, c.channels, c.sampleRate, chunk);
+    JSValue o = JS_NewObject(ctx);
+    const std::pair<const char*, double> fields[] = { { "leftRms", m.leftRms }, { "rightRms", m.rightRms }, { "rms", m.rms },
+                                                      { "leftPeak", m.leftPeak }, { "rightPeak", m.rightPeak },
+                                                      { "momentary", m.momentaryLufs }, { "shortTerm", m.shortTermLufs },
+                                                      { "correlation", m.correlation } };
+    for (const auto& [name, value] : fields) JS_SetPropertyStr(ctx, o, name, JS_NewFloat64(ctx, value));
+    return o;
+}
+
 JSValue native_download(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     JsEngine::Impl* e = I(ctx);
     int id = 0;
@@ -3225,6 +3260,22 @@ JSValue native_download(JSContext* ctx, JSValueConst, int argc, JSValueConst* ar
         if (*token) e->settle_promise(id, JS_NewBool(e->ctx, ok));
     });
     return promise;
+}
+
+JSValue native_mapChinese(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    const std::string out = I(ctx)->host.map_chinese(arg_str(ctx, argc, argv, 0), arg_bool(ctx, argc, argv, 1));
+    return JS_NewStringLen(ctx, out.data(), out.size());
+}
+
+JSValue native_trash(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    if (!writable(ctx, argc, argv, 0)) return JS_FALSE;
+    return JS_NewBool(ctx, I(ctx)->host.move_to_trash(fix_path(arg_str(ctx, argc, argv, 0))));
+}
+
+JSValue native_selectionType(JSContext* ctx, JSValueConst, int, JSValueConst*) { return JS_NewInt32(ctx, I(ctx)->host.selection_type()); }
+
+JSValue native_artStub(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    return new_bitmap(ctx, I(ctx)->host.album_art_stub(arg_int(ctx, argc, argv, 0, 0)));
 }
 
 JSValue native_shellRun(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
@@ -3553,14 +3604,20 @@ const JSCFunctionListEntry kNativeFuncs[] = {
     JS_CFUNC_DEF("download", 2, native_download),
     JS_CFUNC_DEF("recycler", 2, native_recycler),
     JS_CFUNC_DEF("audioChunk", 2, native_audioChunk),
+    JS_CFUNC_DEF("audioMeters", 1, native_audioMeters),
     JS_CFUNC_DEF("htmlDialog", 3, native_htmlDialog),
     JS_CFUNC_DEF("shellRun", 1, native_shellRun),
+    JS_CFUNC_DEF("mapChinese", 2, native_mapChinese),
+    JS_CFUNC_DEF("trash", 1, native_trash),
+    JS_CFUNC_DEF("selectionType", 0, native_selectionType),
+    JS_CFUNC_DEF("artStub", 1, native_artStub),
     JS_CFUNC_DEF("clipboard", 1, native_clipboard),
     JS_CFUNC_DEF("messageBox", 3, native_messageBox),
     JS_CFUNC_DEF("fixPath", 1, native_fixPath),
     JS_CFUNC_DEF("windowState", 1, native_windowState),
     JS_CFUNC_DEF("notify", 3, native_notify),
     JS_CFUNC_DEF("kind", 1, native_kind),
+    JS_CFUNC_DEF("className", 1, native_className),
     JS_CFUNC_DEF("fullscreen", 1, native_fullscreen),
     JS_CFUNC_DEF("windowLimits", 4, native_windowLimits),
     JS_CFUNC_DEF("windowRect", 4, native_windowRect),
@@ -3686,6 +3743,45 @@ const char* const kPrelude = R"JS(
         });
         return task;
     };
+    native.inspect = value => {
+        const seen = new Set();
+        const show = (x, depth) => {
+            if (x === null) return 'null';
+            const t = typeof x;
+            if (t === 'undefined') return 'undefined';
+            if (t === 'string') return JSON.stringify(x);
+            if (t === 'number' || t === 'boolean' || t === 'bigint') return String(x);
+            if (t === 'symbol') return x.toString();
+            if (t === 'function') return '[Function ' + (x.name || 'anonymous') + ']';
+            if (seen.has(x)) return '[Circular]';
+            if (x instanceof Error) return x.name + ': ' + x.message;
+            if (x instanceof Promise) return 'Promise';
+            const proto = Object.getPrototypeOf(x);
+            const own = Object.keys(x);
+            if (Array.isArray(x)) {
+                if (depth >= 2) return '[Array(' + x.length + ')]';
+                seen.add(x);
+                const items = x.slice(0, 20).map(v => show(v, depth + 1));
+                if (x.length > 20) items.push('\u2026 ' + (x.length - 20) + ' more');
+                return '[' + items.join(', ') + ']';
+            }
+            if (own.length === 0 && proto && proto !== Object.prototype) {
+                const getters = Object.entries(Object.getOwnPropertyDescriptors(proto)).filter(([k, d]) => d.get && /^[A-Z]/.test(k)).slice(0, 8);
+                const name = native.className(x) || (proto.constructor && proto.constructor.name !== 'Object' ? proto.constructor.name : '') || 'object';
+                const parts = [];
+                for (const [k] of getters) {
+                    try { const v = x[k]; parts.push(k + ': ' + (typeof v === 'object' && v !== null ? '{\u2026}' : show(v, 2))); } catch (e) {}
+                }
+                return name + ' {' + parts.join(', ') + '}';
+            }
+            if (depth >= 2) return '{\u2026}';
+            seen.add(x);
+            const entries = own.slice(0, 20).map(k => (/^[A-Za-z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)) + ': ' + show(x[k], depth + 1));
+            if (own.length > 20) entries.push('\u2026 ' + (own.length - 20) + ' more');
+            return '{' + entries.join(', ') + '}';
+        };
+        return show(value, 0);
+    };
     utils.MapString = function (text, lcid, flags) {
         let s = String(text);
         const shift = (from, to, delta) => s = s.replace(/./gsu, c => {
@@ -3698,6 +3794,8 @@ const char* const kPrelude = R"JS(
         if (flags & 0x200000) shift(0x3041, 0x3096, 0x60);
         if (flags & 0x400000) { shift(0xFF01, 0xFF5E, -0xFEE0); s = s.replace(/\u3000/g, ' '); }
         if (flags & 0x800000) { shift(0x21, 0x7E, 0xFEE0); s = s.replace(/ /g, '\u3000'); }
+        if (flags & 0x2000000) s = native.mapChinese(s, false);
+        if (flags & 0x4000000) s = native.mapChinese(s, true);
         return s;
     };
 })();
@@ -4119,16 +4217,98 @@ const char* const kPrelude = R"JS(
         });
         return p;
     };
+    const vbEval = code => {
+        const src = String(code);
+        let i = 0;
+        const unsupported = () => fail('ScriptControl (VBScript) is not available in JS Panel', -2146827859);
+        const space = () => { while (i < src.length && /\s/.test(src[i])) ++i; };
+        const value = () => {
+            space();
+            if (src[i] === '"') {
+                let out = '';
+                for (++i; i < src.length; ++i) {
+                    if (src[i] !== '"') out += src[i];
+                    else if (src[i + 1] === '"') { out += '"'; ++i; }
+                    else { ++i; return out; }
+                }
+                return unsupported();
+            }
+            const num = /^-?\d+(\.\d+)?/.exec(src.slice(i));
+            if (num) { i += num[0].length; return +num[0]; }
+            const chr = /^chr\s*\(\s*(\d+)\s*\)/i.exec(src.slice(i));
+            if (chr) { i += chr[0].length; return String.fromCharCode(+chr[1]); }
+            return unsupported();
+        };
+        const expr = () => {
+            let v = value();
+            for (space(); src[i] === '+' || src[i] === '&'; space()) {
+                const op = src[i++], r = value();
+                v = op === '&' || typeof v === 'string' || typeof r === 'string' ? String(v) + String(r) : v + r;
+            }
+            return v;
+        };
+        const call = /^\s*(msgbox|inputbox)\s*\(/i.exec(src);
+        if (!call) return unsupported();
+        i = call[0].length;
+        const args = [];
+        for (space(); src[i] !== ')'; space()) {
+            args.push(expr());
+            space();
+            if (src[i] === ',') ++i;
+            else if (src[i] !== ')') return unsupported();
+        }
+        const text = String(args[0] === undefined ? '' : args[0]).replace(/\r\n?/g, '\n');
+        if (call[1].toLowerCase() === 'msgbox') return native.messageBox(text, String(args[2] === undefined ? '' : args[2]), args[1] | 0);
+        try {
+            return utils.InputBox(window.ID, text, String(args[1] === undefined ? '' : args[1]), String(args[2] === undefined ? '' : args[2]), true);
+        } catch (e) {
+            return '';
+        }
+    };
     const audioWizard = () => {
+        let refresh = 33, chunk = 0.05, last = 0, meters = null, rawChunk = 0.05;
+        const read = () => {
+            const now = Date.now();
+            if (!meters || now - last >= refresh) {
+                meters = native.audioMeters(chunk);
+                last = now;
+            }
+            return meters;
+        };
+        const db = key => { const m = read(); return m ? m[key] : -100; };
+        const start = (r, c) => {
+            refresh = Math.min(1000, Math.max(10, r | 0 || 33));
+            chunk = Math.min(1000, Math.max(10, c | 0 || 50)) / 1000;
+            meters = null;
+        };
         const known = {
             GetWaveformDataInfo: () => JSON.stringify({ metricsPerChannel: 5 }), GetWaveformTrackCount: () => 0, GetWaveformData: () => [],
             GetPhysicalFilePath: () => '', FullTrackProcessing: false, PeakmeterOffset: 0,
+            StartPeakmeterMonitoring: start, StartRealTimeMonitoring: start,
+            StartRawAudioMonitoring: (r, c) => { rawChunk = Math.min(1000, Math.max(10, c | 0 || 50)) / 1000; },
+            SetMonitoringRefreshRate: r => { refresh = Math.min(1000, Math.max(10, r | 0 || 33)); },
         };
-        return new Proxy({}, {
-            get: (t, k) => typeof k !== 'string' ? undefined : k in known ? known[k]
-                         : /^(Start|Stop|Set)/.test(k) ? () => {} : /^Peakmeter/.test(k) ? -100 : 0,
-            set: () => true,
+        const live = {
+            LeftRMS: () => db('leftRms'), RightRMS: () => db('rightRms'), RMS: () => db('rms'),
+            LeftSamplePeak: () => db('leftPeak'), RightSamplePeak: () => db('rightPeak'),
+            SamplePeak: () => Math.max(db('leftPeak'), db('rightPeak')), TruePeak: () => Math.max(db('leftPeak'), db('rightPeak')),
+            MomentaryLUFS: () => db('momentary'), ShortTermLUFS: () => db('shortTerm'),
+            PSR: () => { const m = read(); return m && m.shortTerm > -100 ? Math.max(m.leftPeak, m.rightPeak) - m.shortTerm : 0; },
+            PhaseCorrelation: () => { const m = read(); return m ? m.correlation : 0; },
+            RawAudioData: () => { const c = native.audioChunk(rawChunk, -rawChunk); return c ? c.Data : []; },
+        };
+        const o = new Proxy({}, {
+            get: (t, k) => {
+                if (typeof k !== 'string') return undefined;
+                if (k in known) return known[k];
+                if (k in live) return live[k]();
+                const adjusted = /^PeakmeterAdjusted(Left|Right)(RMS|SamplePeak)$/.exec(k);
+                if (adjusted) return db(adjusted[1].toLowerCase() + (adjusted[2] === 'RMS' ? 'Rms' : 'Peak')) + (+known.PeakmeterOffset || 0);
+                return /^(Start|Stop|Set)/.test(k) ? () => {} : /^Peakmeter/.test(k) ? -100 : 0;
+            },
+            set: (t, k, v) => { if (k in known) known[k] = v; return true; },
         });
+        return o;
     };
     let frameStyle = 0;
     const setFrameStyle = v => {
@@ -4218,8 +4398,11 @@ const char* const kPrelude = R"JS(
         'eslyric': inert,
         'audiowizard': audioWizard,
         'uiwizard': uiWizard,
-        'shell.application': () => ({ BrowseForFolder: () => null, NameSpace: () => null, ShellExecute: (f, a) => native.shellRun(String(f) + (a ? ' ' + a : '')) }),
-        'scriptcontrol': () => ({ Language: '', AddCode() {}, Eval() { fail('ScriptControl (VBScript) is not available in JS Panel', -2146827859); },
+        'shell.application': () => ({
+            BrowseForFolder: () => null, ShellExecute: (f, a) => native.shellRun(String(f) + (a ? ' ' + a : '')),
+            NameSpace: id => id === 10 ? { MoveHere(path) { if (!native.trash(String(path))) fail('Could not move ' + path + ' to the recycle bin', -2147024891); } } : null,
+        }),
+        'scriptcontrol': () => ({ Language: '', AddCode() {}, Eval: vbEval,
                                   Run() { fail('ScriptControl (VBScript) is not available in JS Panel', -2146827859); } }),
     };
     globalThis.ActiveXObject = function (progId) {
@@ -4227,7 +4410,7 @@ const char* const kPrelude = R"JS(
         if (!make) fail('Automation server can\'t create object (' + progId + ')', -2146827859);
         return make();
     };
-    fb.GetSelectionType = () => 0;
+    fb.GetSelectionType = () => native.selectionType();
     const heights = new WeakMap();
     let measurer = null;
     Object.defineProperty(native.proto('font'), 'Height', {
@@ -4635,7 +4818,7 @@ const char* const kJsp3Prelude = R"JS(
             on_download_image_done(url, img);
         });
     };
-    fb.GetAlbumArtStub = () => null;
+    fb.GetAlbumArtStub = artId => native.artStub(artId || 0);
     fb.GetAudioChunk = (duration, offset) => native.audioChunk(duration, offset || 0);
     fb.AddLocationsAsync = () => 0;
     plman.SortPlaylistsByName = direction => {
@@ -4834,6 +5017,7 @@ JSValue global_include(JSContext* ctx, JSValueConst, int argc, JSValueConst* arg
         }
         candidates.push_back(script_relative(e, spec));
         if (const std::filesystem::path pkg = package_dir(e); !pkg.empty()) candidates.push_back((pkg / "scripts" / spec).generic_string());
+        if (const std::string component = fix_path(e->host.component_path()); !component.empty()) candidates.push_back(component + spec);
     }
     std::string path, source;
     for (const std::string& c : candidates) {
@@ -5640,6 +5824,42 @@ bool JsEngine::invoke(const char* name, const std::vector<Arg>& args) {
 }
 
 bool JsEngine::in_modal() const { return m->modalDepth > 0; }
+
+std::string JsEngine::evaluate(const std::string& code) {
+    Impl& e = *m;
+    if (e.running > 0) return "busy: the script is running (a menu or dialog of its own is open)";
+    JSContext* ctx = e.ctx;
+    JSValue r;
+    {
+        Impl::Budget b(e);
+        r = JS_Eval(ctx, code.c_str(), code.size(), "<console>", JS_EVAL_TYPE_GLOBAL);
+    }
+    std::string out;
+    if (JS_IsException(r)) {
+        JSValue ex = JS_GetException(ctx);
+        out = "Uncaught " + to_string(ctx, ex);
+        JS_FreeValue(ctx, ex);
+    } else {
+        JSValue global = JS_GetGlobalObject(ctx);
+        JSValue native = JS_GetPropertyStr(ctx, global, "__jsp");
+        JSValue inspect = JS_GetPropertyStr(ctx, native, "inspect");
+        JSValue text = JS_IsFunction(ctx, inspect) ? JS_Call(ctx, inspect, JS_UNDEFINED, 1, &r) : JS_DupValue(ctx, r);
+        if (JS_IsException(text)) {
+            JSValue ex = JS_GetException(ctx);
+            out = to_string(ctx, r);
+            JS_FreeValue(ctx, ex);
+        } else {
+            out = to_string(ctx, text);
+        }
+        JS_FreeValue(ctx, text);
+        JS_FreeValue(ctx, inspect);
+        JS_FreeValue(ctx, native);
+        JS_FreeValue(ctx, global);
+    }
+    JS_FreeValue(ctx, r);
+    if (e.error.empty()) e.drain_jobs();
+    return out;
+}
 
 const std::vector<std::string>& JsEngine::source_files() const { return m->files; }
 

@@ -1,5 +1,5 @@
 .PHONY: help build build-arm64ec build-x86 build-all deploy launch run kill clean check-portable test win-test \
-	mac-build mac-local mac-smoke mac-demo mac-restore render theme-check themes-check jsp3-check mac-shot mac-click ui-smoke win11-arm win11-arm-deploy win11-arm-test win11-arm-smoke win11-arm-menus win11-arm-images win11-arm-wheel win11-arm-dragdrop win11-arm-dragdrop-windowless mac-dragdrop win11-arm-jsp3 mac-jsp3 win11-arm-wsh mac-wsh mac-vm-wsh win11-arm-reload mac-reload win11-arm-editor mac-import win11-arm-import mac-vm mac-vm-smoke mac-vm-jsp3 mac-vm-reload mac-vm-editor mac-windowless mac-vm-windowless mac-vm-catrox win11-arm-catrox win11-arm-windowless
+	mac-build mac-local mac-smoke mac-demo mac-restore render theme-check themes-check jsp3-check mac-shot mac-click ui-smoke win11-arm win11-arm-deploy win11-arm-test win11-arm-smoke win11-arm-menus win11-arm-images win11-arm-wheel win11-arm-audio mac-vm-audio win11-arm-dragdrop win11-arm-dragdrop-windowless mac-dragdrop win11-arm-jsp3 mac-jsp3 win11-arm-wsh mac-wsh mac-vm-wsh win11-arm-reload mac-reload win11-arm-editor mac-import win11-arm-import mac-vm mac-vm-smoke mac-vm-jsp3 mac-vm-reload mac-vm-menus mac-vm-layout mac-vm-editor mac-windowless mac-vm-windowless mac-vm-catrox win11-arm-catrox win11-arm-windowless
 
 help:
 	@echo "foo_js_panel — make targets"
@@ -33,6 +33,8 @@ help:
 	@echo "  mac-vm-jsp3       the same with the JScript Panel 3 style script, with a screenshot"
 	@echo "  mac-vm-wsh        the same with the WSH Panel Mod style script, with a screenshot"
 	@echo "  mac-vm-reload     the same: a script edited on disk reloads by itself"
+	@echo "  mac-vm-menus      the same: a popup menu, an InputBox, the colour picker and the properties editor, with screenshots"
+	@echo "  mac-vm-layout     the same: a Default UI layout with a script= per JS Panel and one on the default script"
 	@echo "  mac-vm-editor     the same: a script opens its own editor (window.EditScript), with a screenshot"
 	@echo "  mac-windowless / mac-vm-windowless / win11-arm-windowless   a windowless JS Panel drawn by Panels UI, clicked and typed into"
 	@echo "  mac-vm-catrox / win11-arm-catrox   import CaTRoX (make themes-check THEMES=catrox first) through Panels UI in a VM"
@@ -44,6 +46,7 @@ help:
 	@echo "  win11-arm-smoke   build ARCH=..., then the smoke test in the guest (scripts/ui-test.sh win11-arm smoke)"
 	@echo "  win11-arm-menus   build ARCH=..., then a popup menu and an InputBox in the guest, with screenshots"
 	@echo "  win11-arm-images  build ARCH=..., then off-screen images and translucent shapes in the guest, with a screenshot"
+	@echo "  win11-arm-audio / mac-vm-audio   play the active playlist and read AudioWizard's meters (needs a track with sound)"
 	@echo "  win11-arm-wheel   build ARCH=..., then touchpad-sized wheel events on a panel in the guest (on_mouse_wheel)"
 	@echo "  win11-arm-test    unit tests built for Windows, run in the guest"
 	@echo "  win11-arm-<cmd>   any win11-arm.sh command: -up, -down, -status, -shot, -ssh, -fb2k ARGS=start, -fb2k ARGS='log 60 ERROR', ..."
@@ -119,10 +122,10 @@ mac-restore:
 
 RENDER_BIN = build/tools/render_script
 QJS_C = third_party/quickjs/dtoa.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/quickjs.c
-$(RENDER_BIN): tools/render_script.mm third_party/lodash/lodash.js src/core/js_engine.cpp src/core/theme_patches.cpp src/core/js_engine.h src/core/image_ops.cpp $(PANELS_UI_SRC)/platform/mac/mac_canvas.mm
+$(RENDER_BIN): tools/render_script.mm third_party/lodash/lodash.js src/core/js_engine.cpp src/core/theme_patches.cpp src/core/js_engine.h src/core/image_ops.cpp src/core/audio_meters.cpp $(PANELS_UI_SRC)/platform/mac/mac_canvas.mm
 	@mkdir -p build/tools/qjs
 	@for f in $(QJS_C); do $(CC_HOST) -std=gnu11 -O2 -w -D_GNU_SOURCE -c $$f -o build/tools/qjs/$$(basename $$f .c).o; done
-	$(CXX_HOST) -std=c++20 -O1 -fobjc-arc -DJSP_LODASH_PATH='"$(CURDIR)/third_party/lodash/lodash.js"' -Isrc -I$(PANELS_UI_SRC) -Ithird_party/quickjs tools/render_script.mm src/core/js_engine.cpp src/core/image_ops.cpp src/core/theme_patches.cpp \
+	$(CXX_HOST) -std=c++20 -O1 -fobjc-arc -DJSP_LODASH_PATH='"$(CURDIR)/third_party/lodash/lodash.js"' -Isrc -I$(PANELS_UI_SRC) -Ithird_party/quickjs tools/render_script.mm src/core/js_engine.cpp src/core/image_ops.cpp src/core/audio_meters.cpp src/core/theme_patches.cpp \
 	  $(PANELS_UI_SRC)/platform/mac/mac_canvas.mm build/tools/qjs/*.o -framework CoreGraphics -framework CoreText -framework ImageIO \
 	  -framework CoreFoundation -framework Foundation -o $(RENDER_BIN)
 mac-shot:
@@ -169,6 +172,14 @@ mac-vm-reload: mac-build
 	$(MAKE) -C $(PUI_ROOT) mac-build
 	MAC_VM=$(MAC_VM) ./scripts/ui-test.sh mac-vm reload
 
+mac-vm-menus: mac-build
+	$(MAKE) -C $(PUI_ROOT) mac-build
+	MAC_VM=$(MAC_VM) ./scripts/ui-test.sh mac-vm menus
+
+mac-vm-layout: mac-build
+	$(MAKE) -C $(PUI_ROOT) mac-build
+	MAC_VM=$(MAC_VM) ./scripts/ui-test.sh mac-vm layout
+
 mac-vm-editor: mac-build
 	$(MAKE) -C $(PUI_ROOT) mac-build
 	MAC_VM=$(MAC_VM) ./scripts/ui-test.sh mac-vm editor
@@ -194,6 +205,14 @@ win11-arm-deploy:
 win11-arm-smoke:
 	WIN_ARCH=$(ARCH) ./build.sh
 	WIN11_ARM=$(WIN11_ARM) ARCH=$(ARCH) ./scripts/ui-test.sh win11-arm smoke
+
+win11-arm-audio:
+	WIN_ARCH=$(ARCH) ./build.sh
+	WIN11_ARM=$(WIN11_ARM) ARCH=$(ARCH) ./scripts/ui-test.sh win11-arm audio
+
+mac-vm-audio: mac-build
+	$(MAKE) -C $(PUI_ROOT) mac-build
+	MAC_VM=$(MAC_VM) ./scripts/ui-test.sh mac-vm audio
 
 win11-arm-wheel:
 	WIN_ARCH=$(ARCH) ./build.sh

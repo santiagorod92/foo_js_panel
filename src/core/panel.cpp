@@ -745,7 +745,18 @@ void Panel::edit_script() {
     const int line = m_engine && m_engine->failed() ? error_line(m_engine->error(), m_path.empty() ? "<sample>" : m_path) : 0;
     m_surface.open_editor(title, current_source(),
                           { [this](const std::string& src) { return apply_source(src); },
-                            [this](const std::string& src) { return check_syntax(src, m_path.empty() ? "script.js" : m_path); }, line });
+                            [this](const std::string& src) { return check_syntax(src, m_path.empty() ? "script.js" : m_path); }, line,
+                            [this](const std::string& code) { return m_engine ? m_engine->evaluate(code) : std::string("no script is running"); },
+                            [this](const std::string& code) {
+                                const std::string result = m_engine ? m_engine->evaluate(code) : std::string("no script is running");
+                                log::info("js", "[" + label(m_path) + "] console: " + code + " = " + result.substr(0, 300));
+                                return result;
+                            },
+                            [this]() {
+                                std::vector<std::string> out;
+                                out.swap(m_consoleLines);
+                                return out;
+                            } });
 }
 
 std::string Panel::bundled_import(const std::string& name) { return name == "lodash" ? std::string(lodash_js()) : std::string(); }
@@ -831,6 +842,8 @@ void Panel::playback(Playback cmd) {
 }
 
 void Panel::console(const std::string& text) {
+    m_consoleLines.push_back(text);
+    if (m_consoleLines.size() > 200) m_consoleLines.erase(m_consoleLines.begin());
     const bool err = text.rfind("error: ", 0) == 0;
     log::console(err ? log::Level::Error : log::Level::Info, "js", "[" + label(m_path) + "] " + text);
 }
@@ -1159,6 +1172,34 @@ void Panel::http_request(const HttpRequest& req, HttpDone done) {
 HttpResponse Panel::http_request_sync(const HttpRequest& req) { return run_http(req, *m_abort); }
 
 bool Panel::shell_run(const std::string& command) { return ui::shell_run(command); }
+
+std::string Panel::map_chinese(const std::string& text, bool traditional) { return ui::map_chinese(text, traditional); }
+
+bool Panel::move_to_trash(const std::string& path) { return ui::move_to_trash(path); }
+
+int Panel::system_metric(int index) { return ui::system_metric(index); }
+
+int Panel::selection_type() {
+    const GUID* kinds[] = { &contextmenu_item::caller_undefined, &contextmenu_item::caller_active_playlist_selection,
+                            &contextmenu_item::caller_active_playlist, &contextmenu_item::caller_playlist_manager,
+                            &contextmenu_item::caller_now_playing, &contextmenu_item::caller_keyboard_shortcut_list,
+                            &contextmenu_item::caller_media_library_viewer };
+    ui_selection_manager_v2::ptr m;
+    if (!ui_selection_manager_v2::tryGet(m)) return 0;
+    const GUID type = m->get_selection_type(0);
+    for (int i = 0; i < (int)std::size(kinds); ++i)
+        if (type == *kinds[i]) return i;
+    return 0;
+}
+
+pui::gfx::ImagePtr Panel::album_art_stub(int artId) {
+    try {
+        auto extractor = album_art_manager_v2::get()->open_stub(*m_abort);
+        return decode(extractor->query(art_guid(artId), *m_abort));
+    } catch (...) {
+        return nullptr;
+    }
+}
 std::string Panel::clipboard_text() { return ui::clipboard_text(); }
 bool Panel::set_clipboard_text(const std::string& text) { return ui::copy_to_clipboard(text); }
 void Panel::ui_selection(SelectionMode mode, const Tracks& tracks) {

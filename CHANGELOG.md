@@ -3,6 +3,46 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.10.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.9.5...v1.10.0) (2026-11-24)
+
+### Highlights
+- The script editor has a console: it shows the script's `console.log` output and evaluates what
+  you type in the running panel, and `:watch EXPR` keeps a value on show while you use the panel.
+- Every sample Spider Monkey Panel 1.6 ships now runs unchanged (the 19 basic ones, JS Smooth
+  Browser, Playlist and Playlist Manager, JSPlaylist), and so do the DarkOneJSP3 and Cadence
+  JScript Panel 3 themes.
+- Georgia-ReBORN's peak meter moves: AudioWizard's real-time meters read what's playing.
+
+### Added
+- Script editor console (both platforms): type an expression or statement and press Enter to run
+  it in the panel's global scope (your variables, `window`, `fb`, `plman`…); objects show as
+  `{key: value}` and the panel's own objects with their main properties. `:watch EXPR`,
+  `:unwatch N`, `:clear`, `:help`; **F6** switches between the code and the console. It keeps
+  working after the script stopped on an error.
+- AudioWizard's real-time meters: RMS and sample peaks per channel (`PeakmeterAdjusted…` with
+  `PeakmeterOffset`), momentary and short-term LUFS (ITU BS.1770), PSR, phase correlation and the
+  raw samples.
+- `utils.GetSystemMetrics` answers real values (Windows' own; on macOS the screen size and
+  Windows' standard sizes), which JS Smooth and JSPlaylist size their scroll bars with.
+- `include()` also looks in the component folder (`fb.ComponentPath`), as Spider Monkey Panel
+  does: its samples include `docs/Flags.js` that way.
+- `fb.GetSelectionType()` tells what the current selection is (playlist selection, active
+  playlist, playlist manager, now playing…), as in Spider Monkey Panel.
+- JScript Panel 3's `fb.GetAlbumArtStub(art_id)` returns foobar2000's stub image for that kind.
+- `utils.MapString` converts between simplified and traditional Chinese.
+- `Shell.Application`'s `NameSpace(10).MoveHere(path)` moves a file or folder to the Recycle Bin /
+  Trash (Library Tree and Biography empty their caches this way); `ScriptControl` evaluates
+  VBScript's `MsgBox(…)` and `InputBox(…)`.
+
+### Fixed
+- macOS: `fb.DoDragDrop` returns the effect the drop used (0 when it was cancelled) instead of
+  always 0, so a script can tell a move from a copy, as on Windows.
+- macOS: after an HTML dialog (`utils.ShowHtmlDialog`) closed, the panels could stop getting mouse
+  moves and tooltips until you clicked the window: two dialogs open at once left the app in a
+  leftover modal state, and the main window didn't get the focus back.
+- Windows: dragging tracks onto a windowless JS Panel needs Panels UI 1.27.3, which fixes the
+  drop being refused there.
+
 ## [1.9.5](https://github.com/santiagorod92/foo_js_panel/compare/v1.9.4...v1.9.5) (2026-11-24)
 
 ### Fixed

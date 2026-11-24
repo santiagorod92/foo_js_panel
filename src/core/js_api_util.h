@@ -433,6 +433,21 @@ inline std::vector<std::string> lock_actions_of(unsigned mask) {
 
 enum FontStyle : int { kFontBold = 1, kFontItalic = 2, kFontUnderline = 4 };
 
+inline int default_system_metric(int index) {
+    switch (index) {
+    case 0: return 1920;
+    case 1: return 1080;
+    case 2: case 3: case 9: case 10: case 20: case 21: return 17;
+    case 4: return 23;
+    case 5: case 6: return 1;
+    case 7: case 8: case 32: case 33: return 3;
+    case 11: case 12: case 13: case 14: return 32;
+    case 15: return 19;
+    case 49: case 50: return 16;
+    default: return 0;
+    }
+}
+
 inline pui::gfx::FontSpec font_spec(const std::string& name, float px, int style) {
     pui::gfx::FontSpec s;
     s.face = name;

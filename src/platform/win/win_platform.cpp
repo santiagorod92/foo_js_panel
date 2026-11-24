@@ -80,6 +80,31 @@ bool shell_run(const std::string& command) {
     return r > 32;
 }
 
+std::string map_chinese(const std::string& text, bool traditional) {
+    const std::wstring w = widen(text);
+    const DWORD flag = traditional ? LCMAP_TRADITIONAL_CHINESE : LCMAP_SIMPLIFIED_CHINESE;
+    const int n = LCMapStringEx(L"zh-CN", flag, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr, 0);
+    if (n <= 0) return text;
+    std::wstring out((size_t)n, L'\0');
+    if (LCMapStringEx(L"zh-CN", flag, w.c_str(), (int)w.size(), out.data(), n, nullptr, nullptr, 0) != n) return text;
+    return narrow(out.c_str());
+}
+
+int system_metric(int index) { return GetSystemMetrics(index); }
+
+bool move_to_trash(const std::string& path) {
+    std::wstring from = widen(path);
+    for (auto& c : from)
+        if (c == L'/') c = L'\\';
+    while (from.size() > 3 && from.back() == L'\\') from.pop_back();
+    from.push_back(L'\0');
+    SHFILEOPSTRUCTW op{};
+    op.wFunc = FO_DELETE;
+    op.pFrom = from.c_str();
+    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
+    return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
+}
+
 bool register_font(const std::string& path) { return AddFontResourceExW(widen(path).c_str(), FR_PRIVATE, nullptr) > 0; }
 
 bool copy_to_clipboard(const std::string& text) {

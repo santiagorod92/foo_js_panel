@@ -272,6 +272,8 @@ struct FakeHost : jsp::JsHost {
         noteItems.push_back(items);
     }
     std::string profile_path() override { return profilePath; }
+    std::string componentPath;
+    std::string component_path() override { return componentPath; }
     double volume() override { return vol; }
     void set_volume(double v) override { vol = v; }
     bool flag(jsp::Flag f) override { return flags[f]; }
@@ -347,8 +349,10 @@ struct FakeHost : jsp::JsHost {
         queue = kept;
     }
     std::vector<jsp::QueueItem> queue_items() override { return queue; }
+    std::function<void()> onPopup;
     int popup_menu(int, int, const jsp::Menu& menu) override {
         shownMenu = menu;
+        if (onPopup) onPopup();
         return menuChoice(menu);
     }
     jsp::MenuSourcePtr context_menu(jsp::ContextKind kind, const jsp::Tracks& tracks) override {
@@ -395,6 +399,18 @@ struct FakeHost : jsp::JsHost {
     bool save_png(const pui::gfx::Image& img, const std::string& path) override {
         saved.push_back(path + " " + std::to_string(img.width()) + "x" + std::to_string(img.height()));
         return true;
+    }
+    std::vector<std::string> trashed;
+    bool move_to_trash(const std::string& path) override {
+        trashed.push_back(path);
+        return path != "/locked";
+    }
+    std::string map_chinese(const std::string& text, bool traditional) override { return (traditional ? "T:" : "S:") + text; }
+    int selection_type_value = 0;
+    int selection_type() override { return selection_type_value; }
+    pui::gfx::ImagePtr album_art_stub(int artId) override {
+        auto it = art.find("stub:" + std::to_string(artId));
+        return it == art.end() ? nullptr : it->second;
     }
     pui::gfx::ImagePtr album_art_sync(const jsp::TrackPtr& t, int, std::string& path) override {
         auto it = art.find(track_path(t));
@@ -496,8 +512,13 @@ struct FakeHost : jsp::JsHost {
         actions.push_back("restore " + recycler[i].first);
         recycler.erase(recycler.begin() + i);
     }
+    std::vector<float> meterData;
     bool audio_chunk(double duration, double offset, jsp::AudioChunk& out) override {
         if (duration <= 0) return false;
+        if (offset < 0 && !meterData.empty()) {
+            out = { 2, 1000, 3, meterData };
+            return true;
+        }
         out = { 2, 44100, 3, { 0.5f, -0.5f, 0.25f, -0.25f } };
         return offset == 0;
     }
