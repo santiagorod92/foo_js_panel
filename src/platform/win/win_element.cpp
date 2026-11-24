@@ -3,6 +3,7 @@
 #include <commdlg.h>
 #include <windowsx.h>
 #include "platform/win/gdi_canvas.h"
+#include "../../core/js_api_util.h"
 #include "../../core/js_panel_api.h"
 #include "../../core/log.h"
 #include "../../core/panel.h"
@@ -479,10 +480,12 @@ private:
             if (keyboard_shortcut_manager::get()->on_keydown_auto(wp)) return 0;
             break;
         case WM_MOUSEWHEEL:
-            if (m_panel) m_panel->wheel(GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA);
-            return 0;
         case WM_MOUSEHWHEEL:
-            if (m_panel) m_panel->wheel(GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA, true);
+            if (m_panel) {
+                const bool horizontal = msg == WM_MOUSEHWHEEL;
+                const int steps = (horizontal ? m_wheelH : m_wheelV).take(GET_WHEEL_DELTA_WPARAM(wp));
+                if (steps != 0) m_panel->wheel(steps, horizontal);
+            }
             return 0;
         default:
             break;
@@ -495,6 +498,7 @@ private:
     WinSurface m_surface;
     std::unique_ptr<Panel> m_panel;
     bool m_tracking = false;
+    WheelAccumulator m_wheelV, m_wheelH;
     wchar_t m_highSurrogate = 0;
     IDropTarget* m_drop = nullptr;
 };

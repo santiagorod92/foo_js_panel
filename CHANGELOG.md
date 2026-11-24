@@ -3,6 +3,15 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.9.5](https://github.com/santiagorod92/foo_js_panel/compare/v1.9.4...v1.9.5) (2026-11-24)
+
+### Fixed
+- Scrolling with a touchpad or a smooth-scroll mouse wheel works on Windows: their small wheel
+  movements were each rounded down to no step at all, so lists didn't move or stopped after a
+  few lines (Playlist Organizer, [#5](https://github.com/santiagorod92/foo_js_panel/issues/5)).
+  They now add up to whole steps, as a mouse wheel notch does. Windowless panels need Panels UI
+  1.27.2 for the same fix.
+
 ## [1.9.4](https://github.com/santiagorod92/foo_js_panel/compare/v1.9.3...v1.9.4) (2026-11-24)
 
 ### Fixed

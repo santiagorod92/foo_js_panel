@@ -1,5 +1,5 @@
 .PHONY: help build build-arm64ec build-x86 build-all deploy launch run kill clean check-portable test win-test \
-	mac-build mac-local mac-smoke mac-demo mac-restore render theme-check themes-check jsp3-check mac-shot mac-click ui-smoke win11-arm win11-arm-deploy win11-arm-test win11-arm-smoke win11-arm-menus win11-arm-images win11-arm-dragdrop win11-arm-dragdrop-windowless mac-dragdrop win11-arm-jsp3 mac-jsp3 win11-arm-wsh mac-wsh mac-vm-wsh win11-arm-reload mac-reload win11-arm-editor mac-import win11-arm-import mac-vm mac-vm-smoke mac-vm-jsp3 mac-vm-reload mac-vm-editor mac-windowless mac-vm-windowless mac-vm-catrox win11-arm-catrox win11-arm-windowless
+	mac-build mac-local mac-smoke mac-demo mac-restore render theme-check themes-check jsp3-check mac-shot mac-click ui-smoke win11-arm win11-arm-deploy win11-arm-test win11-arm-smoke win11-arm-menus win11-arm-images win11-arm-wheel win11-arm-dragdrop win11-arm-dragdrop-windowless mac-dragdrop win11-arm-jsp3 mac-jsp3 win11-arm-wsh mac-wsh mac-vm-wsh win11-arm-reload mac-reload win11-arm-editor mac-import win11-arm-import mac-vm mac-vm-smoke mac-vm-jsp3 mac-vm-reload mac-vm-editor mac-windowless mac-vm-windowless mac-vm-catrox win11-arm-catrox win11-arm-windowless
 
 help:
 	@echo "foo_js_panel — make targets"
@@ -44,6 +44,7 @@ help:
 	@echo "  win11-arm-smoke   build ARCH=..., then the smoke test in the guest (scripts/ui-test.sh win11-arm smoke)"
 	@echo "  win11-arm-menus   build ARCH=..., then a popup menu and an InputBox in the guest, with screenshots"
 	@echo "  win11-arm-images  build ARCH=..., then off-screen images and translucent shapes in the guest, with a screenshot"
+	@echo "  win11-arm-wheel   build ARCH=..., then touchpad-sized wheel events on a panel in the guest (on_mouse_wheel)"
 	@echo "  win11-arm-test    unit tests built for Windows, run in the guest"
 	@echo "  win11-arm-<cmd>   any win11-arm.sh command: -up, -down, -status, -shot, -ssh, -fb2k ARGS=start, -fb2k ARGS='log 60 ERROR', ..."
 
@@ -193,6 +194,10 @@ win11-arm-deploy:
 win11-arm-smoke:
 	WIN_ARCH=$(ARCH) ./build.sh
 	WIN11_ARM=$(WIN11_ARM) ARCH=$(ARCH) ./scripts/ui-test.sh win11-arm smoke
+
+win11-arm-wheel:
+	WIN_ARCH=$(ARCH) ./build.sh
+	WIN11_ARM=$(WIN11_ARM) ARCH=$(ARCH) ./scripts/ui-test.sh win11-arm wheel
 
 win11-arm-menus:
 	WIN_ARCH=$(ARCH) ./build.sh

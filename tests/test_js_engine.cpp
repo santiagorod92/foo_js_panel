@@ -773,6 +773,21 @@ TEST("menus: Windows menu text becomes a plain label") {
     CHECK_EQ(menu_label("A&&&B"), std::string("A&B"));
 }
 
+TEST("wheel: small Windows wheel deltas add up to whole steps") {
+    WheelAccumulator w;
+    CHECK_EQ(w.take(120), 1);
+    CHECK_EQ(w.take(-240), -2);
+    CHECK_EQ(w.take(40), 0);
+    CHECK_EQ(w.take(40), 0);
+    CHECK_EQ(w.take(40), 1);
+    CHECK_EQ(w.take(-30), 0);
+    CHECK_EQ(w.take(-90), -1);
+    CHECK_EQ(w.take(100), 0);
+    CHECK_EQ(w.take(-100), 0);
+    CHECK_EQ(w.take(-20), -1);
+    CHECK_EQ(w.take(360), 3);
+}
+
 TEST("keys: macOS key codes map to Windows virtual keys") {
     CHECK_EQ(mac_key_to_vk(36, '\r'), 0x0D);
     CHECK_EQ(mac_key_to_vk(76, 3), 0x0D);

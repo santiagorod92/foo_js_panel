@@ -3,7 +3,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/ui-test.sh <mac|mac-vm|win11-arm> smoke|dragdrop|jsp3|wsh|reload|import|editor|windowless (mac-vm: smoke|jsp3|wsh|reload|editor|windowless|catrox)
        scripts/ui-test.sh win11-arm catrox
-       scripts/ui-test.sh win11-arm menus|images|editor
+       scripts/ui-test.sh win11-arm menus|images|wheel|editor
 Runs tests/scripts/smoke.js in a real foobar2000, hosted by Panels UI through the
 tests/skins/panels-ui-embed skin, and asserts on foo_js_panel.log: the session banner, the
 script loading (include + titleformat), on_size, two paints (the second after the interval timer
@@ -47,6 +47,9 @@ windowless (tests/skins/panels-ui-dragdrop-windowless), so the drop goes through
 images (win11-arm) runs tests/scripts/images.js: off-screen images drawn with GetGraphics,
 translucent shapes, a circle mask, a blurred shadow, a rotated image and a colour scheme, then
 takes a screenshot (compare with make render SCRIPT=tests/scripts/images.js on macOS).
+wheel (win11-arm) runs tests/scripts/wheel.js and sends touchpad-sized wheel events (a third of a
+notch each) and one whole notch: on_mouse_wheel only gets whole steps, never 0. WINDOWLESS=1 runs
+it as a windowless panel (tests/skins/panels-ui-windowless), so the wheel goes through Panels UI.
   mac        this Mac's foobar2000 (build-mac/, make mac-build first); needs Panels UI built
              in ../foo_ui_panels/build-mac
   mac-vm     the macOS VM on this Mac (terminal-mac, ../foo_navidrome/scripts/terminal-mac.sh,
@@ -65,7 +68,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PLATFORM="$1"
 SCENARIO="${2:-smoke}"
-case "$PLATFORM:$SCENARIO" in mac-vm:import|mac-vm:dragdrop) usage >&2; exit 2 ;; mac-vm:catrox|win11-arm:catrox|*:smoke|*:dragdrop|*:jsp3|*:wsh|*:reload|*:import|win11-arm:menus|win11-arm:images|*:editor|*:windowless) ;; *) usage >&2; exit 2 ;; esac
+case "$PLATFORM:$SCENARIO" in mac-vm:import|mac-vm:dragdrop) usage >&2; exit 2 ;; mac-vm:catrox|win11-arm:catrox|*:smoke|*:dragdrop|*:jsp3|*:wsh|*:reload|*:import|win11-arm:menus|win11-arm:images|win11-arm:wheel|*:editor|*:windowless) ;; *) usage >&2; exit 2 ;; esac
 SHOTS="$REPO/build/ui-test"
 mkdir -p "$SHOTS"
 ACTIVE_SKIN='cfg_var.2A7E4C11-8B3F-4D6A-9E52-1C8F3A6B0D24'
@@ -74,6 +77,7 @@ VERBOSE='cfg_var.BBE2ECF8-9204-42D9-A7F1-0D5293B95080'
 SKIN=panels-ui-embed
 [ "$SCENARIO" = windowless ] && SKIN=panels-ui-windowless
 [ "$SCENARIO" = dragdrop ] && [ "${WINDOWLESS:-0}" = 1 ] && SKIN=panels-ui-dragdrop-windowless
+[ "$SCENARIO" = wheel ] && [ "${WINDOWLESS:-0}" = 1 ] && SKIN=panels-ui-windowless
 EXPECT=('foo_js_panel .* QuickJS' 'smoke: loaded, include ok' 'smoke: size ' 'smoke: paint .* ticks=0'
         'smoke: timeout ok' 'smoke: timer ok' 'smoke: paint .* ticks=3' 'smoke: navidrome available='
         'smoke: properties runs=[0-9]+' 'smoke: paths profile=true foobar=true version=[0-9]' 'smoke: menu Playback/Stop=true nope=false'
@@ -460,6 +464,13 @@ win11_arm_smoke() {
     wait_log 'images: painted' || true
     sleep 2
     "$vm" shot "$SHOTS/win11-arm-$arch-images.png" >/dev/null 2>&1 && say "screenshot $SHOTS/win11-arm-$arch-images.png"
+  elif [ "$SCENARIO" = wheel ]; then
+    EXPECT=('foo_js_panel .* QuickJS' 'wheel: ready' 'wheel: step -1 total -1$' 'wheel: step -1 total -2$' 'wheel: step 1 total -1$')
+    wait_log 'wheel: ready' || fail "the wheel script never loaded"
+    sleep 2
+    "$vm" tap 'wheel,50%,50%,-40,6;wheel,50%,50%,120' >/dev/null
+    wait_log 'wheel: step 1 total' || true
+    if grep -aq 'wheel: step 0 ' <<<"$log"; then fail "on_mouse_wheel got a 0 step"; fi
   else
     wait_log 'smoke: paint .* ticks=3' || true
     "$vm" shot "$SHOTS/win11-arm-$arch.png" >/dev/null 2>&1 && say "screenshot $SHOTS/win11-arm-$arch.png"

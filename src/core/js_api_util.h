@@ -16,6 +16,17 @@ inline pui::gfx::Color argb_color(uint32_t argb) {
 
 inline int argb_alpha(uint32_t argb) { return (int)(argb >> 24); }
 
+struct WheelAccumulator {
+    int rest = 0;
+    int take(int delta) {
+        if ((delta > 0 && rest < 0) || (delta < 0 && rest > 0)) rest = 0;
+        rest += delta;
+        const int steps = rest / 120;
+        rest -= steps * 120;
+        return steps;
+    }
+};
+
 enum : uint32_t {
     DT_CENTER_ = 0x1,
     DT_RIGHT_ = 0x2,
