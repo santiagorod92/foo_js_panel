@@ -3,6 +3,13 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.10.1](https://github.com/santiagorod92/foo_js_panel/compare/v1.10.0...v1.10.1) (2026-11-25)
+
+### Fixed
+- A drop with `ToSelect` set now also makes the target playlist the active one, focused on the
+  first dropped track, as in Spider Monkey Panel and JScript Panel 3 (Playlist Organizer's drops
+  switch to the playlist they land on). It also applies to `plman.AddLocations(…, true)`.
+
 ## [1.10.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.9.5...v1.10.0) (2026-11-24)
 
 ### Highlights

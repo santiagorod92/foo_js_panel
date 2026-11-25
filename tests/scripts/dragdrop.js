@@ -46,9 +46,9 @@ function on_drag_drop(action, x, y) {
     action.Effect = 1;
     action.Playlist = dropList;
     action.Base = 0;
-    action.ToSelect = false;
+    action.ToSelect = true;
     console.log('dragdrop: drop at ' + x + ',' + y);
 }
 function on_playlist_items_added(p) {
-    if (target && p === dropList) console.log('dragdrop: added ' + plman.PlaylistItemCount(p));
+    if (target && p === dropList) console.log('dragdrop: added ' + plman.PlaylistItemCount(p) + ' active=' + (plman.ActivePlaylist === p) + ' selected=' + plman.GetPlaylistSelectedItems(p).Count);
 }

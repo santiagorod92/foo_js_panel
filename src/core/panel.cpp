@@ -2052,7 +2052,15 @@ void Panel::drag(Drag kind, int x, int y, unsigned mask, DropAction& action) {
 process_locations_notify::ptr Panel::drop_notify(const DropAction& action) {
     auto abort = m_abort;
     return process_locations_notify::create([this, abort, action](metadb_handle_list_cref items) {
-        if (!abort->is_aborting() && items.get_count()) insert_playlist_items(action.playlist, action.base, wrap_all(items), action.toSelect);
+        if (abort->is_aborting() || !items.get_count() || !valid(action.playlist)) return;
+        auto pm = playlist_manager::get();
+        const auto p = (size_t)action.playlist;
+        const size_t at = std::min((size_t)std::max(0, action.base), pm->playlist_get_item_count(p));
+        if (action.toSelect) pm->playlist_clear_selection(p);
+        pm->playlist_insert_items(p, at, items, bit_array_val(action.toSelect));
+        if (!action.toSelect) return;
+        pm->set_active_playlist(p);
+        pm->playlist_set_focus_item(p, at);
     });
 }
 

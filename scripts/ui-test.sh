@@ -122,7 +122,7 @@ WINDOWLESS_EXPECT=('foo_js_panel .* QuickJS' 'windowless panel WL runs' 'windowl
                    'windowless: size [1-9][0-9]*x[1-9][0-9]*' 'windowless: paint .* n=1' 'windowless: timer ok' 'windowless: paint .* n=3'
                    'windowless: move' 'windowless: focus true' 'windowless: down [0-9]+,[0-9]+' 'windowless: up [0-9]+,[0-9]+' 'windowless: key 65')
 DRAGDROP_EXPECT=('foo_js_panel .* QuickJS' 'dragdrop: clipboard copied=true has=true count=2' 'dragdrop: ready source'
-                 'dragdrop: ready target' 'dragdrop: enter effect=[1-3]' 'dragdrop: drop at ' 'dragdrop: added 2')
+                 'dragdrop: ready target' 'dragdrop: enter effect=[1-3]' 'dragdrop: drop at ' 'dragdrop: added 2 active=true selected=2')
 MENUS_EXPECT=('foo_js_panel .* QuickJS' 'menus: showing' 'menus: picked 0' 'inputbox: showing' 'inputbox: value=hi$'
               'menus: focus true' 'menus: char a' 'menus: key_up 65' 'picker: showing' 'picker: colour=ff123456' 'properties: showing')
 DEFAULT_UI_MODULE='6EBCE8DE-A55C-4E09-9EFE-A8B6A66D69FD'
