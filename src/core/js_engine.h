@@ -45,6 +45,12 @@ struct SearchResult {
 };
 using SearchDone = std::function<void(SearchResult result, std::string error)>;
 
+struct LyricsResult {
+    bool found = false, synced = false;
+    std::vector<std::pair<int, std::string>> lines;
+};
+using LyricsDone = std::function<void(LyricsResult result, std::string error)>;
+
 struct TrackInfo {
     std::vector<std::pair<std::string, std::vector<std::string>>> meta;
     std::vector<std::pair<std::string, std::string>> info;
@@ -159,6 +165,7 @@ public:
     virtual void navidrome_play(bool, const std::string&, bool, bool) {}
     virtual void navidrome_artist_info(const std::string&, ArtistInfoDone done) { done({}, "foo_navidrome isn't installed"); }
     virtual void navidrome_search(const std::string&, SearchDone done) { done({}, "foo_navidrome isn't installed"); }
+    virtual void navidrome_lyrics(const TrackPtr&, LyricsDone done) { done({}, "foo_navidrome isn't installed"); }
     virtual TrackPtr now_playing() { return nullptr; }
     virtual Tracks library_items() { return {}; }
     virtual std::string track_path(const TrackPtr&) { return {}; }

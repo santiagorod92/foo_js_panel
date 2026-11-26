@@ -5,6 +5,7 @@
 #include "js_panel_api.h"
 #include "log.h"
 #include "navidrome_library_api.h"
+#include "navidrome_lyrics_api.h"
 #include "navidrome_rating_api.h"
 #include "panels_ui_api.h"
 #include "platform.h"
@@ -477,6 +478,8 @@ public:
         const std::string n = name ? name : "", v = value ? value : "";
         if (n == "mini_mode") Panel::broadcast("on_panelsui_mini_mode", { v == "1" });
         else if (n == "zoom") Panel::broadcast("on_panelsui_zoom", { atoi(v.c_str()) });
+        else if (jsp::PanelState p; jsp::parse_panel_state(n, v, p))
+            Panel::broadcast("on_panelsui_panel_changed", { p.name, p.shown, p.x, p.y, p.w, p.h });
     }
 };
 FB2K_SERVICE_FACTORY(SkinNotify);
@@ -985,6 +988,46 @@ void Panel::navidrome_search(const std::string& query, SearchDone done) {
             if (abort->is_aborting()) return;
             sink->result.tracks = wrap_all(sink->tracks);
             done(std::move(sink->result), error);
+        });
+    }).detach();
+}
+
+void Panel::navidrome_lyrics(const TrackPtr& t, LyricsDone done) {
+    service_enum_t<navidrome::navidrome_lyrics_api> e;
+    navidrome::navidrome_lyrics_api::ptr api;
+    if (!e.next(api)) {
+        done({}, navidrome_api().is_empty() ? "foo_navidrome isn't installed" : "this foo_navidrome has no lyrics; update it");
+        return;
+    }
+    const metadb_handle_ptr h = handle_of(t);
+    if (h.is_empty() || !api->is_navidrome_track(h)) {
+        done({}, "");
+        return;
+    }
+    auto abort = m_abort;
+    const std::string who = label(m_path);
+    std::thread([api, h, abort, who, done = std::move(done)]() mutable {
+        struct Sink : navidrome::lyrics_sink {
+            LyricsResult result;
+            void on_begin(bool synced, unsigned count) override { result.synced = synced; result.lines.reserve(count); }
+            void on_line(int startMs, const char* text) override { result.lines.emplace_back(startMs, text ? text : ""); }
+        } sink;
+        pfc::string8 err;
+        bool ok = false;
+        try {
+            ok = api->get_lyrics(h, sink, *abort, err);
+        } catch (const std::exception& ex) {
+            err = ex.what();
+        } catch (...) {
+            err = "the Navidrome lyrics request failed";
+        }
+        if (abort->is_aborting()) return;
+        sink.result.found = ok && !sink.result.lines.empty();
+        const std::string error = ok || err.is_empty() ? std::string() : std::string(err.c_str());
+        log::info("navidrome", "[" + who + "] lyrics: " + (error.empty() ? (sink.result.found ? std::to_string(sink.result.lines.size()) + (sink.result.synced ? " synced lines" : " lines") : std::string("none")) : error));
+        auto result = std::make_shared<LyricsResult>(std::move(sink.result));
+        fb2k::inMainThread([abort, result, error, done = std::move(done)]() {
+            if (!abort->is_aborting()) done(std::move(*result), error);
         });
     }).detach();
 }

@@ -488,4 +488,29 @@ inline pui::gfx::FontSpec font_spec(const std::string& name, float px, int style
     return s;
 }
 
+struct PanelState {
+    std::string name;
+    bool shown = false;
+    int x = 0, y = 0, w = 0, h = 0;
+};
+
+inline bool parse_panel_state(const std::string& key, const std::string& value, PanelState& out) {
+    static const std::string prefix = "panel.";
+    if (key.size() <= prefix.size() || key.compare(0, prefix.size(), prefix) != 0) return false;
+    out = PanelState();
+    out.name = key.substr(prefix.size());
+    int v[4];
+    size_t pos = 0;
+    for (int i = 0; i < 4; ++i) {
+        size_t used = 0;
+        try { v[i] = std::stoi(value.substr(pos), &used); } catch (...) { return true; }
+        pos += used;
+        if (i < 3) { if (pos >= value.size() || value[pos] != ',') return true; ++pos; }
+    }
+    if (pos != value.size()) return true;
+    out.shown = true;
+    out.x = v[0]; out.y = v[1]; out.w = v[2]; out.h = v[3];
+    return true;
+}
+
 }

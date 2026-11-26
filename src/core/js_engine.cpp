@@ -2057,6 +2057,33 @@ JSValue nd_GetArtistInfoAsync(JSContext* ctx, JSValueConst, int argc, JSValueCon
     return promise;
 }
 
+JSValue nd_GetLyricsAsync(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    TrackPtr t = arg_track(ctx, argc, argv, 0);
+    if (!t) return JS_EXCEPTION;
+    JsEngine::Impl* e = I(ctx);
+    int id = 0;
+    JSValue promise = e->new_promise(id);
+    if (JS_IsException(promise)) return promise;
+    std::shared_ptr<bool> token = e->alive;
+    e->host.navidrome_lyrics(t, [token, e, id](LyricsResult r, std::string err) {
+        if (!*token) return;
+        if (!err.empty()) return reject_with(e, id, err);
+        JSContext* c = e->ctx;
+        if (!r.found) return e->settle_promise(id, JS_NULL);
+        JSValue o = JS_NewObject(c), lines = JS_NewArray(c);
+        JS_SetPropertyStr(c, o, "Synced", JS_NewBool(c, r.synced));
+        for (uint32_t i = 0; i < r.lines.size(); ++i) {
+            JSValue line = JS_NewObject(c);
+            set_int(c, line, "Time", r.lines[i].first);
+            set_str(c, line, "Text", r.lines[i].second);
+            JS_SetPropertyUint32(c, lines, i, line);
+        }
+        JS_SetPropertyStr(c, o, "Lines", lines);
+        e->settle_promise(id, o);
+    });
+    return promise;
+}
+
 template <bool Artist, bool Add>
 JSValue nd_play(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     const std::string id = arg_str(ctx, argc, argv, 0);
@@ -2075,6 +2102,7 @@ const JSCFunctionListEntry kNavidromeFuncs[] = {
     JS_CFUNC_DEF("GetArtistsAsync", 0, nd_GetArtistsAsync),
     JS_CFUNC_DEF("GetArtistInfoAsync", 1, nd_GetArtistInfoAsync),
     JS_CFUNC_DEF("SearchAsync", 1, nd_SearchAsync),
+    JS_CFUNC_DEF("GetLyricsAsync", 1, nd_GetLyricsAsync),
     JS_CFUNC_DEF("PlayAlbum", 3, (nd_play<false, false>)),
     JS_CFUNC_DEF("AddAlbum", 1, (nd_play<false, true>)),
     JS_CFUNC_DEF("PlayArtist", 3, (nd_play<true, false>)),

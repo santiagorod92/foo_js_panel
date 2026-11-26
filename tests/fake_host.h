@@ -194,6 +194,13 @@ struct FakeHost : jsp::JsHost {
         if (it == navidromeResults.end()) done({}, "search failed for \"" + query + "\"");
         else done(it->second, "");
     }
+    std::map<std::string, jsp::LyricsResult> navidromeLyrics;
+    void navidrome_lyrics(const jsp::TrackPtr& t, jsp::LyricsDone done) override {
+        const std::string p = track_path(t);
+        if (p == "navidrome://broken") return done({}, "the server is unreachable");
+        auto it = navidromeLyrics.find(p);
+        done(it == navidromeLyrics.end() ? jsp::LyricsResult{} : it->second, "");
+    }
     void navidrome_play(bool artist, const std::string& id, bool replace, bool play) override {
         played.push_back(std::string(artist ? "artist " : "album ") + id + (replace ? " replace" : " add") + (play ? " play" : ""));
     }

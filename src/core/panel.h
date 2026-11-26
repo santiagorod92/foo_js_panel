@@ -110,6 +110,7 @@ public:
     void navidrome_play(bool artist, const std::string& id, bool replace, bool play) override;
     void navidrome_artist_info(const std::string& name, ArtistInfoDone done) override;
     void navidrome_search(const std::string& query, SearchDone done) override;
+    void navidrome_lyrics(const TrackPtr& t, LyricsDone done) override;
     TrackPtr now_playing() override;
     Tracks library_items() override;
     std::string track_path(const TrackPtr& t) override;

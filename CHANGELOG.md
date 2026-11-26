@@ -3,6 +3,18 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.11.0](https://github.com/santiagorod92/foo_js_panel/compare/v1.10.2...v1.11.0) (2026-11-26)
+
+### Added
+- `navidrome.GetLyricsAsync(handle)`: a Navidrome track's lyrics from your server, as
+  `{ Synced, Lines: [{ Time, Text }] }` (`Time` in ms), or `null` for any other track or when the
+  server has none.
+- `on_panelsui_panel_changed(name, visible, x, y, w, h)`: Panels UI (1.28.0 or later) tells every
+  script when one of the skin's panels is shown, hidden or moved, in skin units like
+  `panelsui.GetPanelRect`.
+- Wil-B's [Find & Play](https://github.com/Wil-B/Find-and-Play) runs; it's now in the list of
+  other authors' themes `make themes-check` runs.
+
 ## [1.10.2](https://github.com/santiagorod92/foo_js_panel/compare/v1.10.1...v1.10.2) (2026-11-26)
 
 ### Fixed

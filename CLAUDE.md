@@ -42,8 +42,9 @@ anything repo-specific stays in the repo's own sections.
   interface, its consumers and its vendored copies.
 - **Current links:** `navidrome_rating_api` drives Panels UI's star ratings on `navidrome://`
   tracks, which also read the `NAVIDROME_RATING` field. `navidrome_library_api` feeds the
-  Panels UI album grid (`album_list`) and `library_tree`, and JS Panel's `navidrome` script
-  object. `navidrome_lyrics_api` feeds Panels UI's `lyrics_panel`.
+  Panels UI album grid (`album_list`), `library_tree` (its tracks too), `quick_search` (the
+  server's search) and `biography` (`artist_info`), and JS Panel's `navidrome` script object.
+  `navidrome_lyrics_api` feeds Panels UI's `lyrics_panel` and JS Panel's `navidrome.GetLyricsAsync`.
 - **Shared source:** foo_js_panel compiles foo_ui_panels' `src/gfx/canvas.h` and its backends
   (`src/platform/win/gdi_canvas.*`, `src/platform/mac/mac_canvas.*`) from the sibling checkout
   (`PANELS_UI_SRC`); its CI checks foo_ui_panels out next to it. A change to those files is
@@ -57,8 +58,10 @@ anything repo-specific stays in the repo's own sections.
   UI calls `notify(name, info)` for a `JSPANEL:<name>[:<info>]` action and
   `variable_changed(name, value)` from `save_pvars` for each changed skin variable (not the `_`
   ones); JS Panel hands them to every panel as `on_notify_data` / `on_panelsui_variable_changed`.
-  `js_panel_notify_api_v2::state_changed(name, value)` (`mini_mode`, `zoom`; sent after a render
-  that changed them) becomes `on_panelsui_mini_mode` / `on_panelsui_zoom`.
+  `js_panel_notify_api_v2::state_changed(name, value)` (`mini_mode`, `zoom`, `panel.<name>` =
+  `x,y,w,h` or empty when hidden; sent after a render that changed them; a receiver ignores names it
+  doesn't know, so a new state needs no new interface) becomes `on_panelsui_mini_mode` /
+  `on_panelsui_zoom` / `on_panelsui_panel_changed`.
 - **Windowless panels:** `js_panel_windowless_api` (same header, published by JS Panel) creates a
   JS Panel with no window of its own for a `panel.<name>.windowless = 1` skin panel. Panels UI
   calls `paint(pargb, w, h, scale)` at the `$panel` call's place in the frame, with the skin drawn
@@ -383,6 +386,9 @@ anything repo-specific stays in the repo's own sections.
   `fb.GetLibraryItems()`) and `artist_info` (`GetArtistInfoAsync`; `theme_patches.cpp` makes
   Eole's Biography fetch artist photos from it, since last.fm's photo pages now answer non-browser
   clients with a JS challenge).
+  `GetLyricsAsync` goes through the vendored `navidrome_lyrics_api.h` (identical to Panels UI's
+  copy): resolves `null` for a track `is_navidrome_track` refuses, so a script can call it for any
+  track.
 - **SDK exceptions vs. hosts:** an SDK call that throws (e.g. `config_object::g_get_data_bool_simple`
   throws `exception_service_not_found` for an object that doesn't exist, like
   `bool_ui_always_on_top` on macOS) must not escape `Panel`'s constructor: Panels UI swallows the

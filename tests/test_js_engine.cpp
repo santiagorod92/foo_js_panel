@@ -1358,6 +1358,43 @@ TEST("navidrome: SearchAsync resolves with artists, albums and a track list, rej
     CHECK_EQ(host.console_lines.back(), std::string("rejected search failed for \"x\""));
 }
 
+TEST("panelsui: a panel's state names it and gives its rect, or hidden") {
+    jsp::PanelState p;
+    CHECK(jsp::parse_panel_state("panel.Cover", "10,20,300,-4", p));
+    CHECK_EQ(p.name, std::string("Cover"));
+    CHECK(p.shown);
+    CHECK_EQ(p.x, 10); CHECK_EQ(p.y, 20); CHECK_EQ(p.w, 300); CHECK_EQ(p.h, -4);
+    CHECK(jsp::parse_panel_state("panel.Cover", "", p));
+    CHECK(!p.shown);
+    CHECK(jsp::parse_panel_state("panel.a.b", "1,2,3", p));
+    CHECK_EQ(p.name, std::string("a.b"));
+    CHECK(!p.shown);
+    CHECK(jsp::parse_panel_state("panel.x", "1,2,3,4z", p) && !p.shown);
+    CHECK(!jsp::parse_panel_state("panel.", "1,2,3,4", p));
+    CHECK(!jsp::parse_panel_state("zoom", "100", p));
+}
+
+TEST("navidrome: GetLyricsAsync resolves with timed lines, null without lyrics, rejects on an error") {
+    t::FakeHost host;
+    jsp::LyricsResult ly;
+    ly.found = true; ly.synced = true;
+    ly.lines = { { 1500, "First line" }, { 4200, "Second line" } };
+    host.navidromeLyrics["navidrome://s1"] = ly;
+    host.navidromeResults["q"].tracks = { t::track("navidrome://s1"), t::track("/music/local.flac"), t::track("navidrome://broken") };
+    JsEngine e(host);
+    CHECK(e.load("navidrome.SearchAsync('q').then(r => {"
+                 " navidrome.GetLyricsAsync(r.Tracks.Item(0)).then(l => console.log(l.Synced, l.Lines.length, l.Lines[1].Time, l.Lines[1].Text));"
+                 " navidrome.GetLyricsAsync(r.Tracks.Item(1)).then(l => console.log('local', l));"
+                 " navidrome.GetLyricsAsync(r.Tracks.Item(2)).then(() => console.log('no'), err => console.log('rejected', err.message));"
+                 "});"
+                 "try { navidrome.GetLyricsAsync(1); } catch (err) { console.log('type', err instanceof TypeError); }", ""));
+    CHECK_EQ(host.console_lines.size(), (size_t)4);
+    CHECK_EQ(host.console_lines[0], std::string("type true"));
+    CHECK_EQ(host.console_lines[1], std::string("true 2 4200 Second line"));
+    CHECK_EQ(host.console_lines[2], std::string("local null"));
+    CHECK_EQ(host.console_lines[3], std::string("rejected the server is unreachable"));
+}
+
 TEST("mouse: horizontal wheel and right double-click reach their own callbacks") {
     t::FakeHost host;
     JsEngine e(host);
