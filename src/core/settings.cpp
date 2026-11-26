@@ -1,6 +1,8 @@
 #include "../fb2k.h"
 #include "settings.h"
 #include "diagnostics.h"
+#include "fs_util.h"
+#include "js_api_util.h"
 #include "log.h"
 #include "panel.h"
 #include "platform.h"
@@ -18,12 +20,21 @@ constexpr GUID kNavidromeLibraryCmdGuid = { 0x91D4E6A2, 0x5C83, 0x4B7E, { 0xB0, 
 constexpr GUID kScriptCommandsGuid = { 0xAD1F2B8C, 0x9666, 0x4E65, { 0x93, 0xC7, 0xD8, 0xDB, 0x58, 0xBC, 0xCB, 0x8E } };
 constexpr GUID kHotReloadGuid = { 0x3E9A7C21, 0x5B04, 0x4D8F, { 0x9A, 0x61, 0x2C, 0x7E, 0x40, 0xB3, 0x18, 0xD5 } };
 constexpr GUID kHotReloadCmdGuid = { 0x6F2D8B40, 0x91C3, 0x4E57, { 0xB2, 0x0A, 0x7D, 0x35, 0xE9, 0x46, 0x0C, 0x81 } };
+constexpr GUID kScaleDpiGuid = { 0x5C2E9B71, 0x0A4D, 0x4F36, { 0x8E, 0x13, 0xB7, 0x62, 0xD9, 0x04, 0x3A, 0xC8 } };
+constexpr GUID kScaleDpiCmdGuid = { 0xA3F07D52, 0x6E19, 0x4B8C, { 0x95, 0x2D, 0x41, 0xC8, 0x7B, 0xE6, 0x10, 0x9F } };
 constexpr GUID kDefaultScriptGuid = { 0x4876F6EE, 0xF0D3, 0x47D7, { 0xBF, 0xA4, 0x58, 0xD6, 0x77, 0xFC, 0x9A, 0xDF } };
 
 cfg_bool cfg_verbose(kVerboseGuid, false);
 cfg_string cfg_default_script(kDefaultScriptGuid, "");
 cfg_bool cfg_navidrome_library(kNavidromeLibraryGuid, true);
 cfg_bool cfg_hot_reload(kHotReloadGuid, true);
+cfg_bool cfg_scale_dpi(kScaleDpiGuid, false);
+
+#ifdef _WIN32
+constexpr bool kCaselessPaths = true;
+#else
+constexpr bool kCaselessPaths = false;
+#endif
 
 mainmenu_group_popup_factory g_group(kMenuGroupGuid, mainmenu_groups::view, mainmenu_commands::sort_priority_dontcare,
                                      "JS Panel");
@@ -52,26 +63,30 @@ FB2K_SERVICE_FACTORY(ScriptCommands);
 
 class JsPanelMenu : public mainmenu_commands {
 public:
-    enum { kVerbose, kNavidromeLibrary, kHotReload, kCopyDiagnostics, kCount };
+    enum { kVerbose, kNavidromeLibrary, kHotReload, kScaleDpi, kCopyDiagnostics, kCount };
     t_uint32 get_command_count() override { return kCount; }
     GUID get_command(t_uint32 i) override {
-        return i == kVerbose ? kVerboseCmdGuid : i == kNavidromeLibrary ? kNavidromeLibraryCmdGuid : i == kHotReload ? kHotReloadCmdGuid : kCopyDiagCmdGuid;
+        return i == kVerbose ? kVerboseCmdGuid : i == kNavidromeLibrary ? kNavidromeLibraryCmdGuid : i == kHotReload ? kHotReloadCmdGuid
+             : i == kScaleDpi ? kScaleDpiCmdGuid : kCopyDiagCmdGuid;
     }
     void get_name(t_uint32 i, pfc::string_base& out) override {
         out = i == kVerbose ? "Verbose logging" : i == kNavidromeLibrary ? "Navidrome tracks in the library"
-            : i == kHotReload ? "Reload scripts when their files change" : "Copy diagnostics";
+            : i == kHotReload ? "Reload scripts when their files change"
+            : i == kScaleDpi ? "Scale scripts with the display DPI" : "Copy diagnostics";
     }
     bool get_description(t_uint32 i, pfc::string_base& out) override {
         out = i == kVerbose ? "Write INFO lines to foo_js_panel.log in the profile folder."
             : i == kNavidromeLibrary ? "Scripts see foo_navidrome's tracks in fb.GetLibraryItems(), next to the Media Library (applies on restart)."
             : i == kHotReload ? "A panel reloads when its script or a file it includes is saved, from any editor."
+            : i == kScaleDpi ? "window.DPI and the AppliedDPI registry value report the display's DPI instead of 96, so scripts that scale by them (JScript Panel 3) size their fonts for the display."
                               : "Copy a redacted report (versions, panels, recent log) to paste into a bug report.";
         return true;
     }
     GUID get_parent() override { return kMenuGroupGuid; }
     bool get_display(t_uint32 i, pfc::string_base& text, t_uint32& flags) override {
         get_name(i, text);
-        flags = (i == kVerbose && verbose_logging()) || (i == kNavidromeLibrary && navidrome_in_library()) || (i == kHotReload && hot_reload())
+        flags = (i == kVerbose && verbose_logging()) || (i == kNavidromeLibrary && navidrome_in_library()) || (i == kHotReload && hot_reload()) ||
+                        (i == kScaleDpi && scale_dpi())
                     ? flag_checked : 0;
         return true;
     }
@@ -86,6 +101,11 @@ public:
         }
         if (i == kHotReload) {
             cfg_hot_reload = !cfg_hot_reload.get();
+            return;
+        }
+        if (i == kScaleDpi) {
+            cfg_scale_dpi = !cfg_scale_dpi.get();
+            for (Panel* p : Panel::live()) p->reload_script();
             return;
         }
         const bool ok = ui::copy_to_clipboard(collect_diagnostics());
@@ -105,9 +125,21 @@ bool navidrome_in_library() { return cfg_navidrome_library.get(); }
 
 bool hot_reload() { return cfg_hot_reload.get(); }
 
-std::string default_script() { return cfg_default_script.get().c_str(); }
+bool scale_dpi() { return cfg_scale_dpi.get(); }
 
-void set_default_script(const std::string& path) { cfg_default_script = path.c_str(); }
+std::string profile_dir() {
+    std::string p = filesystem::g_get_native_path(core_api::get_profile_path()).c_str();
+    if (!p.empty() && p.back() != kPathSep) p += kPathSep;
+    return p;
+}
+
+std::string stored_script_path(const std::string& path) { return portable_path(path, profile_dir(), kCaselessPaths); }
+
+std::string script_from_stored(const std::string& stored) { return expand_portable_path(stored, profile_dir(), kPathSep); }
+
+std::string default_script() { return script_from_stored(cfg_default_script.get().c_str()); }
+
+void set_default_script(const std::string& path) { cfg_default_script = stored_script_path(path).c_str(); }
 
 void set_verbose_logging(bool on) {
     cfg_verbose = on;

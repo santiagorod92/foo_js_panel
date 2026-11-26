@@ -493,6 +493,8 @@ struct FakeHost : jsp::JsHost {
     pui::gfx::Rect winRect{ 100, 50, 800, 600 };
     bool visible() override { return shown; }
     bool dark_mode() override { return dark; }
+    int dpiValue = 96;
+    int dpi() override { return dpiValue; }
     bool html_dialog(const jsp::HtmlDialog& d, const jsp::DialogCall& call) override {
         if (!htmlEngine) return false;
         lastDialog = d;

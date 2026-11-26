@@ -3408,6 +3408,8 @@ JSValue native_messageBox(JSContext* ctx, JSValueConst, int argc, JSValueConst* 
     return JS_NewInt32(ctx, e->modal([&] { return e->host.message_box(text, caption, type); }));
 }
 
+JSValue native_dpi(JSContext* ctx, JSValueConst, int, JSValueConst*) { return JS_NewInt32(ctx, I(ctx)->host.dpi()); }
+
 JSValue native_fixPath(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) { return new_string(ctx, fix_path(arg_str(ctx, argc, argv, 0))); }
 
 JSValue native_windowState(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
@@ -3614,6 +3616,7 @@ const JSCFunctionListEntry kNativeFuncs[] = {
     JS_CFUNC_DEF("clipboard", 1, native_clipboard),
     JS_CFUNC_DEF("messageBox", 3, native_messageBox),
     JS_CFUNC_DEF("fixPath", 1, native_fixPath),
+    JS_CFUNC_DEF("dpi", 0, native_dpi),
     JS_CFUNC_DEF("windowState", 1, native_windowState),
     JS_CFUNC_DEF("notify", 3, native_notify),
     JS_CFUNC_DEF("kind", 1, native_kind),
@@ -4043,7 +4046,7 @@ const char* const kPrelude = R"JS(
     const registry = {
         'hklm\\software\\microsoft\\windows nt\\currentversion\\currentmajorversionnumber': 10,
         'hklm\\software\\microsoft\\windows nt\\currentversion\\currentminorversionnumber': 0,
-        'hkcu\\control panel\\desktop\\windowmetrics\\applieddpi': 96,
+        get 'hkcu\\control panel\\desktop\\windowmetrics\\applieddpi'() { return __jsp.dpi(); },
         'hkcu\\software\\microsoft\\windows\\currentversion\\themes\\personalize\\appsuselighttheme': 0,
     };
     const shell = () => ({
@@ -4642,7 +4645,7 @@ const char* const kJsp3Prelude = R"JS(
     window.GetFontDUI = t => fontString(smpFontDUI.call(window, t));
     window.GetFontCUI = t => fontString(smpFontCUI.call(window, t));
     Object.defineProperty(window, 'IsDefaultUI', { get: () => true });
-    Object.defineProperty(window, 'DPI', { get: () => 96 });
+    Object.defineProperty(window, 'DPI', { get: () => __jsp.dpi() });
     window.SetTooltipFont = () => {};
     let holder = null;
     const selection = () => holder || (holder = fb.AcquireUiSelectionHolder());

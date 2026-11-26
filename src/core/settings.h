@@ -9,5 +9,9 @@ std::string default_script();
 void set_default_script(const std::string& path);
 bool navidrome_in_library();
 bool hot_reload();
+bool scale_dpi();
+std::string profile_dir();
+std::string stored_script_path(const std::string& path);
+std::string script_from_stored(const std::string& stored);
 
 }

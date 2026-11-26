@@ -101,6 +101,9 @@ Right-click it:
 - **Choose script file…** picks a `.js` file; **Reload script** re-reads it. A panel also reloads
   by itself within a second when its script, or a file it `include()`s, `@import`s or `import`s, is saved
   from any editor (*View › JS Panel › Reload scripts when their files change*, on by default).
+  A script inside the foobar2000 profile folder is remembered relative to it (as
+  `%fb2k_profile_path%…`), and so are its panel properties, so a portable install synced between
+  computers (Dropbox and the like) finds both wherever the folder sits.
 - **Samples** switches the panel to a ready-made script, copied to
   `<profile>/foo_js_panel/samples/` so you can edit it (a copy you already have is kept):
   **Now playing**, **Album art** (the playing or focused track's cover), **Playlist** (the active
@@ -244,7 +247,11 @@ when it calls JScript Panel 3-only drawing (`gr.WriteText`, `FillRectangle`…):
   `WriteText2`, `WriteTextSimple`, `WriteTextLayout` with JSON font strings and the DirectWrite
   alignment, wrapping and trimming values; see below for `$rgb` and gradients.
 - `window.GetFontDUI/CUI` return font strings; `IsDefaultUI`, `DPI`, `SetSelection`,
-  `SetPlaylistTracking`, `SetPlaylistSelectionTracking`.
+  `SetPlaylistTracking`, `SetPlaylistSelectionTracking`. `DPI` is 96 unless *View › JS Panel ›
+  Scale scripts with the display DPI* is on (off by default): on Windows it then reports the
+  display's DPI (168 at 175 %), so scripts that size their fonts with it look the same at any
+  scaling, as in JScript Panel 3. The same setting applies to the `AppliedDPI` value
+  `WScript.Shell.RegRead` answers. On macOS it stays 96: panels draw in points there.
 - `utils`: `CalcTextWidth`, `CalcTextWidth2`, `CreateTextLayout(2)`, `InputBox`, `TextBox`,
   `ColourPicker(default)`, `MessageBox`, `Run`, `ReadUTF8`, `ListFiles`/`ListFolders` (`.toArray()`),
   `IsFolder`, `CreateFolder`, `RemovePath`, `RemoveFolderRecursive`, `RenamePath`, `CopyFile`,

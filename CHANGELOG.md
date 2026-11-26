@@ -3,6 +3,20 @@
 All notable changes to foo_js_panel (JS Panel). Versions are the `v*` git tags; the GitHub
 release of each version has the downloadable `.fb2k-component`.
 
+## [1.10.2](https://github.com/santiagorod92/foo_js_panel/compare/v1.10.1...v1.10.2) (2026-11-26)
+
+### Fixed
+- A portable foobar2000 synced between computers keeps its JS Panel scripts and their settings: a
+  script inside the profile folder is now remembered relative to it, so the panel no longer falls
+  back to the built-in sample, and its properties are no longer lost, when the folder sits at a
+  different path on the other computer. Settings saved by earlier versions are still read.
+
+### Added
+- *View › JS Panel › Scale scripts with the display DPI* (off by default): on Windows,
+  `window.DPI` and the `AppliedDPI` registry value report the display's DPI instead of 96, so
+  JScript Panel 3 scripts such as Playlist Organizer size their fonts for the display, as in
+  JScript Panel 3.
+
 ## [1.10.1](https://github.com/santiagorod92/foo_js_panel/compare/v1.10.0...v1.10.1) (2026-11-25)
 
 ### Fixed

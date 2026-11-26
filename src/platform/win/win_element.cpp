@@ -27,10 +27,10 @@ std::string narrow(const wchar_t* s) { return std::string(pfc::stringcvt::string
 
 std::string config_path(ui_element_config::ptr cfg) {
     if (cfg.is_empty() || cfg->get_guid() != kElementGuid || cfg->get_data_size() == 0) return {};
-    return std::string(static_cast<const char*>(cfg->get_data()), cfg->get_data_size());
+    return script_from_stored(std::string(static_cast<const char*>(cfg->get_data()), cfg->get_data_size()));
 }
 
-ui_element_config::ptr make_config(const std::string& path) { return js_panel::make_config(path.c_str()); }
+ui_element_config::ptr make_config(const std::string& path) { return js_panel::make_config(stored_script_path(path).c_str()); }
 
 class WinSurface : public Surface {
 public:
@@ -39,6 +39,16 @@ public:
 
     bool key_pressed(int vk) override { return GetKeyState(vk) < 0; }
     void* native() override { return hwnd; }
+    int dpi() override {
+        using GetDpiForWindowFn = UINT(WINAPI*)(HWND);
+        static const auto fn = (GetDpiForWindowFn)(void*)GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow");
+        if (fn && hwnd)
+            if (const UINT d = fn(hwnd)) return (int)d;
+        HDC dc = GetDC(nullptr);
+        const int d = dc ? GetDeviceCaps(dc, LOGPIXELSX) : 96;
+        if (dc) ReleaseDC(nullptr, dc);
+        return d > 0 ? d : 96;
+    }
     void open_editor(const std::string& title, const std::string& text, EditorHooks hooks) override {
         if (editor && IsWindow(editor)) {
             wchar_t current[512] = {};

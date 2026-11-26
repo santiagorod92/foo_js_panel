@@ -241,9 +241,15 @@ anything repo-specific stays in the repo's own sections.
   contract Panels UI vendors, see Shared conventions › Hosting): config data on Windows, the
   `script` dictionary key on macOS; such a script is never written back as the default.
 - **Panel properties:** `window.GetProperty/SetProperty` live in
-  `<profile>/foo_js_panel/properties/<FNV-1a of the script path>.json` (`sample.json` for the
+  `<profile>/foo_js_panel/properties/<FNV-1a of the stored script path>.json` (`sample.json` for the
   built-in one), written once after a callback that changed them. Panels running the same script
   share them; a converted theme gives each panel its own script file.
+- **Portable script paths:** a script under the profile is stored as `%fb2k_profile_path%<rest>`
+  (`stored_script_path` / `script_from_stored` in `settings.cpp` over `portable_path` /
+  `expand_portable_path`): Windows element config, the default script `cfg_var`, and the properties
+  key, so a portable install synced to another path keeps both. `load_properties` falls back to the
+  old absolute-path key. `window.DPI` / `AppliedDPI` are `JsHost::dpi()`: 96 unless the *Scale
+  scripts with the display DPI* toggle is on (Windows `GetDpiForWindow`; macOS stays 96, points).
 - **Deferred dispatch:** `NotifyOthers` (info cloned as JSON), the playlist/metadb callbacks and
   `window.Reload`/`fb.Exit` go through `Panel::later` (`fb2k::inMainThread` + the panel's abort),
   like SMP's posted messages: scripts may modify playlists from them and never destroy the engine

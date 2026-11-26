@@ -274,6 +274,35 @@ inline std::string resolve_import(const std::string& spec, const std::string& sc
     return absolute ? p : scriptDir + p;
 }
 
+constexpr const char kProfileToken[] = "%fb2k_profile_path%";
+
+inline bool path_char_equal(char a, char b, bool caseless) {
+    if ((a == '/' || a == '\\') && (b == '/' || b == '\\')) return true;
+    return caseless ? std::tolower((unsigned char)a) == std::tolower((unsigned char)b) : a == b;
+}
+
+inline std::string portable_path(const std::string& path, const std::string& profileDir, bool caseless) {
+    if (profileDir.empty() || path.size() <= profileDir.size()) return path;
+    for (size_t i = 0; i < profileDir.size(); ++i)
+        if (!path_char_equal(path[i], profileDir[i], caseless)) return path;
+    const char last = profileDir.back();
+    if (last != '/' && last != '\\' && path[profileDir.size()] != '/' && path[profileDir.size()] != '\\') return path;
+    size_t rest = profileDir.size();
+    while (rest < path.size() && (path[rest] == '/' || path[rest] == '\\')) ++rest;
+    return kProfileToken + path.substr(rest);
+}
+
+inline std::string expand_portable_path(const std::string& stored, const std::string& profileDir, char sep) {
+    const size_t n = sizeof kProfileToken - 1;
+    if (profileDir.empty() || stored.compare(0, n, kProfileToken) != 0) return stored;
+    std::string rest = stored.substr(n);
+    for (char& c : rest)
+        if (c == '/' || c == '\\') c = sep;
+    std::string dir = profileDir;
+    if (dir.back() != '/' && dir.back() != '\\') dir += sep;
+    return dir + rest;
+}
+
 inline std::string file_url(const std::string& path) {
     static const char hex[] = "0123456789ABCDEF";
     std::string out = "file://";

@@ -132,15 +132,15 @@ void load_fonts() {
     }
 }
 
-std::string properties_file(const std::string& scriptPath) {
+std::string properties_file(const std::string& key) {
     unsigned long long h = 1469598103934665603ull;
-    for (unsigned char c : scriptPath) {
+    for (unsigned char c : key) {
         h ^= c;
         h *= 1099511628211ull;
     }
     char name[40];
     snprintf(name, sizeof name, "%016llx.json", h);
-    return native_dir(core_api::pathInProfile("foo_js_panel")) + "properties" + kPathSep + (scriptPath.empty() ? std::string("sample.json") : name);
+    return native_dir(core_api::pathInProfile("foo_js_panel")) + "properties" + kPathSep + (key.empty() ? std::string("sample.json") : name);
 }
 
 std::string strip_accel(const char* s) {
@@ -1316,6 +1316,8 @@ std::string Panel::panels_ui_panel_name() {
     return m_puiName;
 }
 
+int Panel::dpi() { return scale_dpi() ? m_surface.dpi() : 96; }
+
 bool Panel::dark_mode() {
     if (auto ui = ui_config_manager::tryGet(); ui.is_valid()) return ui->is_dark_mode();
     uint32_t bg = 0;
@@ -1550,13 +1552,16 @@ void Panel::later(std::function<void()> fn) {
 bool Panel::valid(int p) { return p >= 0 && p < playlist_count(); }
 
 std::string Panel::load_properties() {
-    const std::string path = properties_file(m_path);
     std::error_code ec;
-    return std::filesystem::is_regular_file(fs_path(path), ec) ? read_file(path) : std::string();
+    for (const std::string& key : { stored_script_path(m_path), m_path }) {
+        const std::string path = properties_file(key);
+        if (std::filesystem::is_regular_file(fs_path(path), ec)) return read_file(path);
+    }
+    return {};
 }
 
 void Panel::save_properties(const std::string& json) {
-    const std::string path = properties_file(m_path);
+    const std::string path = properties_file(stored_script_path(m_path));
     std::error_code ec;
     std::filesystem::create_directories(fs_path(path).parent_path(), ec);
     if (!write_file(path, json)) log::warn("js", "can't save the properties of " + label(m_path) + " to " + path);
@@ -1575,7 +1580,7 @@ void Panel::reload_script() {
     later([this]() { reload(); });
 }
 
-std::string Panel::profile_path() { return native_dir(core_api::get_profile_path()); }
+std::string Panel::profile_path() { return profile_dir(); }
 
 std::string Panel::component_path() {
     const std::string p = core_api::get_my_full_path();

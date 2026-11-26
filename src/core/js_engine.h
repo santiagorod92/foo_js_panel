@@ -286,6 +286,7 @@ public:
     virtual bool paint_backdrop(pui::gfx::Canvas&) { return false; }
     virtual bool visible() { return true; }
     virtual bool dark_mode() { return false; }
+    virtual int dpi() { return 96; }
     virtual int window_state() { return 0; }
     virtual void set_window_state(int) {}
     virtual bool fullscreen() { return false; }

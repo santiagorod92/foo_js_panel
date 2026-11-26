@@ -68,6 +68,7 @@ public:
     void set_always_on_top(bool on) override { m_owner->set_always_on_top(on); }
     void set_window_limits(int minW, int minH, int maxW, int maxH) override { m_owner->set_window_limits(minW, minH, maxW, maxH); }
     bool window_rect(pui::gfx::Rect& content, pui::gfx::Rect& work) override { return m_owner->window_rect(content, work); }
+    int dpi() override { return m_owner->dpi(); }
     void set_window_rect(const pui::gfx::Rect& content) override { m_owner->set_window_rect(content); }
     void set_caption(const pui::gfx::Rect& r) override { m_owner->set_caption(r); }
     bool caption_drag(bool double_click) override { return m_owner->caption_drag(double_click); }

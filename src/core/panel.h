@@ -54,6 +54,7 @@ public:
     virtual void* native() = 0;
     virtual std::string panel_name() { return {}; }
     virtual bool has_backdrop() { return false; }
+    virtual int dpi() { return 96; }
 };
 
 class Panel : public JsHost, private play_callback_impl_base, private library_callback_dynamic_impl_base {
@@ -227,6 +228,7 @@ public:
     bool fullscreen() override { return m_surface.fullscreen(); }
     bool visible() override { return m_surface.visible(); }
     bool dark_mode() override;
+    int dpi() override;
     void set_fullscreen(bool on) override { m_surface.set_fullscreen(on); }
     void set_window_limits(int minW, int minH, int maxW, int maxH) override { m_surface.set_window_limits(minW, minH, maxW, maxH); }
     bool window_rect(pui::gfx::Rect& content, pui::gfx::Rect& work) override { return m_surface.window_rect(content, work); }

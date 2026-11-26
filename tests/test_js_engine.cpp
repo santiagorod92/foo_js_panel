@@ -2707,3 +2707,31 @@ TEST("themes: Eole's files are patched in memory, once, and only Eole's") {
     CHECK(e.load("include('/p/themes/eole/js/JStheme_common.js'); console.log(kind);", "/p/panel.js"));
     CHECK(!e.failed());
 }
+
+TEST("paths: scripts in the profile are stored relative to it, so a synced portable install finds them") {
+    CHECK_EQ(portable_path("C:\\home\\fb2k\\profile\\pl\\org.js", "C:\\home\\fb2k\\profile\\", false),
+             std::string("%fb2k_profile_path%pl\\org.js"));
+    CHECK_EQ(portable_path("c:/HOME/fb2k/Profile/pl/org.js", "C:\\home\\fb2k\\profile\\", true), std::string("%fb2k_profile_path%pl/org.js"));
+    CHECK_EQ(portable_path("c:/HOME/fb2k/Profile/pl/org.js", "C:\\home\\fb2k\\profile\\", false), std::string("c:/HOME/fb2k/Profile/pl/org.js"));
+    CHECK_EQ(portable_path("/p/profile/a.js", "/p/profile", false), std::string("%fb2k_profile_path%a.js"));
+    CHECK_EQ(portable_path("/p/profile2/a.js", "/p/profile", false), std::string("/p/profile2/a.js"));
+    CHECK_EQ(portable_path("/elsewhere/a.js", "/p/profile/", false), std::string("/elsewhere/a.js"));
+    CHECK_EQ(portable_path("", "/p/profile/", false), std::string());
+    CHECK_EQ(expand_portable_path("%fb2k_profile_path%pl\\org.js", "D:\\work\\fb2k\\profile\\", '\\'),
+             std::string("D:\\work\\fb2k\\profile\\pl\\org.js"));
+    CHECK_EQ(expand_portable_path("%fb2k_profile_path%pl\\org.js", "/p/profile", '/'), std::string("/p/profile/pl/org.js"));
+    CHECK_EQ(expand_portable_path("C:\\x\\a.js", "/p/profile/", '/'), std::string("C:\\x\\a.js"));
+    CHECK_EQ(expand_portable_path(portable_path("/p/profile/a/b.js", "/p/profile/", false), "/q/other/", '/'), std::string("/q/other/a/b.js"));
+}
+
+TEST("jsp3: window.DPI and the AppliedDPI registry value come from the host") {
+    t::FakeHost host;
+    host.dpiValue = 168;
+    JsEngine e(host);
+    CHECK(e.load("function on_paint(gr) { gr.WriteText('a', '', 0, 0, 0, 9, 9); }", ""));
+    CHECK_EQ(e.evaluate("window.DPI"), std::string("168"));
+    CHECK_EQ(e.evaluate("new ActiveXObject('WScript.Shell').RegRead('HKCU\\\\Control Panel\\\\Desktop\\\\WindowMetrics\\\\AppliedDPI')"),
+             std::string("168"));
+    host.dpiValue = 96;
+    CHECK_EQ(e.evaluate("window.DPI"), std::string("96"));
+}
